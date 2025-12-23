@@ -1,0 +1,17 @@
+.xero-dashboard-stats .frappe-card {
+    padding: 15px;
+    text-align: center;
+}
+
+.xero-dashboard-stats .frappe-card-value {
+    font-size: 2em;
+    font-weight: bold;
+}
+
+.xero-dashboard-filters .row {
+    align-items: center;
+}
+
+.xero-dashboard-list .table {
+    margin-top: 20px;
+}

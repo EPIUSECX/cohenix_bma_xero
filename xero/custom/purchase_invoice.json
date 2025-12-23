@@ -1,0 +1,38 @@
+[
+ {
+  "dt": "Purchase Invoice",
+  "fieldname": "xero_invoice_id",
+  "fieldtype": "Data",
+  "label": "Xero Invoice ID",
+  "no_copy": 1,
+  "read_only": 1,
+  "print_hide": 1,
+  "report_hide": 1,
+  "search_index": 1,
+  "insert_after": "scan_barcode"
+ },
+ {
+  "dt": "Purchase Invoice",
+  "fieldname": "xero_sync_status",
+  "fieldtype": "Select",
+  "label": "Xero Sync Status",
+  "options": "\nPending\nSynced\nError\nSkipped",
+  "default": "Pending",
+  "no_copy": 1,
+  "read_only": 1,
+  "print_hide": 1,
+  "insert_after": "xero_invoice_id"
+ },
+ {
+  "dt": "Purchase Invoice",
+  "fieldname": "xero_credit_note_id",
+  "fieldtype": "Data",
+  "label": "Xero Credit Note ID",
+  "no_copy": 1,
+  "read_only": 1,
+  "print_hide": 1,
+  "report_hide": 1,
+  "search_index": 1,
+  "insert_after": "xero_sync_status"
+ }
+]

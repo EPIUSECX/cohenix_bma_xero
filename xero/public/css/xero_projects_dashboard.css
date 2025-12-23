@@ -1,0 +1,33 @@
+.xero-project-dashboard {
+    padding: 15px;
+}
+
+.xero-project-dashboard .widget {
+    margin-bottom: 20px;
+    background: var(--card-bg);
+    border-radius: var(--border-radius-md);
+    box-shadow: var(--card-shadow);
+    padding: 15px;
+}
+
+.xero-project-dashboard .project-summary-section .card {
+    border: 1px solid var(--border-color);
+    margin-bottom: 15px;
+}
+
+.xero-project-dashboard .project-summary-section .card-body {
+    padding: 15px;
+}
+
+.xero-project-dashboard table {
+    margin-bottom: 0;
+}
+
+.xero-project-dashboard .text-muted {
+    margin-bottom: 15px;
+}
+
+.xero-project-dashboard .table th {
+    background-color: var(--bg-color);
+    font-weight: 600;
+}

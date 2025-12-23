@@ -1,0 +1,23 @@
+{
+ "content": null,
+ "creation": "2024-07-15 12:00:00.000000",
+ "docstatus": 0,
+ "doctype": "Page",
+ "idx": 0,
+ "modified": "2024-07-15 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Xero",
+ "name": "xero-sync-dashboard",
+ "owner": "Administrator",
+ "page_name": "Xero Sync Dashboard",
+ "parent": null,
+ "parentfield": null,
+ "parenttype": null,
+ "restrict_to_domain": null,
+ "role": "System Manager",
+ "standard": "Yes",
+ "style": "xero_sync_dashboard.css",
+ "system_page": 0,
+ "title": "Xero Sync Dashboard",
+ "script": "xero_sync_dashboard.js"
+}

@@ -1,0 +1,33 @@
+.xero-dashboard-container {
+    padding: 20px;
+}
+
+.dashboard-card {
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    transition: all 0.3s ease-in-out;
+}
+
+.dashboard-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+}
+
+.frappe-card-title {
+    font-size: 1rem;
+    font-weight: 600;
+}
+
+.frappe-card-value {
+    font-size: 2rem;
+    font-weight: 700;
+}
+
+.xero-dashboard-filters .form-control {
+    margin-bottom: 10px;
+}
+
+.xero-dashboard-list .table {
+    border-radius: 8px;
+    overflow: hidden;
+}

@@ -1,0 +1,87 @@
+{
+    "actions": [],
+    "creation": "2025-04-17 19:09:18.483560",
+    "default_view": "List",
+    "doctype": "DocType",
+    "editable_grid": 1,
+    "engine": "InnoDB",
+    "field_order": [
+  "erpnext_tax_template",
+  "xero_tax_rate_link",
+  "xero_tax_type_code",
+  "xero_tax_type_name",
+  "xero_tax_rate"
+ ],
+ "fields": [
+  {
+   "fieldname": "erpnext_tax_template",
+   "fieldtype": "Link",
+   "label": "ERPNext Item Tax Template",
+   "options": "Item Tax Template",
+   "reqd": 1,
+   "in_list_view": 1,
+   "description": "Select the ERPNext tax template to map."
+  },
+  {
+   "fieldname": "xero_tax_rate_link",
+   "fieldtype": "Link",
+   "label": "Xero Tax Rate",
+   "options": "Xero Tax Rate",
+   "description": "Select the Xero Tax Rate. Use 'Sync Xero Tax Rates' button to load tax rates.",
+   "reqd": 0,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "xero_tax_type_code",
+   "fieldtype": "Data",
+   "label": "Xero Tax Type Code",
+   "description": "Auto-populated from selected Xero Tax Rate.",
+   "read_only": 1,
+   "fetch_from": "xero_tax_rate_link.tax_type_code",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "xero_tax_type_name",
+   "fieldtype": "Data",
+   "label": "Xero Tax Type Name",
+   "description": "Auto-populated from selected Xero Tax Rate.",
+   "read_only": 1,
+   "fetch_from": "xero_tax_rate_link.tax_type_name",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "xero_tax_rate",
+   "fieldtype": "Float",
+   "label": "Xero Tax Rate (%)",
+   "description": "Auto-populated from selected Xero Tax Rate.",
+   "read_only": 1,
+   "fetch_from": "xero_tax_rate_link.tax_rate",
+   "in_list_view": 0,
+   "precision": 2
+  }
+],
+"issingle": 0,
+"istable": 1,
+"links": [],
+"modified": "2025-04-17 19:09:18.483560",
+"modified_by": "Administrator",
+"module": "Xero",
+"name": "Xero Tax Mapping",
+"owner": "Administrator",
+"permissions": [
+ {
+  "create": 1,
+  "delete": 1,
+  "email": 1,
+  "print": 1,
+  "read": 1,
+  "role": "System Manager",
+  "share": 1,
+  "write": 1
+ }
+],
+"row_format": "Dynamic",
+"sort_field": "modified",
+"sort_order": "DESC",
+"states": []
+}
