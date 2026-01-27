@@ -31,6 +31,25 @@ def sync_delivery_note_to_xero_invoice(doc_name, doc_type):
     then syncs that Sales Invoice to Xero.
     """
     try:
+        settings = get_xero_settings()
+        
+        if not settings.enable_xero_sync:
+            return
+        
+        # Check directional toggle for outbound sync
+        if not settings.enable_sync_to_xero:
+            log_xero_error(
+                message=f"Sync to Xero is disabled. Skipping {doc_type} {doc_name} outbound sync.",
+                status="Info",
+                erpnext_doc_type=doc_type,
+                erpnext_doc_name=doc_name,
+                category="System Monitoring"
+            )
+            return
+        
+        if not settings.get("sync_delivery_notes_as_invoices"):
+            return
+        
         # 1. Create a Sales Invoice from the Delivery Note in memory
         # This uses the standard Frappe mapper to correctly pull in all details
         sales_invoice = get_mapped_doc(

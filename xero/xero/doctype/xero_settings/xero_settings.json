@@ -8,6 +8,11 @@
   "field_order": [
   "enable_xero_sync",
   "connection_status",
+  "section_break_directional",
+  "enable_sync_to_xero",
+  "enable_sync_from_xero",
+  "column_break_directional",
+  "directional_sync_warning",
   "section_break_credentials",
   "client_id",
   "client_secret",
@@ -65,6 +70,40 @@
    "label": "Connection Status",
    "read_only": 1,
    "description": "Indicates if the connection to Xero is currently active (based on last check)."
+  },
+  {
+   "fieldname": "section_break_directional",
+   "fieldtype": "Section Break",
+   "label": "Directional Sync Control",
+   "description": "Control sync direction at platform level. These settings override entity-specific toggles.",
+   "depends_on": "eval:doc.enable_xero_sync"
+  },
+  {
+   "fieldname": "enable_sync_to_xero",
+   "fieldtype": "Check",
+   "label": "Enable Sync TO Xero (ERPNext → Xero)",
+   "description": "Master toggle for ALL outbound syncs from ERPNext to Xero. When disabled, no data will be written to Xero regardless of entity-specific settings.",
+   "default": 1,
+   "depends_on": "eval:doc.enable_xero_sync"
+  },
+  {
+   "fieldname": "enable_sync_from_xero",
+   "fieldtype": "Check",
+   "label": "Enable Sync FROM Xero (Xero → ERPNext)",
+   "description": "Master toggle for ALL inbound syncs from Xero to ERPNext. When disabled, no data will be read from Xero regardless of entity-specific settings.",
+   "default": 1,
+   "depends_on": "eval:doc.enable_xero_sync"
+  },
+  {
+   "fieldname": "column_break_directional",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "directional_sync_warning",
+   "fieldtype": "HTML",
+   "label": "Directional Sync Warning",
+   "options": "<div class='alert alert-warning'><strong>Important:</strong> Directional toggles provide platform-level control. Disabling 'Sync TO Xero' will prevent ALL writes to Xero, even if entity-specific toggles are enabled. Use this to safeguard against accidental data writes.</div>",
+   "depends_on": "eval:doc.enable_xero_sync"
   },
   {
    "fieldname": "section_break_credentials",

@@ -52,6 +52,18 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
     if not settings.enable_xero_sync:
         # frappe.logger().info("Xero Sync master switch is disabled.", "Xero Info")
         return # Master switch disabled
+    
+    # Check directional toggle for outbound sync
+    if not settings.enable_sync_to_xero:
+        log_xero_error(
+            message=f"Sync to Xero is disabled. Skipping {doc_type} {doc_name} outbound sync.",
+            status="Info",
+            erpnext_doc_type=doc_type,
+            erpnext_doc_name=doc_name,
+            category="System Monitoring"
+        )
+        return
+    
     if not settings.sync_invoices:
         return # Invoice sync specifically disabled
 

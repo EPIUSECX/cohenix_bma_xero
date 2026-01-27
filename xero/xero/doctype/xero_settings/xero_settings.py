@@ -24,6 +24,8 @@ class XeroSettings(Document):
 		create_payment_entry_on_sync: DF.Check
 		default_bank_account: DF.Link | None
 		enable_auto_sync: DF.Check
+		enable_sync_from_xero: DF.Check
+		enable_sync_to_xero: DF.Check
 		enable_webhooks: DF.Check
 		enable_xero_sync: DF.Check
 		refresh_token: DF.SmallText | None
@@ -41,6 +43,37 @@ class XeroSettings(Document):
 		token_expiry: DF.Datetime | None
 		webhook_secret: DF.Password | None
 	# end: auto-generated types
+
+	def validate(self):
+		"""Validate settings and warn about directional changes"""
+		# Warn about directional sync changes
+		if self.has_value_changed("enable_sync_to_xero"):
+			if not self.enable_sync_to_xero:
+				frappe.msgprint(
+					msg=frappe._("You have disabled sync TO Xero. No data will be written to Xero from ERPNext."),
+					title=frappe._("Sync Direction Changed"),
+					indicator="orange"
+				)
+			else:
+				frappe.msgprint(
+					msg=frappe._("You have enabled sync TO Xero. Data will be written to Xero from ERPNext."),
+					title=frappe._("Sync Direction Changed"),
+					indicator="blue"
+				)
+		
+		if self.has_value_changed("enable_sync_from_xero"):
+			if not self.enable_sync_from_xero:
+				frappe.msgprint(
+					msg=frappe._("You have disabled sync FROM Xero. No data will be read from Xero to ERPNext."),
+					title=frappe._("Sync Direction Changed"),
+					indicator="orange"
+				)
+			else:
+				frappe.msgprint(
+					msg=frappe._("You have enabled sync FROM Xero. Data will be read from Xero to ERPNext."),
+					title=frappe._("Sync Direction Changed"),
+					indicator="blue"
+				)
 
 	# Add custom methods if needed, e.g., to fetch mappings easily
 	def get_account_map(self):

@@ -20,6 +20,16 @@ def sync_trial_balance_from_xero(date=None):
     """
     settings = get_xero_settings()
     if not settings.enable_xero_sync: return
+    
+    # Check directional toggle for inbound sync
+    if not settings.enable_sync_from_xero:
+        log_xero_error(
+            message="Sync from Xero is disabled. Skipping trial balance inbound sync.",
+            status="Info",
+            category="System Monitoring"
+        )
+        return
+    
     if not settings.get("sync_financial_reports"): return
 
     if not date:
@@ -129,6 +139,16 @@ def sync_profit_loss_from_xero(from_date=None, to_date=None):
     """
     settings = get_xero_settings()
     if not settings.enable_xero_sync: return
+    
+    # Check directional toggle for inbound sync
+    if not settings.enable_sync_from_xero:
+        log_xero_error(
+            message="Sync from Xero is disabled. Skipping P&L inbound sync.",
+            status="Info",
+            category="System Monitoring"
+        )
+        return
+    
     if not settings.get("sync_financial_reports"): return
 
     if not from_date:
@@ -238,6 +258,16 @@ def sync_balance_sheet_from_xero(date=None):
     """
     settings = get_xero_settings()
     if not settings.enable_xero_sync: return
+    
+    # Check directional toggle for inbound sync
+    if not settings.enable_sync_from_xero:
+        log_xero_error(
+            message="Sync from Xero is disabled. Skipping balance sheet inbound sync.",
+            status="Info",
+            category="System Monitoring"
+        )
+        return
+    
     if not settings.get("sync_financial_reports"): return
 
     if not date:
@@ -376,6 +406,16 @@ def sync_aged_receivables_from_xero(contact_id=None, report_date=None):
     """
     settings = get_xero_settings()
     if not settings.enable_xero_sync: return
+    
+    # Check directional toggle for inbound sync
+    if not settings.enable_sync_from_xero:
+        log_xero_error(
+            message="Sync from Xero is disabled. Skipping aged receivables inbound sync.",
+            status="Info",
+            category="System Monitoring"
+        )
+        return
+    
     if not settings.get("sync_financial_reports"): return
 
     if not report_date:

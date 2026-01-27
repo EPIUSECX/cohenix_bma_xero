@@ -8,11 +8,20 @@ from .utils.logging import log_xero_error
 
 def sync_all_enabled():
     """
-    Daily task to sync all enabled entities from ERPNext to Xero.
+    Daily task to sync all enabled entities from Xero to ERPNext.
     This runs based on the settings in Xero Settings doctype.
     """
     settings = get_xero_settings()
     if not settings or not settings.enable_xero_sync:
+        return
+    
+    # Check directional toggle for inbound sync
+    if not settings.enable_sync_from_xero:
+        log_xero_error(
+            message="Sync from Xero is disabled. Skipping daily sync task.",
+            status="Info",
+            category="System Monitoring"
+        )
         return
 
     try:
@@ -74,6 +83,10 @@ def check_payments():
     settings = get_xero_settings()
     if not settings or not settings.enable_xero_sync or not settings.get("sync_payments"):
         return
+    
+    # Check directional toggle for inbound sync
+    if not settings.enable_sync_from_xero:
+        return
 
     try:
         from .api.xero_payments import sync_payments_from_xero
@@ -101,6 +114,15 @@ def reconcile_all_entities():
     """
     settings = get_xero_settings()
     if not settings or not settings.enable_xero_sync:
+        return
+    
+    # Reconciliation requires both sync directions to be enabled
+    if not settings.enable_sync_to_xero or not settings.enable_sync_from_xero:
+        log_xero_error(
+            message="Reconciliation requires both sync directions to be enabled. Skipping.",
+            status="Warning",
+            category="System Monitoring"
+        )
         return
 
     try:
@@ -213,6 +235,15 @@ def sync_pending_documents():
     """
     settings = get_xero_settings()
     if not settings or not settings.enable_xero_sync:
+        return
+    
+    # Check directional toggle for outbound sync
+    if not settings.enable_sync_to_xero:
+        log_xero_error(
+            message="Sync to Xero is disabled. Skipping pending documents sync.",
+            status="Info",
+            category="System Monitoring"
+        )
         return
 
     try:

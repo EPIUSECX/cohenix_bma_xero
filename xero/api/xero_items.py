@@ -63,6 +63,18 @@ def sync_item_to_xero(item_code, **kwargs):
             erpnext_doc_name=item_code
         )
         return # Master switch disabled
+    
+    # Check directional toggle for outbound sync
+    if not settings.enable_sync_to_xero:
+        log_xero_error(
+            message=f"Sync to Xero is disabled. Skipping Item {item_code} outbound sync.",
+            status="Info",
+            erpnext_doc_type="Item",
+            erpnext_doc_name=item_code,
+            category="System Monitoring"
+        )
+        return
+    
     if not settings.sync_items:
         log_xero_error(
             message=f"Item sync skipped: Item sync is disabled in settings",
@@ -212,6 +224,16 @@ def sync_items_from_xero():
     """
     settings = get_xero_settings()
     if not settings.enable_xero_sync: return
+    
+    # Check directional toggle for inbound sync
+    if not settings.enable_sync_from_xero:
+        log_xero_error(
+            message="Sync from Xero is disabled. Skipping items inbound sync.",
+            status="Info",
+            category="System Monitoring"
+        )
+        return
+    
     if not settings.sync_items: return
 
     try:

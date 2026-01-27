@@ -28,6 +28,25 @@ def sync_stock_ledger_to_xero(sle_name):
     Updates the inventory quantity of an item in Xero based on a Stock Ledger Entry.
     """
     try:
+        settings = get_xero_settings()
+        
+        if not settings.enable_xero_sync:
+            return
+        
+        # Check directional toggle for outbound sync
+        if not settings.enable_sync_to_xero:
+            log_xero_error(
+                message=f"Sync to Xero is disabled. Skipping Stock Ledger Entry {sle_name} outbound sync.",
+                status="Info",
+                erpnext_doc_type="Stock Ledger Entry",
+                erpnext_doc_name=sle_name,
+                category="System Monitoring"
+            )
+            return
+        
+        if not settings.get("sync_inventory_levels"):
+            return
+        
         sle = frappe.get_doc("Stock Ledger Entry", sle_name)
         
         # 1. Get the Xero Item ID from the ERPNext Item

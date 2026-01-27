@@ -33,6 +33,24 @@ def sync_return_to_xero(doc_name, doc_type, **kwargs):
     try:
         doc = frappe.get_doc(doc_type, doc_name)
         settings = get_xero_settings()
+        
+        if not settings.enable_xero_sync:
+            return
+        
+        # Check directional toggle for outbound sync
+        if not settings.enable_sync_to_xero:
+            log_xero_error(
+                message=f"Sync to Xero is disabled. Skipping {doc_type} {doc_name} outbound sync.",
+                status="Info",
+                erpnext_doc_type=doc_type,
+                erpnext_doc_name=doc_name,
+                category="System Monitoring"
+            )
+            return
+        
+        if not settings.get("sync_credit_notes"):
+            return
+        
         xero_cn_id = doc.get("xero_credit_note_id")
 
         if doc.docstatus != 1 or not doc.is_return:

@@ -16,6 +16,16 @@ def sync_tracking_categories_from_xero():
     """
     settings = get_xero_settings()
     if not settings.enable_xero_sync: return
+    
+    # Check directional toggle for inbound sync
+    if not settings.enable_sync_from_xero:
+        log_xero_error(
+            message="Sync from Xero is disabled. Skipping tracking categories inbound sync.",
+            status="Info",
+            category="System Monitoring"
+        )
+        return
+    
     if not settings.get("sync_tracking_categories"): return
 
     try:

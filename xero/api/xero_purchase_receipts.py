@@ -31,6 +31,25 @@ def sync_purchase_receipt_to_xero_bill(doc_name, doc_type):
     then syncs that Purchase Invoice to Xero as a Bill (ACCPAY Invoice).
     """
     try:
+        settings = get_xero_settings()
+        
+        if not settings.enable_xero_sync:
+            return
+        
+        # Check directional toggle for outbound sync
+        if not settings.enable_sync_to_xero:
+            log_xero_error(
+                message=f"Sync to Xero is disabled. Skipping {doc_type} {doc_name} outbound sync.",
+                status="Info",
+                erpnext_doc_type=doc_type,
+                erpnext_doc_name=doc_name,
+                category="System Monitoring"
+            )
+            return
+        
+        if not settings.get("sync_purchase_receipts_as_bills"):
+            return
+        
         # 1. Create a Purchase Invoice from the Purchase Receipt in memory
         purchase_invoice = get_mapped_doc(
             "Purchase Receipt",

@@ -42,6 +42,16 @@ def sync_accounts_from_xero():
     if not settings.enable_xero_sync:
         # frappe.logger().info("Xero Sync master switch is disabled.", "Xero Info")
         return # Master switch disabled
+    
+    # Check directional toggle for inbound sync
+    if not settings.enable_sync_from_xero:
+        log_xero_error(
+            message="Sync from Xero is disabled. Skipping accounts inbound sync.",
+            status="Info",
+            category="System Monitoring"
+        )
+        return
+    
     if not settings.sync_chart_of_accounts:
         return # CoA sync specifically disabled
 

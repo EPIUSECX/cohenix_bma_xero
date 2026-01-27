@@ -267,6 +267,24 @@ class XeroSyncDashboard {
                 margin-bottom: 40px;
             }
 
+            .sync-direction-section.disabled-section {
+                opacity: 0.6;
+                pointer-events: none;
+                position: relative;
+            }
+
+            .sync-direction-section.disabled-section::after {
+                content: '';
+                position: absolute;
+                top: 0;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                background: rgba(128, 128, 128, 0.1);
+                border-radius: 8px;
+                z-index: 1;
+            }
+
             .sync-direction-header {
                 display: flex;
                 align-items: center;
@@ -766,6 +784,23 @@ class XeroSyncDashboard {
     }
 
     load_sync_operations() {
+        // Fetch settings first to determine which sections to show
+        frappe.call({
+            method: 'xero.xero.page.xero_sync_dashboard.xero_sync_dashboard.get_dashboard_overview',
+            callback: (r) => {
+                if (r.message && !r.message.error) {
+                    this.render_sync_operations(r.message.connection);
+                } else {
+                    this.show_error('Failed to load sync operations', r.message?.error);
+                }
+            }
+        });
+    }
+
+    render_sync_operations(connection_status) {
+        const sync_to_xero_enabled = connection_status.sync_to_xero_enabled;
+        const sync_from_xero_enabled = connection_status.sync_from_xero_enabled;
+        
         const sync_ops_html = `
             <div class="row">
                 <!-- Professional Manual Sync Operations -->
@@ -785,7 +820,18 @@ class XeroSyncDashboard {
                         </div>
                         <div class="xero-sync-body">
                             <!-- ERPNext to Xero Section -->
-                            <div class="sync-direction-section">
+                            <div class="sync-direction-section ${!sync_to_xero_enabled ? 'disabled-section' : ''}">
+                                ${!sync_to_xero_enabled ? `
+                                    <div class="alert alert-warning mb-3">
+                                        <h5><i class="fa fa-exclamation-triangle"></i> Sync TO Xero is Disabled</h5>
+                                        <p class="mb-2">Outbound sync from ERPNext to Xero is currently disabled. No data will be written to Xero.</p>
+                                        <p class="mb-0">
+                                            <strong>To enable:</strong> Go to
+                                            <a href="/app/xero-settings" target="_blank">Xero Settings</a>
+                                            and check "Enable Sync TO Xero (ERPNext → Xero)"
+                                        </p>
+                                    </div>
+                                ` : ''}
                                 <div class="sync-direction-header">
                                     <div class="sync-direction-icon to-xero">
                                         <i class="fa fa-arrow-right"></i>
@@ -806,12 +852,23 @@ class XeroSyncDashboard {
                                         { name: 'Item', icon: 'fa-cube', class: 'icon-item' },
                                         { name: 'Quotation', icon: 'fa-quote-right', class: 'icon-quotation' },
                                         { name: 'Bank Transaction', icon: 'fa-bank', class: 'icon-bank-transaction' }
-                                    ])}
+                                    ], sync_to_xero_enabled)}
                                 </div>
                             </div>
 
                             <!-- Xero to ERPNext Section -->
-                            <div class="sync-direction-section">
+                            <div class="sync-direction-section ${!sync_from_xero_enabled ? 'disabled-section' : ''}">
+                                ${!sync_from_xero_enabled ? `
+                                    <div class="alert alert-warning mb-3">
+                                        <h5><i class="fa fa-exclamation-triangle"></i> Sync FROM Xero is Disabled</h5>
+                                        <p class="mb-2">Inbound sync from Xero to ERPNext is currently disabled. No data will be read from Xero.</p>
+                                        <p class="mb-0">
+                                            <strong>To enable:</strong> Go to
+                                            <a href="/app/xero-settings" target="_blank">Xero Settings</a>
+                                            and check "Enable Sync FROM Xero (Xero → ERPNext)"
+                                        </p>
+                                    </div>
+                                ` : ''}
                                 <div class="sync-direction-header">
                                     <div class="sync-direction-icon from-xero">
                                         <i class="fa fa-arrow-left"></i>
@@ -828,7 +885,7 @@ class XeroSyncDashboard {
                                         { name: 'Sync Xero Items', icon: 'fa-cubes', class: 'icon-sync-items' },
                                         { name: 'Sync Xero Payments', icon: 'fa-money', class: 'icon-sync-payments' },
                                         { name: 'Sync Xero Bank Transactions', icon: 'fa-exchange', class: 'icon-sync-bank-transactions' }
-                                    ])}
+                                    ], sync_from_xero_enabled)}
                                 </div>
                             </div>
                         </div>
@@ -890,9 +947,12 @@ class XeroSyncDashboard {
         `).join('');
     }
 
-    render_xero_sync_buttons(entities) {
+    render_xero_sync_buttons(entities, enabled = true) {
         return entities.map(entity => `
-            <button class="xero-sync-button" data-entity="${entity.name}" onclick="dashboard.trigger_sync('${entity.name}')">
+            <button class="xero-sync-button ${!enabled ? 'disabled' : ''}"
+                    data-entity="${entity.name}"
+                    onclick="${enabled ? `dashboard.trigger_sync('${entity.name}')` : 'return false;'}"
+                    ${!enabled ? 'disabled style="opacity: 0.5; cursor: not-allowed;"' : ''}>
                 <div class="sync-button-icon ${entity.class}">
                     <i class="fa ${entity.icon}"></i>
                 </div>

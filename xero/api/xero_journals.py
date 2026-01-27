@@ -38,6 +38,18 @@ def sync_journal_to_xero(doc_name, doc_type="Journal Entry", **kwargs):
     settings = get_xero_settings()
     if not settings.enable_xero_sync:
         return # Master switch disabled
+    
+    # Check directional toggle for outbound sync
+    if not settings.enable_sync_to_xero:
+        log_xero_error(
+            message=f"Sync to Xero is disabled. Skipping {doc_type} {doc_name} outbound sync.",
+            status="Info",
+            erpnext_doc_type=doc_type,
+            erpnext_doc_name=doc_name,
+            category="System Monitoring"
+        )
+        return
+    
     if not settings.get("sync_journal_entries"):
         return # Journal sync specifically disabled
 
@@ -176,6 +188,17 @@ def delete_journal_from_xero(doc_name, doc_type="Journal Entry"):
     settings = get_xero_settings()
     if not settings.enable_xero_sync:
         return
+    
+    # Check directional toggle for outbound sync (voiding is a write operation)
+    if not settings.enable_sync_to_xero:
+        log_xero_error(
+            message=f"Sync to Xero is disabled. Skipping void operation for {doc_type} {doc_name}.",
+            status="Info",
+            erpnext_doc_type=doc_type,
+            erpnext_doc_name=doc_name,
+            category="System Monitoring"
+        )
+        return
 
     try:
         doc = frappe.get_doc(doc_type, doc_name)
@@ -233,6 +256,16 @@ def sync_manual_journals_from_xero(from_date=None, to_date=None):
     """
     settings = get_xero_settings()
     if not settings.enable_xero_sync: return
+    
+    # Check directional toggle for inbound sync
+    if not settings.enable_sync_from_xero:
+        log_xero_error(
+            message="Sync from Xero is disabled. Skipping manual journals inbound sync.",
+            status="Info",
+            category="System Monitoring"
+        )
+        return
+    
     if not settings.get("sync_journal_entries"): return
 
     try:

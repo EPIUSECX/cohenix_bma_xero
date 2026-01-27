@@ -17,7 +17,9 @@ def get_dashboard_overview():
             "connected": bool(settings.access_token and settings.tenant_id),
             "tenant_name": settings.tenant_name or "Not Connected",
             "last_sync": settings.last_sync_time,
-            "sync_enabled": settings.enable_xero_sync
+            "sync_enabled": settings.enable_xero_sync,
+            "sync_to_xero_enabled": settings.enable_sync_to_xero,
+            "sync_from_xero_enabled": settings.enable_sync_from_xero
         }
         
         # Get sync statistics for last 24 hours
@@ -337,6 +339,24 @@ def trigger_manual_sync(entity_type, filters=None, sync_type="full"):
         
         if not settings.access_token:
             frappe.throw(_("Xero is not connected. Please configure Xero settings first."))
+        
+        # Determine sync direction and check directional toggle
+        from_xero_entities = [
+            "Sync Xero Accounts",
+            "Sync Xero Contacts",
+            "Sync Xero Items",
+            "Sync Xero Payments",
+            "Sync Xero Bank Transactions"
+        ]
+        
+        if entity_type in from_xero_entities:
+            # Inbound sync (Xero → ERPNext)
+            if not settings.enable_sync_from_xero:
+                frappe.throw(_("Sync from Xero is disabled. Cannot perform inbound sync."))
+        else:
+            # Outbound sync (ERPNext → Xero)
+            if not settings.enable_sync_to_xero:
+                frappe.throw(_("Sync to Xero is disabled. Cannot perform outbound sync."))
         
         # Parse filters
         if filters and isinstance(filters, str):

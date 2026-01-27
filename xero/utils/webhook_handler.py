@@ -144,9 +144,19 @@ def process_webhook_event(event_data):
     )
 
     # Route event to specific handlers based on category and type
-    # Route event to specific handlers based on category and type
     try:
         settings = get_xero_settings() # Get settings once for the event
+        
+        # Check directional toggle for inbound sync (webhooks are inbound)
+        if not settings.enable_sync_from_xero:
+            log_xero_error(
+                message=f"Sync from Xero is disabled. Ignoring webhook event: {event_type} for {event_category} {resource_id}",
+                status="Info",
+                xero_entity_type=event_category,
+                xero_entity_id=resource_id,
+                category="System Monitoring"
+            )
+            return
 
         if event_category == "INVOICE":
             if event_type == "UPDATE":

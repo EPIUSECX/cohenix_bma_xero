@@ -32,6 +32,18 @@ def sync_contact_to_xero(doc_name, doc_type, **kwargs):
         # Log only once if master switch is off? Or not at all?
         # frappe.logger().info("Xero Sync master switch is disabled.", "Xero Info")
         return # Master switch disabled
+    
+    # Check directional toggle for outbound sync
+    if not settings.enable_sync_to_xero:
+        log_xero_error(
+            message=f"Sync to Xero is disabled. Skipping {doc_type} {doc_name} outbound sync.",
+            status="Info",
+            erpnext_doc_type=doc_type,
+            erpnext_doc_name=doc_name,
+            category="System Monitoring"
+        )
+        return
+    
     if not settings.sync_contacts:
         return # Contact sync specifically disabled
 
@@ -314,6 +326,16 @@ def sync_contacts_from_xero():
     """
     settings = get_xero_settings()
     if not settings.enable_xero_sync: return # Master switch disabled
+    
+    # Check directional toggle for inbound sync
+    if not settings.enable_sync_from_xero:
+        log_xero_error(
+            message="Sync from Xero is disabled. Skipping contacts inbound sync.",
+            status="Info",
+            category="System Monitoring"
+        )
+        return
+    
     if not settings.sync_contacts: return # Contact sync specifically disabled
 
     try:

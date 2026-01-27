@@ -39,6 +39,18 @@ def sync_bank_transaction_to_xero(doc_name, doc_type, **kwargs):
     settings = get_xero_settings()
     if not settings.enable_xero_sync:
         return # Master switch disabled
+    
+    # Check directional toggle for outbound sync
+    if not settings.enable_sync_to_xero:
+        log_xero_error(
+            message=f"Sync to Xero is disabled. Skipping {doc_type} {doc_name} outbound sync.",
+            status="Info",
+            erpnext_doc_type=doc_type,
+            erpnext_doc_name=doc_name,
+            category="System Monitoring"
+        )
+        return
+    
     if not settings.get("sync_bank_transactions"):
         return # Bank transaction sync specifically disabled
 
@@ -165,6 +177,16 @@ def sync_bank_transactions_from_xero(bank_account_id=None):
     """
     settings = get_xero_settings()
     if not settings.enable_xero_sync: return
+    
+    # Check directional toggle for inbound sync
+    if not settings.enable_sync_from_xero:
+        log_xero_error(
+            message="Sync from Xero is disabled. Skipping bank transactions inbound sync.",
+            status="Info",
+            category="System Monitoring"
+        )
+        return
+    
     if not settings.get("sync_bank_transactions"): return
 
     try:
