@@ -4,7 +4,7 @@
 import frappe
 import json
 from datetime import datetime, timedelta
-from frappe.utils import now_datetime, add_days, get_datetime, flt
+from frappe.utils import now_datetime, add_days, add_to_date, get_datetime, flt
 from frappe import _
 
 @frappe.whitelist()
