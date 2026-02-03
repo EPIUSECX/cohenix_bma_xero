@@ -109,20 +109,6 @@ class XeroSyncDashboard {
                 position: relative;
             }
 
-            .xero-dashboard-tabs::after {
-                content: '';
-                position: absolute;
-                top: 50%;
-                right: 20px;
-                width: 250px;
-                height: 60px;
-                background-image: url('/assets/xero/images/xero-logo.png');
-                background-size: contain;
-                background-repeat: no-repeat;
-                background-position: center;
-                opacity: 0.9;
-                transform: translateY(-50%);
-            }
 
             .xero-dashboard-content {
                 background: var(--xero-bg);
@@ -493,7 +479,27 @@ class XeroSyncDashboard {
                         </li>
                         <li class="nav-item">
                             <a class="nav-link" data-tab="sync-ops" href="#sync-ops">
-                                <i class="fa fa-sync"></i> Sync Operations
+                                <i class="fa fa-sync"></i> Manual Sync Operations
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" data-tab="last-sync" href="#last-sync">
+                                <i class="fa fa-history"></i> Last Sync Attempts
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" data-tab="logs" href="#logs">
+                                <i class="fa fa-list"></i> Sync Logs
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" data-tab="health-performance" href="#health-performance">
+                                <i class="fa fa-heartbeat"></i> Health and Performance
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" data-tab="integrity" href="#integrity">
+                                <i class="fa fa-check-circle"></i> Integrity
                             </a>
                         </li>
                         <li class="nav-item">
@@ -504,31 +510,6 @@ class XeroSyncDashboard {
                         <li class="nav-item">
                             <a class="nav-link" data-tab="entities" href="#entities">
                                 <i class="fa fa-database"></i> Entity Status
-                            </a>
-                        </li>
-                        <li class="nav-item">
-                            <a class="nav-link" data-tab="logs" href="#logs">
-                                <i class="fa fa-list"></i> Sync Logs
-                            </a>
-                        </li>
-                        <li class="nav-item">
-                            <a class="nav-link" data-tab="health" href="#health">
-                                <i class="fa fa-heartbeat"></i> Health
-                            </a>
-                        </li>
-                        <li class="nav-item">
-                            <a class="nav-link" data-tab="integrity" href="#integrity">
-                                <i class="fa fa-check-circle"></i> Integrity
-                            </a>
-                        </li>
-                        <li class="nav-item">
-                            <a class="nav-link" data-tab="last-sync" href="#last-sync">
-                                <i class="fa fa-history"></i> Last Sync Attempts
-                            </a>
-                        </li>
-                        <li class="nav-item">
-                            <a class="nav-link" data-tab="performance" href="#performance">
-                                <i class="fa fa-tachometer-alt"></i> Performance
                             </a>
                         </li>
                         <li class="nav-item">
@@ -543,13 +524,12 @@ class XeroSyncDashboard {
                 <div class="xero-dashboard-content" style="position: relative;">
                     <div id="overview" class="tab-content active"></div>
                     <div id="sync-ops" class="tab-content"></div>
+                    <div id="last-sync" class="tab-content"></div>
+                    <div id="logs" class="tab-content"></div>
+                    <div id="health-performance" class="tab-content"></div>
+                    <div id="integrity" class="tab-content"></div>
                     <div id="analytics" class="tab-content"></div>
                     <div id="entities" class="tab-content"></div>
-                    <div id="logs" class="tab-content"></div>
-                    <div id="health" class="tab-content"></div>
-                    <div id="integrity" class="tab-content"></div>
-                    <div id="last-sync" class="tab-content"></div>
-                    <div id="performance" class="tab-content"></div>
                     <div id="config" class="tab-content"></div>
                     
                     <!-- Loading Overlay -->
@@ -591,26 +571,23 @@ class XeroSyncDashboard {
             case 'sync-ops':
                 this.load_sync_operations();
                 break;
+            case 'last-sync':
+                this.load_last_sync_attempts();
+                break;
+            case 'logs':
+                this.load_logs();
+                break;
+            case 'health-performance':
+                this.load_health_and_performance();
+                break;
+            case 'integrity':
+                this.load_data_integrity();
+                break;
             case 'analytics':
                 this.load_analytics();
                 break;
             case 'entities':
                 this.load_entity_status();
-                break;
-            case 'logs':
-                this.load_logs();
-                break;
-            case 'health':
-                this.load_health_monitoring();
-                break;
-            case 'integrity':
-                this.load_data_integrity();
-                break;
-            case 'last-sync':
-                this.load_last_sync_attempts();
-                break;
-            case 'performance':
-                this.load_performance_metrics();
                 break;
             case 'config':
                 this.load_configuration();
@@ -2547,6 +2524,424 @@ class XeroSyncDashboard {
         $(this.wrapper).find('#performance').html(performance_html);
     }
 
+    // Combined Health and Performance Tab
+    load_health_and_performance() {
+        this.show_loading();
+        
+        // Load both health and performance data in parallel
+        Promise.all([
+            frappe.call({
+                method: 'xero.xero.page.xero_sync_dashboard.xero_sync_dashboard.get_health_monitoring_metrics'
+            }),
+            frappe.call({
+                method: 'xero.xero.page.xero_sync_dashboard.xero_sync_dashboard.get_sync_performance_metrics'
+            })
+        ]).then(([healthResponse, performanceResponse]) => {
+            this.hide_loading();
+            
+            if (healthResponse.message && !healthResponse.message.error &&
+                performanceResponse.message && !performanceResponse.message.error) {
+                this.render_health_and_performance(healthResponse.message, performanceResponse.message);
+            } else {
+                this.show_error('Failed to load health and performance metrics',
+                    healthResponse.message?.error || performanceResponse.message?.error);
+            }
+        }).catch(error => {
+            this.hide_loading();
+            this.show_error('Failed to load health and performance metrics', error.message);
+        });
+    }
+
+    render_health_and_performance(healthData, performanceData) {
+        const combined_html = `
+            <div class="row">
+                <!-- HEALTH SECTION HEADER -->
+                <div class="col-md-12 mb-4">
+                    <div class="card border-primary">
+                        <div class="card-header bg-primary text-white">
+                            <h4 class="mb-0">
+                                <i class="fa fa-heartbeat"></i> System Health Monitoring
+                            </h4>
+                        </div>
+                    </div>
+                </div>
+                
+                ${this.get_health_html(healthData)}
+                
+                <!-- PERFORMANCE SECTION HEADER -->
+                <div class="col-md-12 mb-4 mt-5">
+                    <div class="card border-info">
+                        <div class="card-header bg-info text-white">
+                            <h4 class="mb-0">
+                                <i class="fa fa-tachometer-alt"></i> Performance Metrics
+                            </h4>
+                        </div>
+                    </div>
+                </div>
+                
+                ${this.get_performance_html(performanceData)}
+            </div>
+        `;
+        
+        $(this.wrapper).find('#health-performance').html(combined_html);
+    }
+
+    get_health_html(data) {
+        return `
+            <!-- System Uptime -->
+            <div class="col-md-12 mb-4">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0"><i class="fa fa-heartbeat"></i> System Health (Last 24h)</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row text-center">
+                            <div class="col-md-3">
+                                <h3 class="text-${data.uptime_percentage >= 95 ? 'success' : 'danger'}">${data.uptime_percentage}%</h3>
+                                <p class="text-muted">Uptime</p>
+                            </div>
+                            <div class="col-md-3">
+                                <h3 class="text-success">${data.successful_operations_24h || 0}</h3>
+                                <p class="text-muted">Successful Operations</p>
+                            </div>
+                            <div class="col-md-3">
+                                <h3 class="text-info">${data.total_operations_24h || 0}</h3>
+                                <p class="text-muted">Total Operations</p>
+                            </div>
+                            <div class="col-md-3">
+                                <h3 class="text-${data.stuck_jobs.length > 0 ? 'danger' : 'success'}">${data.stuck_jobs.length}</h3>
+                                <p class="text-muted">Stuck Jobs</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- API Performance -->
+            <div class="col-md-6 mb-4">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0"><i class="fa fa-tachometer-alt"></i> API Performance</h5>
+                    </div>
+                    <div class="card-body">
+                        ${data.api_performance && Object.keys(data.api_performance).length > 0 ? `
+                            <table class="table table-sm">
+                                <tr>
+                                    <td><strong>Avg Response Time:</strong></td>
+                                    <td>${(data.api_performance.avg_time || 0).toFixed(2)}s</td>
+                                </tr>
+                                <tr>
+                                    <td><strong>Max Response Time:</strong></td>
+                                    <td>${(data.api_performance.max_time || 0).toFixed(2)}s</td>
+                                </tr>
+                                <tr>
+                                    <td><strong>Min Response Time:</strong></td>
+                                    <td>${(data.api_performance.min_time || 0).toFixed(2)}s</td>
+                                </tr>
+                                <tr>
+                                    <td><strong>Total API Calls:</strong></td>
+                                    <td>${data.api_performance.total_calls || 0}</td>
+                                </tr>
+                                <tr>
+                                    <td><strong>Slow Calls (>5s):</strong></td>
+                                    <td class="text-warning">${data.api_performance.slow_calls || 0}</td>
+                                </tr>
+                            </table>
+                        ` : '<p class="text-muted">No API performance data available</p>'}
+                    </div>
+                </div>
+            </div>
+
+            <!-- Token Refresh Metrics -->
+            <div class="col-md-6 mb-4">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0"><i class="fa fa-key"></i> Token Refresh Status</h5>
+                    </div>
+                    <div class="card-body">
+                        ${data.token_metrics && Object.keys(data.token_metrics).length > 0 ? `
+                            <table class="table table-sm">
+                                <tr>
+                                    <td><strong>Total Refreshes:</strong></td>
+                                    <td>${data.token_metrics.total_refreshes || 0}</td>
+                                </tr>
+                                <tr>
+                                    <td><strong>Successful:</strong></td>
+                                    <td class="text-success">${data.token_metrics.successful || 0}</td>
+                                </tr>
+                                <tr>
+                                    <td><strong>Failed:</strong></td>
+                                    <td class="text-danger">${data.token_metrics.failed || 0}</td>
+                                </tr>
+                                <tr>
+                                    <td><strong>Last Refresh:</strong></td>
+                                    <td>${data.token_metrics.last_refresh ? frappe.datetime.comment_when(data.token_metrics.last_refresh) : 'Never'}</td>
+                                </tr>
+                                <tr>
+                                    <td><strong>Success Rate:</strong></td>
+                                    <td>
+                                        ${data.token_metrics.total_refreshes > 0 ?
+                                            Math.round((data.token_metrics.successful / data.token_metrics.total_refreshes) * 100) : 0}%
+                                    </td>
+                                </tr>
+                            </table>
+                        ` : '<p class="text-muted">No token refresh data available</p>'}
+                    </div>
+                </div>
+            </div>
+
+            <!-- Error by Category -->
+            <div class="col-md-12 mb-4">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0"><i class="fa fa-exclamation-triangle"></i> Errors by Category (Last 7 Days)</h5>
+                    </div>
+                    <div class="card-body">
+                        ${data.error_by_category && data.error_by_category.length > 0 ? `
+                            <div class="table-responsive">
+                                <table class="table table-sm">
+                                    <thead>
+                                        <tr>
+                                            <th>Category</th>
+                                            <th>Count</th>
+                                            <th>Percentage</th>
+                                            <th>Distribution</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${data.error_by_category.map(cat => `
+                                            <tr>
+                                                <td>${cat.category}</td>
+                                                <td><span class="badge badge-danger">${cat.count}</span></td>
+                                                <td>${(cat.percentage || 0).toFixed(1)}%</td>
+                                                <td>
+                                                    <div class="progress" style="height: 20px;">
+                                                        <div class="progress-bar bg-danger" style="width: ${cat.percentage}%">
+                                                            ${Math.round(cat.percentage)}%
+                                                        </div>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        `).join('')}
+                                    </tbody>
+                                </table>
+                            </div>
+                        ` : '<p class="text-muted">No errors in the last 7 days 🎉</p>'}
+                    </div>
+                </div>
+            </div>
+
+            <!-- Stuck Jobs -->
+            ${data.stuck_jobs && data.stuck_jobs.length > 0 ? `
+                <div class="col-md-12 mb-4">
+                    <div class="card border-danger">
+                        <div class="card-header bg-danger text-white">
+                            <h5 class="mb-0"><i class="fa fa-exclamation-circle"></i> Stuck Jobs (Running > 1 Hour)</h5>
+                        </div>
+                        <div class="card-body">
+                            ${data.stuck_jobs.map(job => `
+                                <div class="alert alert-danger mb-2">
+                                    <div class="d-flex justify-content-between">
+                                        <strong>${job.job_name}</strong>
+                                        <span class="badge badge-danger">${job.duration_minutes} minutes</span>
+                                    </div>
+                                    <small class="text-muted">
+                                        Started: ${frappe.datetime.comment_when(job.started_at || job.creation)}
+                                    </small>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                </div>
+            ` : ''}
+
+            <!-- Rate Limit Hits -->
+            ${data.rate_limit_hits && data.rate_limit_hits.length > 0 ? `
+                <div class="col-md-12 mb-4">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="mb-0"><i class="fa fa-ban"></i> Rate Limit Hits (Last 7 Days)</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-sm">
+                                    <thead>
+                                        <tr>
+                                            <th>Hour</th>
+                                            <th>Hits</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${data.rate_limit_hits.slice(0, 10).map(hit => `
+                                            <tr>
+                                                <td>${frappe.datetime.str_to_user(hit.hour)}</td>
+                                                <td><span class="badge badge-warning">${hit.hits}</span></td>
+                                            </tr>
+                                        `).join('')}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            ` : ''}
+        `;
+    }
+
+    get_performance_html(data) {
+        return `
+            <!-- Summary Metrics -->
+            <div class="col-md-12 mb-4">
+                <div class="row">
+                    <div class="col-md-4">
+                        <div class="card">
+                            <div class="card-body text-center">
+                                <h3 class="text-primary">${data.throughput || 0}</h3>
+                                <p class="text-muted">Records/Minute</p>
+                                <small>Sync throughput (last hour)</small>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="card">
+                            <div class="card-body text-center">
+                                <h3 class="text-warning">${data.total_pending || 0}</h3>
+                                <p class="text-muted">Pending Documents</p>
+                                <small>Total in queue</small>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="card">
+                            <div class="card-body text-center">
+                                <h3 class="text-${data.oldest_pending && data.oldest_pending.days_pending > 7 ? 'danger' : 'info'}">
+                                    ${data.oldest_pending ? data.oldest_pending.days_pending : 0}
+                                </h3>
+                                <p class="text-muted">Oldest Pending (days)</p>
+                                <small>${data.oldest_pending ? data.oldest_pending.name : 'None'}</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Sync Latency by Entity -->
+            ${data.latency_by_entity && data.latency_by_entity.length > 0 ? `
+                <div class="col-md-12 mb-4">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="mb-0"><i class="fa fa-clock"></i> Average Sync Latency by Entity (Last 24h)</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-sm">
+                                    <thead>
+                                        <tr>
+                                            <th>Entity Type</th>
+                                            <th>Avg Latency</th>
+                                            <th>Min</th>
+                                            <th>Max</th>
+                                            <th>Total Syncs</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${data.latency_by_entity.map(entity => `
+                                            <tr>
+                                                <td>${entity.erpnext_doc_type}</td>
+                                                <td>
+                                                    <span class="badge badge-${entity.avg_latency > 5 ? 'danger' : entity.avg_latency > 2 ? 'warning' : 'success'}">
+                                                        ${(entity.avg_latency || 0).toFixed(2)}s
+                                                    </span>
+                                                </td>
+                                                <td>${(entity.min_latency || 0).toFixed(2)}s</td>
+                                                <td>${(entity.max_latency || 0).toFixed(2)}s</td>
+                                                <td>${entity.total_syncs || 0}</td>
+                                            </tr>
+                                        `).join('')}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            ` : ''}
+
+            <!-- Slowest Sync Operations -->
+            ${data.slowest_syncs && data.slowest_syncs.length > 0 ? `
+                <div class="col-md-6 mb-4">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="mb-0"><i class="fa fa-hourglass-end"></i> Slowest Operations (Last 24h)</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-sm">
+                                    <thead>
+                                        <tr>
+                                            <th>Document</th>
+                                            <th>Time</th>
+                                            <th>When</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${data.slowest_syncs.map(sync => `
+                                            <tr>
+                                                <td>
+                                                    <small>${sync.erpnext_doc_type}<br>${sync.erpnext_doc_name}</small>
+                                                </td>
+                                                <td>
+                                                    <span class="badge badge-danger">${(sync.processing_time || 0).toFixed(2)}s</span>
+                                                </td>
+                                                <td>
+                                                    <small>${frappe.datetime.comment_when(sync.timestamp)}</small>
+                                                </td>
+                                            </tr>
+                                        `).join('')}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            ` : ''}
+
+            <!-- Queue Depth -->
+            ${data.queue_depth && data.queue_depth.length > 0 ? `
+                <div class="col-md-6 mb-4">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="mb-0"><i class="fa fa-tasks"></i> Queue Depth by Entity</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-sm">
+                                    <thead>
+                                        <tr>
+                                            <th>DocType</th>
+                                            <th>Pending Count</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${data.queue_depth.map(q => `
+                                            <tr>
+                                                <td>${q.doctype}</td>
+                                                <td>
+                                                    <span class="badge badge-${q.pending_count > 100 ? 'danger' : q.pending_count > 50 ? 'warning' : 'info'}">
+                                                        ${q.pending_count}
+                                                    </span>
+                                                </td>
+                                            </tr>
+                                        `).join('')}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            ` : ''}
+        `;
+    }
+
     // Auto-refresh functionality
     start_auto_refresh() {
         if (this.auto_refresh) {
@@ -2588,26 +2983,23 @@ class XeroSyncDashboard {
             case 'sync-ops':
                 this.load_sync_operations();
                 break;
+            case 'last-sync':
+                this.load_last_sync_attempts();
+                break;
+            case 'logs':
+                this.load_logs_data(this.logs_start, this.logs_filters);
+                break;
+            case 'health-performance':
+                this.load_health_and_performance();
+                break;
+            case 'integrity':
+                this.load_data_integrity();
+                break;
             case 'analytics':
                 this.load_analytics();
                 break;
             case 'entities':
                 this.load_entity_status();
-                break;
-            case 'logs':
-                this.load_logs_data(this.logs_start, this.logs_filters);
-                break;
-            case 'health':
-                this.load_health_monitoring();
-                break;
-            case 'integrity':
-                this.load_data_integrity();
-                break;
-            case 'last-sync':
-                this.load_last_sync_attempts();
-                break;
-            case 'performance':
-                this.load_performance_metrics();
                 break;
             case 'config':
                 this.load_configuration();
