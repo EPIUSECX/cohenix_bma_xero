@@ -330,6 +330,8 @@ def sync_payments_from_xero(invoice_id=None):
 
 def process_xero_payment(xero_payment_data, settings):
     """Creates or updates an ERPNext Payment Entry from Xero payment data."""
+    from .xero_invoices import parse_xero_date
+    
     xero_payment_id = xero_payment_data.get("PaymentID")
     
     if not xero_payment_id:
@@ -390,7 +392,7 @@ def process_xero_payment(xero_payment_data, settings):
             "payment_type": payment_type,
             "party_type": party_type,
             "party": invoice_doc.customer if invoice_doctype == "Sales Invoice" else invoice_doc.supplier,
-            "posting_date": getdate(xero_payment_data.get("Date")),
+            "posting_date": parse_xero_date(xero_payment_data.get("Date")),
             "paid_amount": payment_amount,
             "received_amount": payment_amount,
             "paid_from": account if payment_type == "Pay" else invoice_doc.debit_to if invoice_doctype == "Sales Invoice" else invoice_doc.credit_to,

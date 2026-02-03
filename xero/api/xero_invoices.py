@@ -582,5 +582,365 @@ def create_payment_entry_for_xero_payment(invoice_doc, xero_invoice_data, settin
         # invoice_doc.db_set("status", "Paid") # Maybe don't do this on PE failure
 
 
+# --- Invoice Sync (Xero to ERPNext) ---
+
+def parse_xero_date(xero_date_string):
+    """
+    Parse Xero date format /Date(milliseconds+timezone)/ to Python date
+    Example: /Date(1769126400000+0000)/ → 2026-01-23
+    """
+    if not xero_date_string:
+        return None
+    
+    # Check if it's already in ISO format
+    if not xero_date_string.startswith("/Date("):
+        try:
+            return getdate(xero_date_string)
+        except:
+            return None
+    
+    # Extract milliseconds from /Date(milliseconds+timezone)/
+    import re
+    match = re.search(r'/Date\((\d+)', xero_date_string)
+    if match:
+        milliseconds = int(match.group(1))
+        # Convert milliseconds to seconds and create datetime
+        from datetime import datetime
+        dt = datetime.fromtimestamp(milliseconds / 1000.0)
+        return dt.date()
+    
+    return None
+
+
+def get_erpnext_account_from_xero_code(xero_account_code, settings=None):
+    """
+    Reverse lookup: Xero AccountCode → ERPNext Account
+    Returns ERPNext account name or None if not found
+    """
+    if not settings:
+        settings = get_xero_settings()
+    
+    # Get existing mapping (ERPNext → Xero)
+    account_map = settings.get_account_map()
+    
+    # Reverse lookup
+    for erpnext_account, xero_code in account_map.items():
+        if xero_code == xero_account_code:
+            return erpnext_account
+    
+    # Not found - log warning
+    log_xero_error(
+        message=f"No ERPNext account mapping found for Xero AccountCode: {xero_account_code}",
+        status="Warning",
+        category="Mapping Errors"
+    )
+    return None
+
+
+def get_erpnext_tax_from_xero_type(xero_tax_type, settings=None):
+    """
+    Reverse lookup: Xero TaxType → ERPNext Tax Template
+    Returns ERPNext tax template name or None if not found
+    """
+    if not xero_tax_type or xero_tax_type == "NONE":
+        return None
+    
+    if not settings:
+        settings = get_xero_settings()
+    
+    # Get existing mapping (ERPNext → Xero)
+    tax_map = settings.get_tax_map()
+    
+    # Reverse lookup
+    for erpnext_tax, xero_type in tax_map.items():
+        if xero_type == xero_tax_type:
+            return erpnext_tax
+    
+    # Not found - return None (will use no tax)
+    return None
+
+
+def get_or_create_item_from_xero_code(xero_item_code, description, settings=None):
+    """
+    Lookup ERPNext item by item_code
+    Returns item_code or None if not found
+    """
+    if not xero_item_code:
+        return None
+    
+    # Check if item exists
+    if frappe.db.exists("Item", xero_item_code):
+        return xero_item_code
+    
+    # Item doesn't exist - log info and return None (will use description only)
+    log_xero_error(
+        message=f"Item {xero_item_code} not found in ERPNext. Line will use description only.",
+        status="Info",
+        category="Mapping Errors"
+    )
+    return None
+
+
+def sync_invoices_from_xero(invoice_type=None, modified_since=None, status=None):
+    """
+    Fetches invoices from Xero and creates/updates corresponding
+    Sales/Purchase Invoices in ERPNext.
+    
+    Args:
+        invoice_type: "ACCREC" (Sales) or "ACCPAY" (Purchase) or None (both)
+        modified_since: ISO date string to fetch only recent invoices
+        status: Filter by status (DRAFT, AUTHORISED, PAID, etc.)
+    """
+    settings = get_xero_settings()
+    if not settings.enable_xero_sync: return
+    
+    # Check directional toggle for inbound sync
+    if not settings.enable_sync_from_xero:
+        log_xero_error(
+            message="Sync from Xero is disabled. Skipping invoices inbound sync.",
+            status="Info",
+            category="System Monitoring"
+        )
+        return
+    
+    if not settings.sync_invoices: return
+    
+    try:
+        page = 1
+        params = {"page": page}
+        
+        if invoice_type:
+            params["Type"] = invoice_type
+        if modified_since:
+            params["ModifiedSince"] = modified_since
+        if status:
+            params["Status"] = status
+        
+        while True:
+            frappe.logger().info(f"Fetching Xero Invoices page {page}", "Xero Sync")
+            response = xero_request("GET", "Invoices", params=params)
+            
+            if not response or not response.get("Invoices"):
+                break
+            
+            invoices = response["Invoices"]
+            if not invoices:
+                break
+            
+            for invoice_data in invoices:
+                try:
+                    process_xero_invoice(invoice_data, settings)
+                except Exception as e:
+                    log_xero_error(
+                        message=f"Failed to process Xero Invoice ID {invoice_data.get('InvoiceID')}",
+                        xero_entity_id=invoice_data.get('InvoiceID'),
+                        xero_entity_type="Invoice",
+                        error_details=frappe.get_traceback()
+                    )
+            
+            if len(invoices) < 100:
+                break
+            page += 1
+            params["page"] = page
+        
+        log_xero_error(message="Finished syncing invoices from Xero.", status="Info")
+    
+    except Exception as e:
+        log_xero_error(
+            message="Error during sync_invoices_from_xero",
+            error_details=frappe.get_traceback()
+        )
+
+
+def process_xero_invoice(xero_invoice_data, settings):
+    """
+    Creates or updates an ERPNext Sales/Purchase Invoice from Xero invoice data.
+    """
+    xero_invoice_id = xero_invoice_data.get("InvoiceID")
+    invoice_number = xero_invoice_data.get("InvoiceNumber")
+    invoice_type = xero_invoice_data.get("Type")  # ACCREC or ACCPAY
+    
+    if not xero_invoice_id or not invoice_type:
+        log_xero_error(message=f"Skipping Xero invoice due to missing ID or Type", status="Info")
+        return
+    
+    # Determine ERPNext DocType
+    erpnext_doctype = "Sales Invoice" if invoice_type == "ACCREC" else "Purchase Invoice"
+    
+    # Check if invoice already exists
+    erpnext_doc_name = frappe.db.get_value(erpnext_doctype, {"xero_invoice_id": xero_invoice_id}, "name")
+    
+    # Get contact information
+    xero_contact_id = xero_invoice_data.get("Contact", {}).get("ContactID")
+    if not xero_contact_id:
+        log_xero_error(message=f"Skipping Xero invoice {invoice_number}: No contact information", status="Info")
+        return
+    
+    # Find corresponding ERPNext customer/supplier
+    party_doctype = "Customer" if invoice_type == "ACCREC" else "Supplier"
+    party_name = frappe.db.get_value(party_doctype, {"xero_contact_id": xero_contact_id}, "name")
+    
+    if not party_name:
+        log_xero_error(
+            message=f"Skipping Xero invoice {invoice_number}: {party_doctype} not found for Xero Contact {xero_contact_id}. Please sync contacts first.",
+            status="Info",
+            xero_entity_id=xero_invoice_id,
+            xero_entity_type="Invoice"
+        )
+        return
+    
+    try:
+        # Get company - use default company
+        company = frappe.defaults.get_global_default("company")
+        if not company:
+            # Get first company
+            company = frappe.get_all("Company", limit=1, pluck="name")[0]
+        
+        # Map header fields
+        erpnext_data = {
+            "xero_invoice_id": xero_invoice_id,
+            "xero_sync_status": "Synced",
+            "company": company,
+            "posting_date": parse_xero_date(xero_invoice_data.get("Date")),
+            "due_date": parse_xero_date(xero_invoice_data.get("DueDate")),
+            "currency": xero_invoice_data.get("CurrencyCode", "USD"),
+            "conversion_rate": flt(xero_invoice_data.get("CurrencyRate", 1.0)),
+        }
+        
+        # Add party-specific fields
+        if erpnext_doctype == "Sales Invoice":
+            erpnext_data["customer"] = party_name
+            erpnext_data["customer_name"] = xero_invoice_data.get("Contact", {}).get("Name")
+            # Get default debit_to account
+            erpnext_data["debit_to"] = frappe.get_cached_value("Company", company, "default_receivable_account")
+        else:  # Purchase Invoice
+            erpnext_data["supplier"] = party_name
+            erpnext_data["supplier_name"] = xero_invoice_data.get("Contact", {}).get("Name")
+            # Get default credit_to account
+            erpnext_data["credit_to"] = frappe.get_cached_value("Company", company, "default_payable_account")
+        
+        # Map reference fields
+        reference = xero_invoice_data.get("Reference")
+        if reference:
+            if erpnext_doctype == "Sales Invoice":
+                erpnext_data["po_no"] = reference
+            else:
+                erpnext_data["bill_no"] = reference
+        
+        # Map status - always create as Draft for safety
+        xero_status = xero_invoice_data.get("Status", "DRAFT")
+        erpnext_data["docstatus"] = 0  # Always create as Draft
+        
+        # Store Xero invoice number in remarks field (title doesn't exist on Sales/Purchase Invoice)
+        if invoice_number:
+            erpnext_data["remarks"] = f"Xero Invoice: {invoice_number}"
+        
+        # Create or update invoice
+        if erpnext_doc_name:
+            # Update existing invoice
+            doc = frappe.get_doc(erpnext_doctype, erpnext_doc_name)
+            doc.update(erpnext_data)
+            doc.save(ignore_permissions=True)
+            log_message = f"Updated {erpnext_doctype} {erpnext_doc_name} from Xero Invoice {xero_invoice_id}"
+        else:
+            # Create new invoice
+            doc = frappe.new_doc(erpnext_doctype)
+            doc.update(erpnext_data)
+            
+            # Add line items
+            line_items = xero_invoice_data.get("LineItems", [])
+            for line in line_items:
+                # Get item code if available
+                item_code = get_or_create_item_from_xero_code(line.get("ItemCode"), line.get("Description"), settings)
+                
+                # Get account mapping
+                account = get_erpnext_account_from_xero_code(line.get("AccountCode"), settings)
+                
+                if not account:
+                    # Skip line if account not mapped
+                    log_xero_error(
+                        message=f"Skipping line item in invoice {invoice_number}: No account mapping for Xero AccountCode {line.get('AccountCode')}",
+                        status="Warning",
+                        xero_entity_id=xero_invoice_id,
+                        xero_entity_type="Invoice"
+                    )
+                    continue
+                
+                # Build line item dict
+                item_dict = {
+                    "description": line.get("Description", "Item from Xero"),
+                    "qty": flt(line.get("Quantity", 1)),
+                    "rate": flt(line.get("UnitAmount", 0)),
+                    "amount": flt(line.get("LineAmount", 0)),
+                }
+                
+                # Add item code if found
+                if item_code:
+                    item_dict["item_code"] = item_code
+                    item_dict["item_name"] = line.get("Description")
+                else:
+                    # Use description as item_name when no item_code
+                    item_dict["item_name"] = line.get("Description", "Xero Item")
+                
+                # Add account
+                if erpnext_doctype == "Sales Invoice":
+                    item_dict["income_account"] = account
+                else:
+                    item_dict["expense_account"] = account
+                
+                # Add tax template if mapped
+                tax_template = get_erpnext_tax_from_xero_type(line.get("TaxType"), settings)
+                if tax_template:
+                    item_dict["item_tax_template"] = tax_template
+                
+                # Add discount if present
+                discount_rate = flt(line.get("DiscountRate", 0))
+                if discount_rate > 0:
+                    item_dict["discount_percentage"] = discount_rate
+                
+                doc.append("items", item_dict)
+            
+            # Check if we have at least one line item
+            if not doc.items:
+                log_xero_error(
+                    message=f"Skipping Xero invoice {invoice_number}: No valid line items (all skipped due to missing account mappings)",
+                    status="Warning",
+                    xero_entity_id=xero_invoice_id,
+                    xero_entity_type="Invoice"
+                )
+                return
+            
+            doc.insert(ignore_permissions=True)
+            erpnext_doc_name = doc.name
+            log_message = f"Created {erpnext_doctype} {erpnext_doc_name} from Xero Invoice {xero_invoice_id} ({invoice_number})"
+        
+        frappe.db.commit()
+        log_xero_error(
+            message=log_message,
+            status="Success",
+            erpnext_doc_type=erpnext_doctype,
+            erpnext_doc_name=erpnext_doc_name,
+            xero_entity_id=xero_invoice_id,
+            xero_entity_type="Invoice",
+            direction="Xero to ERPNext"
+        )
+    
+    except Exception as e:
+        sync_status = "Error"
+        if erpnext_doc_name:
+            frappe.db.set_value(erpnext_doctype, erpnext_doc_name, "xero_sync_status", sync_status, update_modified=False)
+            frappe.db.commit()
+        
+        log_xero_error(
+            message=f"Failed to sync Xero Invoice {xero_invoice_id} ({invoice_number}) to ERPNext",
+            erpnext_doc_type=erpnext_doctype if 'erpnext_doctype' in locals() else None,
+            erpnext_doc_name=erpnext_doc_name if 'erpnext_doc_name' in locals() else None,
+            xero_entity_id=xero_invoice_id,
+            xero_entity_type="Invoice",
+            direction="Xero to ERPNext",
+            error_details=frappe.get_traceback()
+        )
+
+
 # TODO: Implement Journal Entry sync
 # TODO: Implement Credit Note sync

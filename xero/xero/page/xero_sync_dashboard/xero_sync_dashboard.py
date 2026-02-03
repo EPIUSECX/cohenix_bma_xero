@@ -1483,3 +1483,107 @@ def get_sync_performance_metrics():
     except Exception as e:
         frappe.log_error(frappe.get_traceback(), "Get Sync Performance Metrics Error")
         return {"error": str(e)}
+
+@frappe.whitelist()
+def get_last_sync_attempts():
+    """Get detailed breakdown of last sync attempts with item-level status"""
+    try:
+        from datetime import datetime, timedelta
+        
+        # Get sync attempts from the last 7 days
+        seven_days_ago = add_days(now_datetime(), -7)
+        
+        # Group logs by timestamp (rounded to nearest minute) to identify sync batches
+        sync_batches = frappe.db.sql("""
+            SELECT
+                DATE_FORMAT(timestamp, '%%Y-%%m-%%d %%H:%%i:00') as sync_time,
+                direction,
+                COUNT(*) as item_count,
+                SUM(CASE WHEN status = 'Success' THEN 1 ELSE 0 END) as success_count,
+                SUM(CASE WHEN status = 'Error' THEN 1 ELSE 0 END) as error_count,
+                SUM(CASE WHEN status = 'Info' THEN 1 ELSE 0 END) as in_progress_count,
+                GROUP_CONCAT(DISTINCT erpnext_doc_type ORDER BY erpnext_doc_type SEPARATOR ', ') as entities_synced,
+                MIN(timestamp) as start_time,
+                MAX(timestamp) as end_time,
+                TIMESTAMPDIFF(SECOND, MIN(timestamp), MAX(timestamp)) as duration
+            FROM `tabXero Log`
+            WHERE timestamp >= %s
+            AND erpnext_doc_type IS NOT NULL
+            AND erpnext_doc_type != 'Unknown'
+            GROUP BY DATE_FORMAT(timestamp, '%%Y-%%m-%%d %%H:%%i:00'), direction
+            ORDER BY sync_time DESC
+            LIMIT 20
+        """, (seven_days_ago,), as_dict=True)
+        
+        # For each sync batch, get detailed item-level information
+        sync_attempts = []
+        for batch in sync_batches:
+            # Get all log entries for this sync batch
+            items = frappe.db.sql("""
+                SELECT
+                    name as log_name,
+                    status,
+                    message,
+                    erpnext_doc_type,
+                    erpnext_doc_name,
+                    xero_entity_id,
+                    timestamp,
+                    error_details,
+                    processing_time
+                FROM `tabXero Log`
+                WHERE DATE_FORMAT(timestamp, '%%Y-%%m-%%d %%H:%%i:00') = %s
+                AND direction = %s
+                AND erpnext_doc_type IS NOT NULL
+                AND erpnext_doc_type != 'Unknown'
+                ORDER BY timestamp ASC
+            """, (batch.sync_time, batch.direction), as_dict=True)
+            
+            # Determine overall status for this sync attempt
+            if batch.error_count > 0 and batch.success_count > 0:
+                overall_status = "Partial Success"
+            elif batch.error_count > 0:
+                overall_status = "Failed"
+            elif batch.in_progress_count > 0:
+                overall_status = "In Progress"
+            else:
+                overall_status = "Success"
+            
+            # Parse entities synced
+            entities_list = batch.entities_synced.split(', ') if batch.entities_synced else []
+            
+            sync_attempts.append({
+                "sync_time": batch.sync_time,
+                "sync_direction": batch.direction or "Unknown",
+                "overall_status": overall_status,
+                "entities_synced": entities_list,
+                "success_count": batch.success_count,
+                "error_count": batch.error_count,
+                "in_progress_count": batch.in_progress_count,
+                "duration": batch.duration,
+                "items": items
+            })
+        
+        # Calculate summary statistics
+        total_attempts = len(sync_attempts)
+        successful_attempts = len([a for a in sync_attempts if a['overall_status'] == 'Success'])
+        failed_attempts = len([a for a in sync_attempts if a['overall_status'] == 'Failed'])
+        in_progress_attempts = len([a for a in sync_attempts if a['overall_status'] == 'In Progress'])
+        
+        return {
+            "sync_attempts": sync_attempts,
+            "total_attempts": total_attempts,
+            "successful_attempts": successful_attempts,
+            "failed_attempts": failed_attempts,
+            "in_progress_attempts": in_progress_attempts
+        }
+        
+    except Exception as e:
+        frappe.log_error(frappe.get_traceback(), "Get Last Sync Attempts Error")
+        return {
+            "error": str(e),
+            "sync_attempts": [],
+            "total_attempts": 0,
+            "successful_attempts": 0,
+            "failed_attempts": 0,
+            "in_progress_attempts": 0
+        }

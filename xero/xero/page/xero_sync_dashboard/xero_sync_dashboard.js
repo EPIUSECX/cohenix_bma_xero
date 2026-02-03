@@ -522,6 +522,11 @@ class XeroSyncDashboard {
                             </a>
                         </li>
                         <li class="nav-item">
+                            <a class="nav-link" data-tab="last-sync" href="#last-sync">
+                                <i class="fa fa-history"></i> Last Sync Attempts
+                            </a>
+                        </li>
+                        <li class="nav-item">
                             <a class="nav-link" data-tab="performance" href="#performance">
                                 <i class="fa fa-tachometer-alt"></i> Performance
                             </a>
@@ -543,6 +548,7 @@ class XeroSyncDashboard {
                     <div id="logs" class="tab-content"></div>
                     <div id="health" class="tab-content"></div>
                     <div id="integrity" class="tab-content"></div>
+                    <div id="last-sync" class="tab-content"></div>
                     <div id="performance" class="tab-content"></div>
                     <div id="config" class="tab-content"></div>
                     
@@ -599,6 +605,9 @@ class XeroSyncDashboard {
                 break;
             case 'integrity':
                 this.load_data_integrity();
+                break;
+            case 'last-sync':
+                this.load_last_sync_attempts();
                 break;
             case 'performance':
                 this.load_performance_metrics();
@@ -2166,6 +2175,204 @@ class XeroSyncDashboard {
         $(this.wrapper).find('#integrity').html(integrity_html);
     }
 
+    // Last Sync Attempts Tab
+    load_last_sync_attempts() {
+        this.show_loading();
+        frappe.call({
+            method: 'xero.xero.page.xero_sync_dashboard.xero_sync_dashboard.get_last_sync_attempts',
+            callback: (r) => {
+                this.hide_loading();
+                if (r.message && !r.message.error) {
+                    this.render_last_sync_attempts(r.message);
+                } else {
+                    this.show_error('Failed to load last sync attempts', r.message?.error);
+                }
+            }
+        });
+    }
+
+    render_last_sync_attempts(data) {
+        const last_sync_html = `
+            <div class="row">
+                <!-- Summary Card -->
+                <div class="col-md-12 mb-4">
+                    <div class="card">
+                        <div class="card-header bg-primary text-white">
+                            <h5 class="mb-0"><i class="fa fa-history"></i> Last Sync Attempt Overview</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="row text-center">
+                                <div class="col-md-3">
+                                    <h4 class="text-primary">${data.total_attempts || 0}</h4>
+                                    <p class="text-muted">Total Sync Attempts</p>
+                                </div>
+                                <div class="col-md-3">
+                                    <h4 class="text-success">${data.successful_attempts || 0}</h4>
+                                    <p class="text-muted">Successful</p>
+                                </div>
+                                <div class="col-md-3">
+                                    <h4 class="text-danger">${data.failed_attempts || 0}</h4>
+                                    <p class="text-muted">Failed</p>
+                                </div>
+                                <div class="col-md-3">
+                                    <h4 class="text-warning">${data.in_progress_attempts || 0}</h4>
+                                    <p class="text-muted">In Progress</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Sync Attempts List -->
+                <div class="col-md-12">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="mb-0"><i class="fa fa-list"></i> Recent Sync Attempts</h5>
+                        </div>
+                        <div class="card-body">
+                            ${data.sync_attempts && data.sync_attempts.length > 0 ?
+                                data.sync_attempts.map(attempt => `
+                                    <div class="card mb-3 border-${this.get_sync_attempt_color(attempt.overall_status)}">
+                                        <div class="card-header bg-${this.get_sync_attempt_color(attempt.overall_status)} text-white">
+                                            <div class="row align-items-center">
+                                                <div class="col-md-6">
+                                                    <h6 class="mb-0">
+                                                        <i class="fa fa-${this.get_sync_direction_icon(attempt.sync_direction)}"></i>
+                                                        ${attempt.sync_direction}
+                                                    </h6>
+                                                </div>
+                                                <div class="col-md-3">
+                                                    <small>${frappe.datetime.str_to_user(attempt.sync_time)}</small>
+                                                </div>
+                                                <div class="col-md-3 text-right">
+                                                    <span class="badge badge-light text-${this.get_sync_attempt_color(attempt.overall_status)}">
+                                                        ${attempt.overall_status}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="card-body">
+                                            <div class="row mb-3">
+                                                <div class="col-md-12">
+                                                    <strong>Entities Synced:</strong>
+                                                    <div class="mt-2">
+                                                        ${attempt.entities_synced.map(entity => `
+                                                            <span class="badge badge-info mr-1 mb-1">${entity}</span>
+                                                        `).join('')}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            
+                                            <!-- Detailed Item Status -->
+                                            <div class="table-responsive">
+                                                <table class="table table-sm table-bordered">
+                                                    <thead class="thead-light">
+                                                        <tr>
+                                                            <th>Entity Type</th>
+                                                            <th>Document Name</th>
+                                                            <th>Status</th>
+                                                            <th>Error Message</th>
+                                                            <th>Timestamp</th>
+                                                            <th>Actions</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        ${attempt.items && attempt.items.length > 0 ?
+                                                            attempt.items.map(item => `
+                                                                <tr class="${item.status === 'Error' ? 'table-danger' : item.status === 'Success' ? 'table-success' : ''}">
+                                                                    <td>${item.erpnext_doc_type || '-'}</td>
+                                                                    <td>
+                                                                        ${item.erpnext_doc_name ?
+                                                                            `<a href="/app/${(item.erpnext_doc_type || '').toLowerCase().replace(/ /g, '-')}/${item.erpnext_doc_name}" target="_blank">
+                                                                                ${item.erpnext_doc_name}
+                                                                            </a>` :
+                                                                            '-'
+                                                                        }
+                                                                    </td>
+                                                                    <td>
+                                                                        <span class="badge badge-${this.get_status_color(item.status)}">
+                                                                            ${item.status}
+                                                                        </span>
+                                                                    </td>
+                                                                    <td class="text-truncate" style="max-width: 300px;" title="${item.message || ''}">
+                                                                        ${item.status === 'Error' ? (item.message || 'No error message') : '-'}
+                                                                    </td>
+                                                                    <td>
+                                                                        <small>${frappe.datetime.comment_when(item.timestamp)}</small>
+                                                                    </td>
+                                                                    <td>
+                                                                        ${item.status === 'Error' && item.log_name ?
+                                                                            `<button class="btn btn-xs btn-outline-warning" onclick="dashboard.retry_job('${item.log_name}')">
+                                                                                <i class="fa fa-redo"></i> Retry
+                                                                            </button>` :
+                                                                            ''
+                                                                        }
+                                                                        ${item.log_name ?
+                                                                            `<button class="btn btn-xs btn-outline-info ml-1" onclick="dashboard.view_log_details('${item.log_name}')">
+                                                                                <i class="fa fa-eye"></i>
+                                                                            </button>` :
+                                                                            ''
+                                                                        }
+                                                                    </td>
+                                                                </tr>
+                                                            `).join('') :
+                                                            '<tr><td colspan="6" class="text-center text-muted">No items in this sync attempt</td></tr>'
+                                                        }
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                            
+                                            <!-- Summary Stats for this attempt -->
+                                            <div class="row mt-3">
+                                                <div class="col-md-12">
+                                                    <div class="d-flex justify-content-between align-items-center">
+                                                        <div>
+                                                            <strong>Summary:</strong>
+                                                            <span class="badge badge-success ml-2">${attempt.success_count || 0} Success</span>
+                                                            <span class="badge badge-danger ml-2">${attempt.error_count || 0} Failed</span>
+                                                            <span class="badge badge-warning ml-2">${attempt.in_progress_count || 0} In Progress</span>
+                                                        </div>
+                                                        <div>
+                                                            <small class="text-muted">
+                                                                Duration: ${attempt.duration ? `${attempt.duration}s` : 'N/A'}
+                                                            </small>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                `).join('') :
+                                '<div class="alert alert-info">No sync attempts found in the last 7 days.</div>'
+                            }
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        $(this.wrapper).find('#last-sync').html(last_sync_html);
+    }
+
+    get_sync_attempt_color(status) {
+        const colors = {
+            'Success': 'success',
+            'Failed': 'danger',
+            'In Progress': 'warning',
+            'Partial Success': 'warning'
+        };
+        return colors[status] || 'secondary';
+    }
+
+    get_sync_direction_icon(direction) {
+        if (direction && direction.includes('→')) {
+            if (direction.includes('ERPNext → Xero')) return 'arrow-right';
+            if (direction.includes('Xero → ERPNext')) return 'arrow-left';
+            if (direction.includes('Both')) return 'exchange-alt';
+        }
+        return 'sync';
+    }
+
     // Performance Metrics Tab
     load_performance_metrics() {
         this.show_loading();
@@ -2395,6 +2602,9 @@ class XeroSyncDashboard {
                 break;
             case 'integrity':
                 this.load_data_integrity();
+                break;
+            case 'last-sync':
+                this.load_last_sync_attempts();
                 break;
             case 'performance':
                 this.load_performance_metrics();
