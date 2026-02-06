@@ -407,8 +407,15 @@ class XeroSyncDashboard {
             .icon-sync-accounts { background: var(--xero-success); }
             .icon-sync-contacts { background: var(--xero-info); }
             .icon-sync-items { background: var(--xero-warning); }
-            .icon-sync-payments { background: var(--xero-primary); }
+            .icon-sync-invoices { background: var(--xero-primary); }
+            .icon-sync-credit-notes { background: #E74C3C; }
+            .icon-sync-payments { background: var(--xero-success); }
             .icon-sync-bank-transactions { background: var(--xero-dark); }
+            .icon-sync-quotes { background: #9B59B6; }
+            .icon-sync-sales-orders { background: #3498DB; }
+            .icon-sync-purchase-orders { background: #E67E22; }
+            .icon-sync-manual-journals { background: var(--xero-warning); }
+            .icon-sync-tracking-categories { background: #16A085; }
 
             /* Table and other elements theme support */
             .table {
@@ -847,8 +854,15 @@ class XeroSyncDashboard {
                                         { name: 'Sync Xero Accounts', icon: 'fa-list', class: 'icon-sync-accounts' },
                                         { name: 'Sync Xero Contacts', icon: 'fa-users', class: 'icon-sync-contacts' },
                                         { name: 'Sync Xero Items', icon: 'fa-cubes', class: 'icon-sync-items' },
-                                        { name: 'Sync Xero Payments', icon: 'fa-money', class: 'icon-sync-payments' },
-                                        { name: 'Sync Xero Bank Transactions', icon: 'fa-exchange', class: 'icon-sync-bank-transactions' }
+                                        { name: 'Sync Xero Invoices', icon: 'fa-file-invoice', class: 'icon-sync-invoices' },
+                                        { name: 'Sync Xero Credit Notes', icon: 'fa-file-invoice-dollar', class: 'icon-sync-credit-notes' },
+                                        { name: 'Sync Xero Payments', icon: 'fa-money-bill-wave', class: 'icon-sync-payments' },
+                                        { name: 'Sync Xero Bank Transactions', icon: 'fa-exchange-alt', class: 'icon-sync-bank-transactions' },
+                                        { name: 'Sync Xero Quotes', icon: 'fa-quote-left', class: 'icon-sync-quotes' },
+                                        { name: 'Sync Xero Sales Orders', icon: 'fa-shopping-cart', class: 'icon-sync-sales-orders' },
+                                        { name: 'Sync Xero Purchase Orders', icon: 'fa-shopping-bag', class: 'icon-sync-purchase-orders' },
+                                        { name: 'Sync Xero Manual Journals', icon: 'fa-book', class: 'icon-sync-manual-journals' },
+                                        { name: 'Sync Xero Tracking Categories', icon: 'fa-tags', class: 'icon-sync-tracking-categories' }
                                     ], sync_from_xero_enabled)}
                                 </div>
                             </div>
@@ -1610,21 +1624,29 @@ class XeroSyncDashboard {
                         </div>
                         <div class="card-body">
                             <div class="row text-center">
-                                <div class="col-md-3">
+                                <div class="col-md-2">
                                     <h4 class="text-primary">${data.total_attempts || 0}</h4>
-                                    <p class="text-muted">Total Sync Attempts</p>
+                                    <p class="text-muted">Total Attempts</p>
                                 </div>
-                                <div class="col-md-3">
+                                <div class="col-md-2">
                                     <h4 class="text-success">${data.successful_attempts || 0}</h4>
                                     <p class="text-muted">Successful</p>
                                 </div>
-                                <div class="col-md-3">
+                                <div class="col-md-2">
                                     <h4 class="text-danger">${data.failed_attempts || 0}</h4>
                                     <p class="text-muted">Failed</p>
                                 </div>
-                                <div class="col-md-3">
+                                <div class="col-md-2">
                                     <h4 class="text-warning">${data.partial_success_attempts || 0}</h4>
                                     <p class="text-muted">Partial Success</p>
+                                </div>
+                                <div class="col-md-2">
+                                    <h4 class="text-warning">${data.warning_only_attempts || 0}</h4>
+                                    <p class="text-muted">Warnings Only</p>
+                                </div>
+                                <div class="col-md-2">
+                                    <h4 class="text-info">${data.success_with_warnings_attempts || 0}</h4>
+                                    <p class="text-muted">With Warnings</p>
                                 </div>
                             </div>
                         </div>
@@ -1670,6 +1692,72 @@ class XeroSyncDashboard {
                                                     </div>
                                                 </div>
                                             </div>
+                                            
+                                            <!-- Sync Issues Summary -->
+                                            ${attempt.failure_summary && attempt.failure_summary.length > 0 ? `
+                                                <div class="row mb-3">
+                                                    <div class="col-md-12">
+                                                        <div class="alert alert-warning mb-0">
+                                                            <h6 class="mb-2"><i class="fa fa-exclamation-triangle"></i> Sync Issues Detected</h6>
+                                                            <div class="table-responsive">
+                                                                <table class="table table-sm table-bordered mb-0">
+                                                                    <thead class="thead-light">
+                                                                        <tr>
+                                                                            <th>Issue Type</th>
+                                                                            <th>Count</th>
+                                                                            <th>Affected Documents</th>
+                                                                            <th>Example Message</th>
+                                                                        </tr>
+                                                                    </thead>
+                                                                    <tbody>
+                                                                        ${attempt.failure_summary.map(failure => `
+                                                                            <tr>
+                                                                                <td><strong>${failure.failure_category}</strong></td>
+                                                                                <td><span class="badge badge-warning">${failure.count}</span></td>
+                                                                                <td class="text-truncate" style="max-width: 200px;" title="${failure.affected_docs || ''}">
+                                                                                    <small>${failure.affected_docs || '-'}</small>
+                                                                                </td>
+                                                                                <td class="text-truncate" style="max-width: 300px;" title="${failure.example_message || ''}">
+                                                                                    <small>${failure.example_message || '-'}</small>
+                                                                                </td>
+                                                                            </tr>
+                                                                        `).join('')}
+                                                                    </tbody>
+                                                                </table>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            ` : ''}
+                                            
+                                            <!-- Actionable Recommendations -->
+                                            ${attempt.actionable_recommendations && attempt.actionable_recommendations.length > 0 ? `
+                                                <div class="row mb-3">
+                                                    <div class="col-md-12">
+                                                        <h6 class="mb-2"><i class="fa fa-lightbulb"></i> Recommended Actions</h6>
+                                                        ${attempt.actionable_recommendations.map(rec => `
+                                                            <div class="alert alert-${rec.severity === 'high' ? 'danger' : rec.severity === 'medium' ? 'warning' : 'info'} mb-2">
+                                                                <div class="d-flex align-items-start">
+                                                                    <div class="mr-3">
+                                                                        <i class="fa ${rec.icon} fa-2x"></i>
+                                                                    </div>
+                                                                    <div class="flex-grow-1">
+                                                                        <h6 class="mb-1">${rec.title}</h6>
+                                                                        <p class="mb-1">${rec.message}</p>
+                                                                        <p class="mb-2"><strong>Action:</strong> ${rec.action}</p>
+                                                                        ${rec.action_button ? `
+                                                                            <button class="btn btn-sm btn-outline-${rec.severity === 'high' ? 'danger' : 'warning'}" 
+                                                                                    onclick="${rec.action_button.route ? `frappe.set_route('${rec.action_button.route}')` : `dashboard.trigger_sync('${rec.action_button.entity}')`}">
+                                                                                ${rec.action_button.label}
+                                                                            </button>
+                                                                        ` : ''}
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        `).join('')}
+                                                    </div>
+                                                </div>
+                                            ` : ''}
                                             
                                             <!-- Detailed Item Status -->
                                             <div class="table-responsive">
@@ -1738,6 +1826,8 @@ class XeroSyncDashboard {
                                                         <strong>Summary:</strong>
                                                         <span class="badge badge-success ml-2">${attempt.success_count || 0} Success</span>
                                                         <span class="badge badge-danger ml-2">${attempt.error_count || 0} Failed</span>
+                                                        <span class="badge badge-warning ml-2">${attempt.warning_count || 0} Warnings</span>
+                                                        ${attempt.skipped_count > 0 ? `<span class="badge badge-secondary ml-2">${attempt.skipped_count} Skipped</span>` : ''}
                                                         </div>
                                                         <div>
                                                             <small class="text-muted">
@@ -1765,7 +1855,9 @@ class XeroSyncDashboard {
         const colors = {
             'Success': 'success',
             'Failed': 'danger',
-            'Partial Success': 'warning'
+            'Partial Success': 'warning',
+            'Warnings Only': 'warning',
+            'Success with Warnings': 'info'
         };
         return colors[status] || 'secondary';
     }
