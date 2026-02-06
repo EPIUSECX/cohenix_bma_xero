@@ -932,13 +932,40 @@ def sync_all_entities():
                 "error": "Xero sync is disabled in settings"
             }
         
+        # Check directional sync settings once to avoid redundant error messages
+        sync_to_xero_enabled = settings.enable_sync_to_xero
+        sync_from_xero_enabled = settings.enable_sync_from_xero
+        
+        # Show single notification if a direction is disabled
+        if not sync_to_xero_enabled:
+            frappe.msgprint(
+                _("Sync to Xero (ERPNext → Xero) is disabled. Only inbound syncs will be attempted."),
+                title=_("Sync Direction Disabled"),
+                indicator="orange"
+            )
+        
+        if not sync_from_xero_enabled:
+            frappe.msgprint(
+                _("Sync from Xero (Xero → ERPNext) is disabled. Only outbound syncs will be attempted."),
+                title=_("Sync Direction Disabled"),
+                indicator="orange"
+            )
+        
+        # All entities are ERPNext → Xero (outbound) syncs
         entities = [
             "Sales Invoice", "Purchase Invoice", "Payment Entry",
             "Customer", "Supplier", "Item"
         ]
         
         job_count = 0
+        skipped_count = 0
+        
         for entity in entities:
+            # Skip if sync to Xero is disabled (all these entities are outbound)
+            if not sync_to_xero_enabled:
+                skipped_count += 1
+                continue
+            
             try:
                 result = trigger_manual_sync(entity)
                 if result.get('success'):
@@ -947,10 +974,15 @@ def sync_all_entities():
                 frappe.log_error(f"Failed to trigger sync for {entity}: {str(e)}")
                 continue
         
+        message = f"Queued {job_count} sync jobs"
+        if skipped_count > 0:
+            message += f" ({skipped_count} skipped due to disabled sync direction)"
+        
         return {
             "success": True,
             "jobs_queued": job_count,
-            "message": f"Queued {job_count} sync jobs"
+            "skipped_count": skipped_count,
+            "message": message
         }
         
     except Exception as e:
@@ -1494,6 +1526,8 @@ def get_last_sync_attempts():
         seven_days_ago = add_days(now_datetime(), -7)
         
         # Group logs by timestamp (rounded to nearest minute) to identify sync batches
+        # Exclude 'Info' status logs as they are informational, not actual sync operations
+        # Filter out trigger messages and disabled sync messages to avoid empty sync attempts
         sync_batches = frappe.db.sql("""
             SELECT
                 DATE_FORMAT(timestamp, '%%Y-%%m-%%d %%H:%%i:00') as sync_time,
@@ -1501,7 +1535,6 @@ def get_last_sync_attempts():
                 COUNT(*) as item_count,
                 SUM(CASE WHEN status = 'Success' THEN 1 ELSE 0 END) as success_count,
                 SUM(CASE WHEN status = 'Error' THEN 1 ELSE 0 END) as error_count,
-                SUM(CASE WHEN status = 'Info' THEN 1 ELSE 0 END) as in_progress_count,
                 GROUP_CONCAT(DISTINCT erpnext_doc_type ORDER BY erpnext_doc_type SEPARATOR ', ') as entities_synced,
                 MIN(timestamp) as start_time,
                 MAX(timestamp) as end_time,
@@ -1510,7 +1543,12 @@ def get_last_sync_attempts():
             WHERE timestamp >= %s
             AND erpnext_doc_type IS NOT NULL
             AND erpnext_doc_type != 'Unknown'
+            AND status IN ('Success', 'Error', 'Warning')
+            AND message NOT LIKE '%%Manual sync triggered%%'
+            AND message NOT LIKE '%%sync is disabled%%'
+            AND message NOT LIKE '%%Skipping%%'
             GROUP BY DATE_FORMAT(timestamp, '%%Y-%%m-%%d %%H:%%i:00'), direction
+            HAVING item_count > 0
             ORDER BY sync_time DESC
             LIMIT 20
         """, (seven_days_ago,), as_dict=True)
@@ -1539,12 +1577,11 @@ def get_last_sync_attempts():
             """, (batch.sync_time, batch.direction), as_dict=True)
             
             # Determine overall status for this sync attempt
+            # Removed "In Progress" status - we only show completed sync operations
             if batch.error_count > 0 and batch.success_count > 0:
                 overall_status = "Partial Success"
             elif batch.error_count > 0:
                 overall_status = "Failed"
-            elif batch.in_progress_count > 0:
-                overall_status = "In Progress"
             else:
                 overall_status = "Success"
             
@@ -1558,7 +1595,6 @@ def get_last_sync_attempts():
                 "entities_synced": entities_list,
                 "success_count": batch.success_count,
                 "error_count": batch.error_count,
-                "in_progress_count": batch.in_progress_count,
                 "duration": batch.duration,
                 "items": items
             })
@@ -1567,14 +1603,15 @@ def get_last_sync_attempts():
         total_attempts = len(sync_attempts)
         successful_attempts = len([a for a in sync_attempts if a['overall_status'] == 'Success'])
         failed_attempts = len([a for a in sync_attempts if a['overall_status'] == 'Failed'])
-        in_progress_attempts = len([a for a in sync_attempts if a['overall_status'] == 'In Progress'])
+        partial_success_attempts = len([a for a in sync_attempts if a['overall_status'] == 'Partial Success'])
         
         return {
             "sync_attempts": sync_attempts,
             "total_attempts": total_attempts,
             "successful_attempts": successful_attempts,
             "failed_attempts": failed_attempts,
-            "in_progress_attempts": in_progress_attempts
+            "partial_success_attempts": partial_success_attempts,
+            "in_progress_attempts": 0  # Always 0 since we don't show in-progress syncs
         }
         
     except Exception as e:

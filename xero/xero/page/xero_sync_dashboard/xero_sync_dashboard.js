@@ -1623,8 +1623,8 @@ class XeroSyncDashboard {
                                     <p class="text-muted">Failed</p>
                                 </div>
                                 <div class="col-md-3">
-                                    <h4 class="text-warning">${data.in_progress_attempts || 0}</h4>
-                                    <p class="text-muted">In Progress</p>
+                                    <h4 class="text-warning">${data.partial_success_attempts || 0}</h4>
+                                    <p class="text-muted">Partial Success</p>
                                 </div>
                             </div>
                         </div>
@@ -1735,10 +1735,9 @@ class XeroSyncDashboard {
                                                 <div class="col-md-12">
                                                     <div class="d-flex justify-content-between align-items-center">
                                                         <div>
-                                                            <strong>Summary:</strong>
-                                                            <span class="badge badge-success ml-2">${attempt.success_count || 0} Success</span>
-                                                            <span class="badge badge-danger ml-2">${attempt.error_count || 0} Failed</span>
-                                                            <span class="badge badge-warning ml-2">${attempt.in_progress_count || 0} In Progress</span>
+                                                        <strong>Summary:</strong>
+                                                        <span class="badge badge-success ml-2">${attempt.success_count || 0} Success</span>
+                                                        <span class="badge badge-danger ml-2">${attempt.error_count || 0} Failed</span>
                                                         </div>
                                                         <div>
                                                             <small class="text-muted">
@@ -1766,7 +1765,6 @@ class XeroSyncDashboard {
         const colors = {
             'Success': 'success',
             'Failed': 'danger',
-            'In Progress': 'warning',
             'Partial Success': 'warning'
         };
         return colors[status] || 'secondary';
