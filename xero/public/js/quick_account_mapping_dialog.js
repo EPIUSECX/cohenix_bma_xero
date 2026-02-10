@@ -186,7 +186,7 @@ class QuickAccountMappingDialog {
 
         // Call backend API
         frappe.call({
-            method: 'xero.xero.doctype.xero_settings.xero_settings.XeroSettings.quick_map_accounts',
+            method: 'xero.xero.doctype.xero_settings.xero_settings.quick_map_accounts',
             args: {
                 mappings: JSON.stringify(mappings),
                 auto_retry: auto_retry

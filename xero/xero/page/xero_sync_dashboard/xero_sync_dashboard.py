@@ -1849,13 +1849,17 @@ def get_unmapped_accounts_from_errors(days=7):
                 SUBSTRING_INDEX(SUBSTRING_INDEX(message, 'AccountCode ', -1), ' ', 1) as account_code,
                 COUNT(*) as error_count
             FROM `tabXero Log`
-            WHERE (message LIKE '%No account mapping%'
-                   OR message LIKE '%Account Code mapping not found%')
-            AND timestamp >= %s
+            WHERE (message LIKE %(pattern1)s
+                   OR message LIKE %(pattern2)s)
+            AND timestamp >= %(cutoff_date)s
             AND status IN ('Warning', 'Error')
             GROUP BY account_code
             ORDER BY error_count DESC
-        """, (cutoff_date,), as_dict=True)
+        """, {
+            "pattern1": "%No account mapping%",
+            "pattern2": "%Account Code mapping not found%",
+            "cutoff_date": cutoff_date
+        }, as_dict=True)
         
         unmapped_accounts = []
         settings = frappe.get_single("Xero Settings")
