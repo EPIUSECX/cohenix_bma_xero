@@ -612,7 +612,7 @@ def parse_xero_date(xero_date_string):
     return None
 
 
-def get_erpnext_account_from_xero_code(xero_account_code, settings=None):
+def get_erpnext_account_from_xero_code(xero_account_code, settings=None, erpnext_doc_type=None):
     """
     Reverse lookup: Xero AccountCode → ERPNext Account
     Returns ERPNext account name or None if not found
@@ -632,7 +632,10 @@ def get_erpnext_account_from_xero_code(xero_account_code, settings=None):
     log_xero_error(
         message=f"No ERPNext account mapping found for Xero AccountCode: {xero_account_code}",
         status="Warning",
-        category="Mapping Errors"
+        category="Mapping Errors",
+        xero_entity_type="Invoice",
+        erpnext_doc_type=erpnext_doc_type,
+        direction="Xero to ERPNext"
     )
     return None
 
@@ -854,7 +857,7 @@ def process_xero_invoice(xero_invoice_data, settings):
                 item_code = get_or_create_item_from_xero_code(line.get("ItemCode"), line.get("Description"), settings)
                 
                 # Get account mapping
-                account = get_erpnext_account_from_xero_code(line.get("AccountCode"), settings)
+                account = get_erpnext_account_from_xero_code(line.get("AccountCode"), settings, erpnext_doctype)
                 
                 if not account:
                     # Skip line if account not mapped
@@ -862,7 +865,10 @@ def process_xero_invoice(xero_invoice_data, settings):
                         message=f"Skipping line item in invoice {invoice_number}: No account mapping for Xero AccountCode {line.get('AccountCode')}",
                         status="Warning",
                         xero_entity_id=xero_invoice_id,
-                        xero_entity_type="Invoice"
+                        xero_entity_type="Invoice",
+                        erpnext_doc_type=erpnext_doctype,
+                        direction="Xero to ERPNext",
+                        category="Mapping Errors"
                     )
                     continue
                 
@@ -906,7 +912,10 @@ def process_xero_invoice(xero_invoice_data, settings):
                     message=f"Skipping Xero invoice {invoice_number}: No valid line items (all skipped due to missing account mappings)",
                     status="Warning",
                     xero_entity_id=xero_invoice_id,
-                    xero_entity_type="Invoice"
+                    xero_entity_type="Invoice",
+                    erpnext_doc_type=erpnext_doctype,
+                    direction="Xero to ERPNext",
+                    category="Mapping Errors"
                 )
                 return
             

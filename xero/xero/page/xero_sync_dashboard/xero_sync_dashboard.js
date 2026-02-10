@@ -1499,6 +1499,22 @@ class XeroSyncDashboard {
         }, 100);
     }
 
+    open_quick_mapping_dialog() {
+        /**
+         * Opens the Quick Account Mapping Dialog with unmapped accounts from recent errors
+         */
+        if (typeof QuickAccountMappingDialog === 'undefined') {
+            frappe.msgprint({
+                title: __('Error'),
+                message: __('Quick Mapping Dialog component not loaded. Please refresh the page.'),
+                indicator: 'red'
+            });
+            return;
+        }
+        
+        QuickAccountMappingDialog.open_from_errors(7);
+    }
+
     retry_job(log_name) {
         frappe.call({
             method: 'xero.xero.page.xero_sync_dashboard.xero_sync_dashboard.retry_failed_job',
@@ -1802,6 +1818,12 @@ class XeroSyncDashboard {
                                                                         <p class="mb-1">${rec.message}</p>
                                                                         <p class="mb-2"><strong>Action:</strong> ${rec.action}</p>
                                                                         <div class="btn-group" role="group">
+                                                                            ${rec.type === 'account_mapping' ? `
+                                                                                <button class="btn btn-sm btn-primary"
+                                                                                        onclick="dashboard.open_quick_mapping_dialog()">
+                                                                                    <i class="fa fa-magic"></i> Map Now
+                                                                                </button>
+                                                                            ` : ''}
                                                                             ${rec.action_button ? `
                                                                                 <button class="btn btn-sm btn-outline-${rec.severity === 'high' ? 'danger' : 'warning'}"
                                                                                         onclick="${rec.action_button.route ? `frappe.set_route('${rec.action_button.route}')` : `dashboard.trigger_sync('${rec.action_button.entity}')`}">

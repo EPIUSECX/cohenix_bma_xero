@@ -18,7 +18,8 @@ app_include_css = [
     "/assets/xero/css/xero_projects_dashboard.css"
 ]
 app_include_js = [
-    "/assets/xero/js/xero_projects_dashboard.js"
+    "/assets/xero/js/xero_projects_dashboard.js",
+    "/assets/xero/js/quick_account_mapping_dialog.js"
 ]
 
 # include js, css files in header of web template

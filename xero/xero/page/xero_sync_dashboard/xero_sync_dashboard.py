@@ -1831,3 +1831,188 @@ def get_last_sync_attempts():
             "failed_attempts": 0,
             "in_progress_attempts": 0
         }
+
+
+@frappe.whitelist()
+def get_unmapped_accounts_from_errors(days=7):
+    """
+    Analyzes recent errors to find which Xero AccountCodes need mapping.
+    Returns list of unmapped accounts with details and suggestions.
+    """
+    try:
+        from datetime import timedelta
+        cutoff_date = add_days(now_datetime(), -int(days))
+        
+        # Extract unique AccountCodes from error messages
+        account_codes_data = frappe.db.sql("""
+            SELECT DISTINCT
+                SUBSTRING_INDEX(SUBSTRING_INDEX(message, 'AccountCode ', -1), ' ', 1) as account_code,
+                COUNT(*) as error_count
+            FROM `tabXero Log`
+            WHERE (message LIKE '%No account mapping%'
+                   OR message LIKE '%Account Code mapping not found%')
+            AND timestamp >= %s
+            AND status IN ('Warning', 'Error')
+            GROUP BY account_code
+            ORDER BY error_count DESC
+        """, (cutoff_date,), as_dict=True)
+        
+        unmapped_accounts = []
+        settings = frappe.get_single("Xero Settings")
+        existing_mappings = {row.xero_account_code for row in settings.account_mapping}
+        
+        for code_data in account_codes_data:
+            account_code = code_data.account_code
+            
+            # Skip if already mapped
+            if account_code in existing_mappings:
+                continue
+            
+            # Skip if not a valid account code (sometimes error messages have extra text)
+            if not account_code or len(account_code) > 10:
+                continue
+            
+            # Fetch Xero Account details
+            xero_account = frappe.db.get_value("Xero Account",
+                                              {"account_code": account_code},
+                                              ["account_code", "account_name", "account_type", "account_id"],
+                                              as_dict=True)
+            
+            if xero_account:
+                # Get suggestions for this account
+                suggestions = get_account_suggestions(account_code)
+                
+                unmapped_accounts.append({
+                    "xero_code": xero_account.account_code,
+                    "xero_name": xero_account.account_name,
+                    "xero_type": xero_account.account_type,
+                    "xero_id": xero_account.account_id,
+                    "error_count": code_data.error_count,
+                    "suggested_accounts": suggestions
+                })
+        
+        return {
+            "success": True,
+            "unmapped_accounts": unmapped_accounts,
+            "total_unmapped": len(unmapped_accounts)
+        }
+        
+    except Exception as e:
+        frappe.log_error(frappe.get_traceback(), "Get Unmapped Accounts Error")
+        return {
+            "success": False,
+            "error": str(e),
+            "unmapped_accounts": []
+        }
+
+
+@frappe.whitelist()
+def get_account_suggestions(xero_account_code):
+    """
+    Returns suggested ERPNext accounts for a Xero account based on type and name matching.
+    """
+    try:
+        # Get Xero Account details
+        xero_account = frappe.db.get_value("Xero Account",
+                                          {"account_code": xero_account_code},
+                                          ["account_code", "account_name", "account_type"],
+                                          as_dict=True)
+        
+        if not xero_account:
+            return {"success": False, "error": "Xero Account not found", "suggestions": []}
+        
+        # Map Xero account types to ERPNext account types
+        account_type_map = {
+            "REVENUE": ["Income Account"],
+            "EXPENSE": ["Expense Account"],
+            "ASSET": ["Asset"],
+            "LIABILITY": ["Liability"],
+            "EQUITY": ["Equity"],
+            "BANK": ["Bank"],
+            "CURRENT": ["Asset"],  # Current Asset
+            "CURRLIAB": ["Liability"],  # Current Liability
+            "FIXED": ["Asset"],  # Fixed Asset
+            "INVENTORY": ["Asset"],  # Inventory Asset
+            "PAYABLE": ["Liability"],  # Accounts Payable
+            "RECEIVABLE": ["Asset"]  # Accounts Receivable
+        }
+        
+        erpnext_types = account_type_map.get(xero_account.account_type, [])
+        
+        # Build filters for ERPNext accounts
+        filters = {
+            "is_group": 0,
+            "disabled": 0
+        }
+        
+        if erpnext_types:
+            filters["account_type"] = ["in", erpnext_types]
+        
+        # Get matching accounts
+        accounts = frappe.get_all("Account",
+                                 filters=filters,
+                                 fields=["name", "account_type", "account_number", "parent_account"],
+                                 limit=50)
+        
+        # Score accounts based on matching criteria
+        scored_accounts = []
+        xero_name_lower = xero_account.account_name.lower()
+        xero_code_lower = xero_account.account_code.lower()
+        
+        for acc in accounts:
+            score = 0
+            acc_name_lower = acc.name.lower()
+            
+            # Exact account number match (highest priority)
+            if acc.account_number and acc.account_number == xero_account.account_code:
+                score += 100
+            
+            # Exact name match
+            if xero_name_lower == acc_name_lower:
+                score += 50
+            
+            # Partial name match
+            if xero_name_lower in acc_name_lower or acc_name_lower in xero_name_lower:
+                score += 30
+            
+            # Keyword matching
+            keywords = ["sales", "revenue", "income", "cogs", "cost", "expense",
+                       "bank", "cash", "inventory", "stock", "payable", "receivable"]
+            for keyword in keywords:
+                if keyword in xero_name_lower and keyword in acc_name_lower:
+                    score += 10
+            
+            # Account code in name
+            if xero_code_lower in acc_name_lower:
+                score += 20
+            
+            # Boost score for accounts with matching type
+            if acc.account_type in erpnext_types:
+                score += 5
+            
+            scored_accounts.append({
+                "account_name": acc.name,
+                "account_type": acc.account_type,
+                "account_number": acc.account_number,
+                "parent_account": acc.parent_account,
+                "match_score": score
+            })
+        
+        # Sort by score and return top 5
+        scored_accounts.sort(key=lambda x: x["match_score"], reverse=True)
+        top_suggestions = scored_accounts[:5]
+        
+        return {
+            "success": True,
+            "xero_account": xero_account,
+            "suggestions": top_suggestions,
+            "total_matches": len(scored_accounts)
+        }
+        
+    except Exception as e:
+        frappe.log_error(frappe.get_traceback(), "Get Account Suggestions Error")
+        return {
+            "success": False,
+            "error": str(e),
+            "suggestions": []
+        }

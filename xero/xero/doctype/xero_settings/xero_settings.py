@@ -237,3 +237,159 @@ class XeroSettings(Document):
 		doc.save(ignore_permissions=True)
 		frappe.db.commit()
 		frappe.msgprint(f"Tax mapping updated: {added} ERPNext templates added. Please review and enter the corresponding Xero TaxType Codes.")
+
+	@frappe.whitelist()
+	def quick_map_accounts(self, mappings, auto_retry=False):
+		"""
+		Quickly map multiple Xero accounts to ERPNext accounts.
+		
+		Args:
+			mappings: JSON string or list of dicts with {xero_code, erpnext_account}
+			auto_retry: Boolean to trigger retry of failed syncs after mapping
+		
+		Returns:
+			Dict with success status, mappings added, and retry results
+		"""
+		import json
+		
+		if isinstance(mappings, str):
+			mappings = json.loads(mappings)
+		
+		if not isinstance(mappings, list):
+			frappe.throw("Mappings must be a list of {xero_code, erpnext_account} objects")
+		
+		doc = frappe.get_doc("Xero Settings", self.name)
+		mappings_added = 0
+		mappings_updated = 0
+		
+		for mapping in mappings:
+			xero_code = mapping.get("xero_code")
+			erpnext_account = mapping.get("erpnext_account")
+			
+			if not xero_code or not erpnext_account:
+				continue
+			
+			# Validate ERPNext account exists
+			if not frappe.db.exists("Account", erpnext_account):
+				frappe.throw(f"ERPNext Account '{erpnext_account}' does not exist")
+			
+			# Get Xero Account details
+			xero_account = frappe.db.get_value("Xero Account",
+											  {"account_code": xero_code},
+											  ["name", "account_id", "account_name"],
+											  as_dict=True)
+			
+			if not xero_account:
+				frappe.throw(f"Xero Account with code '{xero_code}' not found. Please sync Xero Accounts first.")
+			
+			# Check if mapping already exists
+			existing_row = next((row for row in doc.account_mapping
+								if row.xero_account_code == xero_code), None)
+			
+			if existing_row:
+				# Update existing mapping
+				existing_row.erpnext_account = erpnext_account
+				existing_row.xero_account = xero_account.name
+				existing_row.xero_account_id = xero_account.account_id
+				existing_row.xero_account_name = xero_account.account_name
+				mappings_updated += 1
+			else:
+				# Add new mapping
+				doc.append("account_mapping", {
+					"erpnext_account": erpnext_account,
+					"xero_account": xero_account.name,
+					"xero_account_code": xero_code,
+					"xero_account_id": xero_account.account_id,
+					"xero_account_name": xero_account.account_name
+				})
+				mappings_added += 1
+		
+		doc.save(ignore_permissions=True)
+		frappe.db.commit()
+		
+		# Clear cache to ensure new mappings are used immediately
+		frappe.cache().delete_value("xero_account_map")
+		
+		result = {
+			"success": True,
+			"mappings_added": mappings_added,
+			"mappings_updated": mappings_updated,
+			"total_processed": mappings_added + mappings_updated
+		}
+		
+		# Optionally retry failed syncs
+		if auto_retry:
+			retry_results = self.retry_failed_syncs_with_account_errors()
+			result["retry_results"] = retry_results
+		
+		return result
+
+	def retry_failed_syncs_with_account_errors(self):
+		"""
+		Finds and retries syncs that failed due to account mapping errors.
+		Returns count of retried syncs.
+		"""
+		try:
+			# Find recent failed syncs due to account mapping
+			failed_syncs = frappe.db.sql("""
+				SELECT DISTINCT
+					erpnext_doc_type,
+					erpnext_doc_name
+				FROM `tabXero Log`
+				WHERE status IN ('Error', 'Warning')
+				AND (message LIKE '%No account mapping%'
+					 OR message LIKE '%Account Code mapping not found%'
+					 OR message LIKE '%No valid line items%')
+				AND timestamp >= DATE_SUB(NOW(), INTERVAL 1 DAY)
+				AND erpnext_doc_type IS NOT NULL
+				AND erpnext_doc_name IS NOT NULL
+				AND erpnext_doc_type != 'Unknown'
+				AND erpnext_doc_name != 'Unknown'
+				ORDER BY timestamp DESC
+				LIMIT 50
+			""", as_dict=True)
+			
+			retry_count = 0
+			for sync in failed_syncs:
+				try:
+					# Check if document still exists
+					if not frappe.db.exists(sync.erpnext_doc_type, sync.erpnext_doc_name):
+						continue
+					
+					# Re-queue the sync
+					doc = frappe.get_doc(sync.erpnext_doc_type, sync.erpnext_doc_name)
+					
+					# Determine which sync function to call
+					sync_function_map = {
+						"Sales Invoice": "xero.api.xero_invoices.enqueue_sync_invoice_or_return",
+						"Purchase Invoice": "xero.api.xero_invoices.enqueue_sync_invoice_or_return",
+						"Payment Entry": "xero.api.xero_payments.enqueue_sync_payment",
+						"Journal Entry": "xero.api.xero_journals.enqueue_sync_journal",
+						"Customer": "xero.api.xero_contacts.enqueue_sync_contact",
+						"Supplier": "xero.api.xero_contacts.enqueue_sync_contact",
+						"Item": "xero.api.xero_items.enqueue_sync_item",
+					}
+					
+					function_path = sync_function_map.get(sync.erpnext_doc_type)
+					if function_path:
+						sync_function = frappe.get_attr(function_path)
+						sync_function(doc, "retry_after_mapping")
+						retry_count += 1
+				
+				except Exception as e:
+					frappe.log_error(f"Failed to retry {sync.erpnext_doc_type} {sync.erpnext_doc_name}: {str(e)}")
+					continue
+			
+			return {
+				"success": True,
+				"retried_count": retry_count,
+				"total_found": len(failed_syncs)
+			}
+			
+		except Exception as e:
+			frappe.log_error(frappe.get_traceback(), "Retry Failed Syncs Error")
+			return {
+				"success": False,
+				"error": str(e),
+				"retried_count": 0
+			}
