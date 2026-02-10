@@ -630,6 +630,10 @@ def get_logs(start=0, page_length=20, filters=None):
             conditions.append("erpnext_doc_name LIKE %s")
             params.append(f"%{filters.get('erpnext_doc_name')}%")
             
+        if filters.get("message"):
+            conditions.append("message LIKE %s")
+            params.append(f"%{filters.get('message')}%")
+            
         if filters.get("from_date"):
             conditions.append("timestamp >= %s")
             params.append(filters.get('from_date'))
@@ -1601,8 +1605,13 @@ def get_recommendations(sync_time, direction):
                 "action": "Go to Xero Settings → Account Mappings and map these Xero account codes to ERPNext accounts",
                 "icon": "fa-link",
                 "action_button": {
-                    "label": "Open Xero Settings",
+                    "label": "Configure Mappings",
                     "route": "/app/xero-settings"
+                },
+                "secondary_button": {
+                    "label": "View Logs",
+                    "action": "view_logs",
+                    "filter": {"message": "account mapping"}
                 }
             })
         
@@ -1627,6 +1636,11 @@ def get_recommendations(sync_time, direction):
                 "action_button": {
                     "label": "Sync Xero Items",
                     "entity": "Sync Xero Items"
+                },
+                "secondary_button": {
+                    "label": "View Logs",
+                    "action": "view_logs",
+                    "filter": {"message": "not found in ERPNext"}
                 }
             })
         
@@ -1650,6 +1664,11 @@ def get_recommendations(sync_time, direction):
                 "action_button": {
                     "label": "Sync Xero Contacts",
                     "entity": "Sync Xero Contacts"
+                },
+                "secondary_button": {
+                    "label": "View Logs",
+                    "action": "view_logs",
+                    "filter": {"message": "not found for Xero Contact"}
                 }
             })
         
@@ -1671,8 +1690,13 @@ def get_recommendations(sync_time, direction):
                 "action": "Check account mappings and ensure all Xero account codes used in line items are mapped in Xero Settings",
                 "icon": "fa-exclamation-triangle",
                 "action_button": {
-                    "label": "Open Xero Settings",
+                    "label": "Configure Mappings",
                     "route": "/app/xero-settings"
+                },
+                "secondary_button": {
+                    "label": "View Logs",
+                    "action": "view_logs",
+                    "filter": {"message": "No valid line items"}
                 }
             })
         

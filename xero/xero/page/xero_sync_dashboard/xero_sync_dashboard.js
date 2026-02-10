@@ -1129,12 +1129,12 @@ class XeroSyncDashboard {
             <div class="card">
                 <div class="card-header">
                     <div class="row">
-                        <div class="col-md-6">
+                        <div class="col-md-4">
                             <h5 class="mb-0"><i class="fa fa-list"></i> Sync Logs</h5>
                         </div>
-                        <div class="col-md-6">
+                        <div class="col-md-8">
                             <div class="row">
-                                <div class="col-md-4">
+                                <div class="col-md-3">
                                     <select class="form-control form-control-sm" id="status-filter">
                                         <option value="">All Statuses</option>
                                         <option value="Success">Success</option>
@@ -1143,7 +1143,7 @@ class XeroSyncDashboard {
                                         <option value="Info">Info</option>
                                     </select>
                                 </div>
-                                <div class="col-md-4">
+                                <div class="col-md-3">
                                     <select class="form-control form-control-sm" id="entity-filter">
                                         <option value="">All Entities</option>
                                         <option value="Sales Invoice">Sales Invoice</option>
@@ -1151,10 +1151,15 @@ class XeroSyncDashboard {
                                         <option value="Payment Entry">Payment Entry</option>
                                         <option value="Customer">Customer</option>
                                         <option value="Supplier">Supplier</option>
+                                        <option value="Item">Item</option>
                                     </select>
                                 </div>
                                 <div class="col-md-4">
-                                    <button class="btn btn-sm btn-primary" onclick="dashboard.apply_log_filters()">
+                                    <input type="text" class="form-control form-control-sm" id="message-filter"
+                                           placeholder="Search message...">
+                                </div>
+                                <div class="col-md-2">
+                                    <button class="btn btn-sm btn-primary btn-block" onclick="dashboard.apply_log_filters()">
                                         <i class="fa fa-filter"></i> Filter
                                     </button>
                                 </div>
@@ -1429,11 +1434,13 @@ class XeroSyncDashboard {
     apply_log_filters() {
         const status = $(this.wrapper).find('#status-filter').val();
         const entity = $(this.wrapper).find('#entity-filter').val();
+        const message = $(this.wrapper).find('#message-filter').val();
         
-        this.logs_filters = {
-            status: status,
-            erpnext_doc_type: entity
-        };
+        this.logs_filters = {};
+        if (status) this.logs_filters.status = status;
+        if (entity) this.logs_filters.erpnext_doc_type = entity;
+        if (message) this.logs_filters.message = message;
+        
         this.logs_start = 0;
         this.load_logs_data(0, this.logs_filters);
     }
@@ -1441,6 +1448,55 @@ class XeroSyncDashboard {
     load_more_logs() {
         this.logs_start += 20;
         this.load_logs_data(this.logs_start, this.logs_filters);
+    }
+
+    view_filtered_logs(filter) {
+        // Switch to logs tab
+        this.switch_tab('logs');
+        
+        // Apply filter after a short delay to ensure tab is loaded
+        setTimeout(() => {
+            // Set filter values in the UI
+            if (filter.message) {
+                this.logs_filters = {};
+                
+                // Determine which filter to apply based on the message content
+                if (filter.message.includes('account mapping')) {
+                    // Show warnings about account mappings
+                    this.logs_filters.status = 'Warning';
+                    this.logs_filters.message = 'account mapping';
+                    $(this.wrapper).find('#status-filter').val('Warning');
+                    $(this.wrapper).find('#message-filter').val('account mapping');
+                } else if (filter.message.includes('not found in ERPNext')) {
+                    // Show info logs about missing items
+                    this.logs_filters.status = 'Info';
+                    this.logs_filters.message = 'not found in ERPNext';
+                    $(this.wrapper).find('#status-filter').val('Info');
+                    $(this.wrapper).find('#message-filter').val('not found in ERPNext');
+                } else if (filter.message.includes('not found for Xero Contact')) {
+                    // Show info logs about missing contacts
+                    this.logs_filters.status = 'Info';
+                    this.logs_filters.message = 'not found for Xero Contact';
+                    $(this.wrapper).find('#status-filter').val('Info');
+                    $(this.wrapper).find('#message-filter').val('not found for Xero Contact');
+                } else if (filter.message.includes('No valid line items')) {
+                    // Show warnings about invalid line items
+                    this.logs_filters.status = 'Warning';
+                    this.logs_filters.message = 'No valid line items';
+                    $(this.wrapper).find('#status-filter').val('Warning');
+                    $(this.wrapper).find('#message-filter').val('No valid line items');
+                }
+                
+                this.logs_start = 0;
+                this.load_logs_data(0, this.logs_filters);
+                
+                // Show a message to the user
+                frappe.show_alert({
+                    message: `Viewing logs filtered by: "${filter.message}"`,
+                    indicator: 'blue'
+                });
+            }
+        }, 100);
     }
 
     retry_job(log_name) {
@@ -1745,12 +1801,20 @@ class XeroSyncDashboard {
                                                                         <h6 class="mb-1">${rec.title}</h6>
                                                                         <p class="mb-1">${rec.message}</p>
                                                                         <p class="mb-2"><strong>Action:</strong> ${rec.action}</p>
-                                                                        ${rec.action_button ? `
-                                                                            <button class="btn btn-sm btn-outline-${rec.severity === 'high' ? 'danger' : 'warning'}" 
-                                                                                    onclick="${rec.action_button.route ? `frappe.set_route('${rec.action_button.route}')` : `dashboard.trigger_sync('${rec.action_button.entity}')`}">
-                                                                                ${rec.action_button.label}
-                                                                            </button>
-                                                                        ` : ''}
+                                                                        <div class="btn-group" role="group">
+                                                                            ${rec.action_button ? `
+                                                                                <button class="btn btn-sm btn-outline-${rec.severity === 'high' ? 'danger' : 'warning'}"
+                                                                                        onclick="${rec.action_button.route ? `frappe.set_route('${rec.action_button.route}')` : `dashboard.trigger_sync('${rec.action_button.entity}')`}">
+                                                                                    ${rec.action_button.label}
+                                                                                </button>
+                                                                            ` : ''}
+                                                                            ${rec.secondary_button ? `
+                                                                                <button class="btn btn-sm btn-outline-info"
+                                                                                        onclick="dashboard.view_filtered_logs(${JSON.stringify(rec.secondary_button.filter).replace(/"/g, '&quot;')})">
+                                                                                    <i class="fa fa-list"></i> ${rec.secondary_button.label}
+                                                                                </button>
+                                                                            ` : ''}
+                                                                        </div>
                                                                     </div>
                                                                 </div>
                                                             </div>
