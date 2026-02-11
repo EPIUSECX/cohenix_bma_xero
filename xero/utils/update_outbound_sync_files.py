@@ -21,32 +21,8 @@ files_to_update = [
         "doc_name_var": "doc_name"
     },
     {
-        "path": "/workspace/cohenix-bench/apps/xero/xero/api/xero_sales_orders.py",
-        "function": "sync_sales_order_to_xero",
-        "doc_type_var": "doc_type",
-        "doc_name_var": "doc_name"
-    },
-    {
         "path": "/workspace/cohenix-bench/apps/xero/xero/api/xero_purchase_orders.py",
         "function": "sync_purchase_order_to_xero",
-        "doc_type_var": "doc_type",
-        "doc_name_var": "doc_name"
-    },
-    {
-        "path": "/workspace/cohenix-bench/apps/xero/xero/api/xero_delivery_notes.py",
-        "function": "sync_delivery_note_to_xero",
-        "doc_type_var": "doc_type",
-        "doc_name_var": "doc_name"
-    },
-    {
-        "path": "/workspace/cohenix-bench/apps/xero/xero/api/xero_purchase_receipts.py",
-        "function": "sync_purchase_receipt_to_xero",
-        "doc_type_var": "doc_type",
-        "doc_name_var": "doc_name"
-    },
-    {
-        "path": "/workspace/cohenix-bench/apps/xero/xero/api/xero_stock.py",
-        "function": "sync_stock_ledger_to_xero",
         "doc_type_var": "doc_type",
         "doc_name_var": "doc_name"
     }

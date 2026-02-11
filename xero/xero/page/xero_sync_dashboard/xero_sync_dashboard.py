@@ -350,10 +350,8 @@ def trigger_manual_sync(entity_type, filters=None, sync_type="full"):
             "Sync Xero Payments",
             "Sync Xero Bank Transactions",
             "Sync Xero Quotes",
-            "Sync Xero Sales Orders",
             "Sync Xero Purchase Orders",
-            "Sync Xero Manual Journals",
-            "Sync Xero Tracking Categories"
+            "Sync Xero Manual Journals"
         ]
         
         if entity_type in from_xero_entities:
@@ -390,10 +388,8 @@ def trigger_manual_sync(entity_type, filters=None, sync_type="full"):
             "Sync Xero Payments": "xero.api.xero_payments.sync_payments_from_xero",
             "Sync Xero Bank Transactions": "xero.api.xero_bank_transactions.sync_bank_transactions_from_xero",
             "Sync Xero Quotes": "xero.api.xero_quotes.sync_quotes_from_xero",
-            "Sync Xero Sales Orders": "xero.api.xero_sales_orders.sync_sales_orders_from_xero",
             "Sync Xero Purchase Orders": "xero.api.xero_purchase_orders.sync_purchase_orders_from_xero",
-            "Sync Xero Manual Journals": "xero.api.xero_journals.sync_manual_journals_from_xero",
-            "Sync Xero Tracking Categories": "xero.api.xero_tracking_categories.sync_tracking_categories_from_xero"
+            "Sync Xero Manual Journals": "xero.api.xero_journals.sync_manual_journals_from_xero"
         }
         
         function_path = sync_functions.get(entity_type)
@@ -420,10 +416,8 @@ def trigger_manual_sync(entity_type, filters=None, sync_type="full"):
                 "Sync Xero Payments": "Payment Entry",
                 "Sync Xero Bank Transactions": "Bank Transaction",
                 "Sync Xero Quotes": "Quotation",
-                "Sync Xero Sales Orders": "Sales Order",
                 "Sync Xero Purchase Orders": "Purchase Order",
-                "Sync Xero Manual Journals": "Journal Entry",
-                "Sync Xero Tracking Categories": "Cost Center"
+                "Sync Xero Manual Journals": "Journal Entry"
             }
             
             target_doctype = target_doctype_map.get(entity_type, "Account")  # Default to Account
@@ -723,11 +717,7 @@ def retry_failed_job(log_name):
             "Item": "xero.api.xero_items.enqueue_sync_item",
             "Quotation": "xero.api.xero_quotes.enqueue_sync_quotation",
             "Bank Transaction": "xero.api.xero_bank_transactions.enqueue_sync_bank_transaction",
-            "Sales Order": "xero.api.xero_sales_orders.enqueue_sync_sales_order",
-            "Delivery Note": "xero.api.xero_delivery_notes.enqueue_sync_delivery_note",
-            "Purchase Order": "xero.api.xero_purchase_orders.enqueue_sync_purchase_order",
-            "Purchase Receipt": "xero.api.xero_purchase_receipts.enqueue_sync_purchase_receipt",
-            "Stock Ledger Entry": "xero.api.xero_stock.enqueue_sync_stock_ledger",
+            "Purchase Order": "xero.api.xero_purchase_orders.enqueue_sync_purchase_order"
         }
 
         function_path = sync_function_map.get(doc.doctype)

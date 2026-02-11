@@ -14,11 +14,9 @@ app_license = "mit"
 
 # include js, css files in header of desk.html
 app_include_css = [
-    "/assets/xero/css/xero_dashboard.css",
-    "/assets/xero/css/xero_projects_dashboard.css"
+    "/assets/xero/css/xero_dashboard.css"
 ]
 app_include_js = [
-    "/assets/xero/js/xero_projects_dashboard.js",
     "/assets/xero/js/quick_account_mapping_dialog.js"
 ]
 
@@ -160,20 +158,8 @@ doc_events = {
     "Quotation": {
         "on_submit": "xero.api.xero_quotes.enqueue_sync_quotation"
     },
-    "Sales Order": {
-        "on_submit": "xero.api.xero_sales_orders.enqueue_sync_sales_order"
-    },
-    "Delivery Note": {
-        "on_submit": "xero.api.xero_delivery_notes.enqueue_sync_delivery_note"
-    },
     "Purchase Order": {
         "on_submit": "xero.api.xero_purchase_orders.enqueue_sync_purchase_order"
-    },
-    "Purchase Receipt": {
-        "on_submit": "xero.api.xero_purchase_receipts.enqueue_sync_purchase_receipt"
-    },
-    "Stock Ledger Entry": {
-        "on_submit": "xero.api.xero_stock.enqueue_sync_stock_ledger"
     }
 }
 
@@ -190,8 +176,7 @@ scheduler_events = {
     "hourly": [
         "xero.tasks.check_payments",
         "xero.tasks.monitor_sync_health",
-        "xero.tasks.sync_pending_documents",
-        "xero.api.xero_projects.sync_projects"
+        "xero.tasks.sync_pending_documents"
     ],
     # Weekly tasks
     "weekly": [

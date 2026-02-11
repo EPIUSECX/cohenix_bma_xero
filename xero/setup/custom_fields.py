@@ -65,8 +65,7 @@ def setup_custom_fields():
     doctypes_to_clean = [
         "Sales Invoice", "Purchase Invoice", "Payment Entry", "Journal Entry",
         "Customer", "Supplier", "Item", "Account", "Quotation",
-        "Cost Center", "Project", "Bank Transaction", "Sales Order",
-        "Purchase Order", "Delivery Note", "Purchase Receipt"
+        "Bank Transaction", "Purchase Order"
     ]
     
     for doctype in doctypes_to_clean:
@@ -419,54 +418,6 @@ def setup_custom_fields():
                 "insert_after": "xero_sync_status"
             }
         ],
-        "Cost Center": [
-            {
-                "fieldname": "xero_tracking_category_id",
-                "fieldtype": "Data",
-                "label": "Xero Tracking Category ID",
-                "no_copy": 1,
-                "read_only": 1,
-                "print_hide": 1,
-                "report_hide": 1,
-                "search_index": 1,
-                "insert_after": "cost_center_name"
-            },
-            {
-                "fieldname": "xero_tracking_option_id",
-                "fieldtype": "Data",
-                "label": "Xero Tracking Option ID",
-                "no_copy": 1,
-                "read_only": 1,
-                "print_hide": 1,
-                "report_hide": 1,
-                "search_index": 1,
-                "insert_after": "xero_tracking_category_id"
-            }
-        ],
-        "Project": [
-            {
-                "fieldname": "xero_tracking_category_id",
-                "fieldtype": "Data",
-                "label": "Xero Tracking Category ID",
-                "no_copy": 1,
-                "read_only": 1,
-                "print_hide": 1,
-                "report_hide": 1,
-                "search_index": 1,
-                "insert_after": "project_name"
-            },
-            {
-                "fieldname": "xero_tracking_option_id",
-                "fieldtype": "Data",
-                "label": "Xero Tracking Option ID",
-                "no_copy": 1,
-                "read_only": 1,
-                "print_hide": 1,
-                "report_hide": 1,
-                "search_index": 1,
-                "insert_after": "xero_tracking_category_id"
-            }
-        ],
         "Bank Transaction": [
             {
                 "fieldname": "xero_bank_transaction_id",
@@ -502,41 +453,6 @@ def setup_custom_fields():
                 "insert_after": "xero_sync_status"
             }
         ],
-        "Sales Order": [
-            {
-                "fieldname": "xero_sales_order_id",
-                "fieldtype": "Data",
-                "label": "Xero Sales Order ID",
-                "no_copy": 1,
-                "read_only": 1,
-                "print_hide": 1,
-                "report_hide": 1,
-                "search_index": 1,
-                "insert_after": "title"
-            },
-            {
-                "fieldname": "xero_sync_status",
-                "fieldtype": "Select",
-                "label": "Xero Sync Status",
-                "options": "\nPending\nSynced\nError\nSkipped",
-                "default": "Pending",
-                "no_copy": 1,
-                "read_only": 0,
-                "print_hide": 1,
-                "in_list_view": 1,
-                "in_standard_filter": 1,
-                "insert_after": "xero_sales_order_id"
-            },
-            {
-                "fieldname": "xero_last_sales_order_sync",
-                "fieldtype": "Datetime",
-                "label": "Xero Last Sales Order Sync",
-                "no_copy": 1,
-                "read_only": 1,
-                "print_hide": 1,
-                "insert_after": "xero_sync_status"
-            }
-        ],
         "Purchase Order": [
             {
                 "fieldname": "xero_purchase_order_id",
@@ -566,76 +482,6 @@ def setup_custom_fields():
                 "fieldname": "xero_last_purchase_order_sync",
                 "fieldtype": "Datetime",
                 "label": "Xero Last Purchase Order Sync",
-                "no_copy": 1,
-                "read_only": 1,
-                "print_hide": 1,
-                "insert_after": "xero_sync_status"
-            }
-        ],
-        "Delivery Note": [
-            {
-                "fieldname": "xero_delivery_note_id",
-                "fieldtype": "Data",
-                "label": "Xero Delivery Note ID",
-                "no_copy": 1,
-                "read_only": 1,
-                "print_hide": 1,
-                "report_hide": 1,
-                "search_index": 1,
-                "insert_after": "title"
-            },
-            {
-                "fieldname": "xero_sync_status",
-                "fieldtype": "Select",
-                "label": "Xero Sync Status",
-                "options": "\nPending\nSynced\nError\nSkipped",
-                "default": "Pending",
-                "no_copy": 1,
-                "read_only": 0,
-                "print_hide": 1,
-                "in_list_view": 1,
-                "in_standard_filter": 1,
-                "insert_after": "xero_delivery_note_id"
-            },
-            {
-                "fieldname": "xero_last_delivery_note_sync",
-                "fieldtype": "Datetime",
-                "label": "Xero Last Delivery Note Sync",
-                "no_copy": 1,
-                "read_only": 1,
-                "print_hide": 1,
-                "insert_after": "xero_sync_status"
-            }
-        ],
-        "Purchase Receipt": [
-            {
-                "fieldname": "xero_purchase_receipt_id",
-                "fieldtype": "Data",
-                "label": "Xero Purchase Receipt ID",
-                "no_copy": 1,
-                "read_only": 1,
-                "print_hide": 1,
-                "report_hide": 1,
-                "search_index": 1,
-                "insert_after": "title"
-            },
-            {
-                "fieldname": "xero_sync_status",
-                "fieldtype": "Select",
-                "label": "Xero Sync Status",
-                "options": "\nPending\nSynced\nError\nSkipped",
-                "default": "Pending",
-                "no_copy": 1,
-                "read_only": 0,
-                "print_hide": 1,
-                "in_list_view": 1,
-                "in_standard_filter": 1,
-                "insert_after": "xero_purchase_receipt_id"
-            },
-            {
-                "fieldname": "xero_last_purchase_receipt_sync",
-                "fieldtype": "Datetime",
-                "label": "Xero Last Purchase Receipt Sync",
                 "no_copy": 1,
                 "read_only": 1,
                 "print_hide": 1,
@@ -679,34 +525,19 @@ def remove_custom_fields():
         "xero_quote_id",
         "xero_quote_sync_status",
         "xero_last_quote_sync",
-        # Cost Center fields
-        "xero_tracking_category_id",
-        "xero_tracking_option_id",
         # Bank Transaction fields
         "xero_bank_transaction_sync_status",
         "xero_last_bank_sync",
-        # Sales Order fields
-        "xero_sales_order_id",
-        "xero_sales_order_sync_status",
-        "xero_last_sales_order_sync",
         # Purchase Order fields
         "xero_purchase_order_id",
         "xero_purchase_order_sync_status",
-        "xero_last_purchase_order_sync",
-        # Delivery Note fields
-        "xero_delivery_note_id",
-        "xero_delivery_note_sync_status",
-        "xero_last_delivery_note_sync",
-        # Purchase Receipt fields
-        "xero_purchase_receipt_id",
-        "xero_purchase_receipt_sync_status",
-        "xero_last_purchase_receipt_sync",
+        "xero_last_purchase_order_sync"
     ]
 
     doctypes_to_clean = [
         "Sales Invoice", "Purchase Invoice", "Payment Entry", "Journal Entry",
         "Customer", "Supplier", "Item", "Account", "Quotation", 
-        "Cost Center", "Project", "Bank Transaction"
+        "Bank Transaction", "Purchase Order"
     ]
     
     for doctype in doctypes_to_clean:

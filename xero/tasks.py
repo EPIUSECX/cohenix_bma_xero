@@ -50,11 +50,6 @@ def sync_all_enabled():
             from .api.xero_quotes import sync_quotes_from_xero
             sync_quotes_from_xero()
 
-        # Sync tracking categories if enabled
-        if settings.get("sync_tracking_categories"):
-            from .api.xero_tracking_categories import sync_tracking_categories_from_xero
-            sync_tracking_categories_from_xero()
-
         # Sync manual journals if enabled
         if settings.get("sync_journal_entries"):
             from .api.xero_journals import sync_manual_journals_from_xero

@@ -412,10 +412,8 @@ class XeroSyncDashboard {
             .icon-sync-payments { background: var(--xero-success); }
             .icon-sync-bank-transactions { background: var(--xero-dark); }
             .icon-sync-quotes { background: #9B59B6; }
-            .icon-sync-sales-orders { background: #3498DB; }
             .icon-sync-purchase-orders { background: #E67E22; }
             .icon-sync-manual-journals { background: var(--xero-warning); }
-            .icon-sync-tracking-categories { background: #16A085; }
 
             /* Table and other elements theme support */
             .table {
@@ -859,10 +857,8 @@ class XeroSyncDashboard {
                                         { name: 'Sync Xero Payments', icon: 'fa-money-bill-wave', class: 'icon-sync-payments' },
                                         { name: 'Sync Xero Bank Transactions', icon: 'fa-exchange-alt', class: 'icon-sync-bank-transactions' },
                                         { name: 'Sync Xero Quotes', icon: 'fa-quote-left', class: 'icon-sync-quotes' },
-                                        { name: 'Sync Xero Sales Orders', icon: 'fa-shopping-cart', class: 'icon-sync-sales-orders' },
                                         { name: 'Sync Xero Purchase Orders', icon: 'fa-shopping-bag', class: 'icon-sync-purchase-orders' },
-                                        { name: 'Sync Xero Manual Journals', icon: 'fa-book', class: 'icon-sync-manual-journals' },
-                                        { name: 'Sync Xero Tracking Categories', icon: 'fa-tags', class: 'icon-sync-tracking-categories' }
+                                        { name: 'Sync Xero Manual Journals', icon: 'fa-book', class: 'icon-sync-manual-journals' }
                                     ], sync_from_xero_enabled)}
                                 </div>
                             </div>
