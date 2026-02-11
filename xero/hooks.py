@@ -11,7 +11,15 @@ app_license = "mit"
 
 # Includes in <head>
 # ------------------
-
+add_to_apps_screen = [
+ 	{
+ 		"name": "xero",
+ 		"logo": "/assets/xero/image.png",
+ 		"title": "Xero Integration",
+ 		"route": "/desk",
+ 		#"has_permission": "liftlogic.api.permission.has_app_permission"
+ 	}
+ ]
 # include js, css files in header of desk.html
 app_include_css = [
     "/assets/xero/css/xero_dashboard.css",

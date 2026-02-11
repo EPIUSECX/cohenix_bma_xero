@@ -1,0 +1,21 @@
+{
+ "app": "xero",
+ "bg_color": "blue",
+ "creation": "2026-02-11 08:48:26.294955",
+ "docstatus": 0,
+ "doctype": "Desktop Icon",
+ "hidden": 0,
+ "icon_image": "/files/Xero_software_logo.svg",
+ "icon_type": "App",
+ "idx": 0,
+ "label": "Xero",
+ "link_type": "Workspace Sidebar",
+ "logo_url": "/files/Xero_software_logo.svg",
+ "modified": "2026-02-11 08:48:39.882913",
+ "modified_by": "Administrator",
+ "name": "Xero",
+ "owner": "Administrator",
+ "restrict_removal": 0,
+ "roles": [],
+ "standard": 1
+}
