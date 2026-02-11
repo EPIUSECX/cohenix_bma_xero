@@ -344,7 +344,14 @@ def process_xero_payment(xero_payment_data, settings):
     # Get invoice information
     xero_invoice_id = xero_payment_data.get("Invoice", {}).get("InvoiceID")
     if not xero_invoice_id:
-        log_xero_error(message=f"Skipping Xero payment {xero_payment_id}: No invoice information", status="Info")
+        log_xero_error(
+            message=f"Cannot sync payment from Xero: Payment has no linked invoice",
+            status="Warning",
+            xero_entity_id=xero_payment_id,
+            xero_entity_type="Payment",
+            direction="Xero to ERPNext",
+            category="Missing Prerequisites"
+        )
         return
 
     # Find corresponding ERPNext invoice
@@ -364,19 +371,53 @@ def process_xero_payment(xero_payment_data, settings):
             invoice_doctype = "Purchase Invoice"
 
     if not invoice_doc:
-        log_xero_error(message=f"Skipping Xero payment {xero_payment_id}: Invoice not found for Xero Invoice {xero_invoice_id}", status="Info")
+        log_xero_error(
+            message=f"Cannot sync payment from Xero: The invoice this payment is linked to has not been synced to ERPNext yet. Please sync invoices first.",
+            status="Warning",
+            xero_entity_id=xero_payment_id,
+            xero_entity_type="Payment",
+            direction="Xero to ERPNext",
+            category="Missing Prerequisites"
+        )
         return
 
     # Get account information
     xero_account_id = xero_payment_data.get("Account", {}).get("AccountID")
     if not xero_account_id:
-        log_xero_error(message=f"Skipping Xero payment {xero_payment_id}: No account information", status="Info")
+        log_xero_error(
+            message=f"Cannot sync payment from Xero: Payment has no bank account information",
+            status="Warning",
+            xero_entity_id=xero_payment_id,
+            xero_entity_type="Payment",
+            direction="Xero to ERPNext",
+            category="Missing Prerequisites"
+        )
         return
 
     # Find corresponding ERPNext account
     account = frappe.db.get_value("Account", {"xero_account_id": xero_account_id}, "name")
     if not account:
-        log_xero_error(message=f"Skipping Xero payment {xero_payment_id}: Account not found for Xero Account {xero_account_id}", status="Info")
+        log_xero_error(
+            message=f"Cannot sync payment from Xero: The bank account used in Xero has not been synced to ERPNext. Please sync your Chart of Accounts first.",
+            status="Warning",
+            xero_entity_id=xero_payment_id,
+            xero_entity_type="Payment",
+            direction="Xero to ERPNext",
+            category="Missing Prerequisites"
+        )
+        return
+
+    # Verify account is a bank/cash account
+    account_type = frappe.db.get_value("Account", account, "account_type")
+    if account_type not in ["Bank", "Cash"]:
+        log_xero_error(
+            message=f"Cannot sync payment from Xero: The account '{account}' is not a Bank or Cash account (it's {account_type}). Please check your account mappings.",
+            status="Warning",
+            xero_entity_id=xero_payment_id,
+            xero_entity_type="Payment",
+            direction="Xero to ERPNext",
+            category="Configuration Error"
+        )
         return
 
     try:
@@ -386,18 +427,34 @@ def process_xero_payment(xero_payment_data, settings):
         
         # Calculate amounts
         payment_amount = flt(xero_payment_data.get("Amount", 0))
+        
+        # Parse date with fallback
+        try:
+            posting_date = parse_xero_date(xero_payment_data.get("Date"))
+        except Exception as date_error:
+            frappe.logger().warning(f"Failed to parse Xero payment date, using today: {date_error}")
+            posting_date = getdate()
+
+        # Set paid_from and paid_to correctly based on payment type
+        if payment_type == "Receive":  # Sales Invoice - receiving money
+            paid_from = invoice_doc.debit_to  # Customer's receivable account
+            paid_to = account  # Our bank account
+        else:  # Pay - Purchase Invoice - paying money
+            paid_from = account  # Our bank account
+            paid_to = invoice_doc.credit_to  # Supplier's payable account
 
         # Map Xero Data to ERPNext Fields
         erpnext_data = {
             "payment_type": payment_type,
             "party_type": party_type,
             "party": invoice_doc.customer if invoice_doctype == "Sales Invoice" else invoice_doc.supplier,
-            "posting_date": parse_xero_date(xero_payment_data.get("Date")),
+            "posting_date": posting_date,
             "paid_amount": payment_amount,
             "received_amount": payment_amount,
-            "paid_from": account if payment_type == "Pay" else invoice_doc.debit_to if invoice_doctype == "Sales Invoice" else invoice_doc.credit_to,
-            "paid_to": invoice_doc.debit_to if invoice_doctype == "Sales Invoice" else account if payment_type == "Pay" else invoice_doc.credit_to,
-            "reference_no": xero_payment_data.get("Reference"),
+            "paid_from": paid_from,
+            "paid_to": paid_to,
+            "reference_no": xero_payment_data.get("Reference") or xero_payment_id[:8],  # Use payment ID if no reference
+            "reference_date": posting_date,  # Set reference date to match posting date
             "remarks": f"Payment from Xero for {invoice_doctype} {invoice_name}",
             "xero_payment_id": xero_payment_id,
             "xero_sync_status": "Synced",
@@ -409,10 +466,24 @@ def process_xero_payment(xero_payment_data, settings):
         }
 
         if erpnext_doc_name:
-            # Update existing payment
-            doc = frappe.get_doc("Payment Entry", erpnext_doc_name)
-            doc.update(erpnext_data)
-            doc.save(ignore_permissions=True)
+            # Check if existing payment is submitted
+            existing_doc = frappe.get_doc("Payment Entry", erpnext_doc_name)
+            if existing_doc.docstatus == 1:
+                # Cannot modify submitted document - log and skip
+                log_xero_error(
+                    message=f"Cannot update Payment Entry {erpnext_doc_name}: Document is already submitted. Skipping update.",
+                    status="Info",
+                    erpnext_doc_type="Payment Entry",
+                    erpnext_doc_name=erpnext_doc_name,
+                    xero_entity_id=xero_payment_id,
+                    xero_entity_type="Payment",
+                    direction="Xero to ERPNext"
+                )
+                return
+            
+            # Update existing draft payment
+            existing_doc.update(erpnext_data)
+            existing_doc.save(ignore_permissions=True)
             log_message = f"Updated Payment Entry {erpnext_doc_name} from Xero Payment {xero_payment_id}"
         else:
             # Create new payment
@@ -420,7 +491,13 @@ def process_xero_payment(xero_payment_data, settings):
             doc.update(erpnext_data)
             doc.insert(ignore_permissions=True)
             erpnext_doc_name = doc.name
-            log_message = f"Created Payment Entry {erpnext_doc_name} from Xero Payment {xero_payment_id}"
+            
+            # Auto-submit if configured
+            if settings.get("auto_submit_payment_entries"):
+                doc.submit()
+                log_message = f"Created and submitted Payment Entry {erpnext_doc_name} from Xero Payment {xero_payment_id}"
+            else:
+                log_message = f"Created Payment Entry {erpnext_doc_name} from Xero Payment {xero_payment_id} (Draft - please review and submit)"
 
         frappe.db.commit()
         log_xero_error(
@@ -439,14 +516,29 @@ def process_xero_payment(xero_payment_data, settings):
             frappe.db.set_value("Payment Entry", erpnext_doc_name, "xero_sync_status", sync_status, update_modified=False)
             frappe.db.commit()
 
+        # Create user-friendly error message
+        error_str = str(e)
+        user_friendly_message = f"Failed to sync payment from Xero: {error_str}"
+        
+        # Provide specific guidance for common errors
+        if "paid_from" in error_str.lower() or "paid_to" in error_str.lower():
+            user_friendly_message = "Failed to sync payment from Xero: There's an issue with the bank account configuration. Please check that your bank accounts are properly mapped in Xero Settings."
+        elif "party" in error_str.lower() or "customer" in error_str.lower() or "supplier" in error_str.lower():
+            user_friendly_message = "Failed to sync payment from Xero: The customer or supplier linked to this payment may not be synced properly. Please sync contacts first."
+        elif "reference" in error_str.lower():
+            user_friendly_message = "Failed to sync payment from Xero: There's an issue with the payment reference information."
+        elif "outstanding" in error_str.lower():
+            user_friendly_message = "Failed to sync payment from Xero: The payment amount exceeds the outstanding amount on the invoice."
+
         log_xero_error(
-            message=f"Failed to sync Xero Payment {xero_payment_id} to ERPNext",
+            message=user_friendly_message,
             erpnext_doc_type="Payment Entry",
             erpnext_doc_name=erpnext_doc_name,
             xero_entity_id=xero_payment_id,
             xero_entity_type="Payment",
             direction="Xero to ERPNext",
-            error_details=frappe.get_traceback()
+            error_details=frappe.get_traceback(),
+            category="Sync Error"
         )
 
 

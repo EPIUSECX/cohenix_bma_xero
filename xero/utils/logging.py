@@ -4,7 +4,7 @@
 import frappe
 from frappe.utils import now_datetime
 
-def log_xero_error(message, status="Error", erpnext_doc_type=None, erpnext_doc_name=None, xero_entity_type=None, xero_entity_id=None, direction=None, error_details=None, category=None, retry_count=0, processing_time=None):
+def log_xero_error(message, status="Error", erpnext_doc_type=None, erpnext_doc_name=None, xero_entity_type=None, xero_entity_id=None, direction=None, error_details=None, category=None, retry_count=0, processing_time=None, sync_batch_id=None):
     """
     Creates a Xero Log document.
 
@@ -19,6 +19,7 @@ def log_xero_error(message, status="Error", erpnext_doc_type=None, erpnext_doc_n
     :param category: Classification of the log entry (e.g., 'Connection Issues', 'Validation Errors').
     :param retry_count: Number of retry attempts for this operation.
     :param processing_time: Time taken to process this operation in seconds.
+    :param sync_batch_id: Unique identifier to group log entries from the same sync operation.
     """
     try:
         log_doc = frappe.new_doc("Xero Log")
@@ -34,6 +35,7 @@ def log_xero_error(message, status="Error", erpnext_doc_type=None, erpnext_doc_n
         log_doc.category = category or auto_categorize_error(message, error_details)
         log_doc.retry_count = retry_count
         log_doc.processing_time = processing_time
+        log_doc.sync_batch_id = sync_batch_id
 
         log_doc.flags.ignore_permissions = True # Allow system to log errors
         log_doc.insert()

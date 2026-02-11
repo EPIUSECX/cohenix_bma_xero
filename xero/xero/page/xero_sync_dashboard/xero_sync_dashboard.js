@@ -858,16 +858,16 @@ class XeroSyncDashboard {
                                 </div>
                                 <div class="sync-buttons-grid">
                                     ${this.render_xero_sync_buttons([
-                                        { name: 'Sync Xero Accounts', icon: 'fa-list', class: 'icon-sync-accounts' },
-                                        { name: 'Sync Xero Contacts', icon: 'fa-users', class: 'icon-sync-contacts' },
-                                        { name: 'Sync Xero Items', icon: 'fa-cubes', class: 'icon-sync-items' },
-                                        { name: 'Sync Xero Invoices', icon: 'fa-file-invoice', class: 'icon-sync-invoices' },
-                                        { name: 'Sync Xero Credit Notes', icon: 'fa-file-invoice-dollar', class: 'icon-sync-credit-notes' },
-                                        { name: 'Sync Xero Payments', icon: 'fa-money-bill-wave', class: 'icon-sync-payments' },
-                                        { name: 'Sync Xero Bank Transactions', icon: 'fa-exchange-alt', class: 'icon-sync-bank-transactions' },
-                                        { name: 'Sync Xero Quotes', icon: 'fa-quote-left', class: 'icon-sync-quotes' },
-                                        { name: 'Sync Xero Purchase Orders', icon: 'fa-shopping-bag', class: 'icon-sync-purchase-orders' },
-                                        { name: 'Sync Xero Manual Journals', icon: 'fa-book', class: 'icon-sync-manual-journals' }
+                                        { name: 'Xero Contacts', icon: 'fa-users', class: 'icon-sync-contacts' },
+                                        { name: 'Xero Accounts', icon: 'fa-list', class: 'icon-sync-accounts' },
+                                        { name: 'Xero Items', icon: 'fa-cubes', class: 'icon-sync-items' },
+                                        { name: 'Xero Invoices', icon: 'fa-file-text', class: 'icon-sync-invoices' },
+                                        { name: 'Xero Credit Notes', icon: 'fa-file', class: 'icon-sync-credit-notes' },
+                                        { name: 'Xero Payments', icon: 'fa-credit-card', class: 'icon-sync-payments' },
+                                        { name: 'Xero Manual Journals', icon: 'fa-book', class: 'icon-sync-manual-journals' },
+                                        { name: 'Xero Quotes', icon: 'fa-quote-left', class: 'icon-sync-quotes' },
+                                        { name: 'Xero Bank Transactions', icon: 'fa-bank', class: 'icon-sync-bank-transactions' },
+                                        { name: 'Xero Purchase Orders', icon: 'fa-shopping-bag', class: 'icon-sync-purchase-orders' }
                                     ], sync_from_xero_enabled)}
                                 </div>
                             </div>
@@ -1302,16 +1302,31 @@ class XeroSyncDashboard {
         frappe.confirm(
             `Are you sure you want to sync all ${entity} records?`,
             () => {
+                // Show a sync-in-progress indicator on the button
+                const btn = $(this.wrapper).find(`[data-entity="${entity}"]`);
+                const original_html = btn.html();
+                btn.prop('disabled', true).css('opacity', '0.7');
+                btn.find('.sync-button-title').text(`Syncing ${entity}...`);
+                
                 frappe.call({
                     method: 'xero.xero.page.xero_sync_dashboard.xero_sync_dashboard.trigger_manual_sync',
                     args: { entity_type: entity },
                     callback: (r) => {
+                        // Restore button
+                        btn.prop('disabled', false).css('opacity', '1');
+                        btn.html(original_html);
+                        
                         if (r.message && r.message.success) {
+                            const batch_id = r.message.sync_batch_id;
                             frappe.show_alert({
-                                message: `${entity} sync initiated successfully`,
+                                message: `${entity} sync initiated. Check the "Last Sync Attempts" tab for results.`,
                                 indicator: 'green'
                             });
-                            this.refresh_current_tab();
+                            
+                            // Store the batch ID so we can poll for results
+                            if (batch_id) {
+                                this._poll_sync_result(entity, batch_id);
+                            }
                         } else {
                             frappe.show_alert({
                                 message: r.message?.error || 'Sync failed to start',
@@ -1322,6 +1337,50 @@ class XeroSyncDashboard {
                 });
             }
         );
+    }
+
+    _poll_sync_result(entity, batch_id) {
+        // Poll for sync completion every 5 seconds, up to 2 minutes
+        let poll_count = 0;
+        const max_polls = 24;
+        
+        const poll_interval = setInterval(() => {
+            poll_count++;
+            
+            frappe.call({
+                method: 'xero.xero.page.xero_sync_dashboard.xero_sync_dashboard.get_sync_batch_status',
+                args: { sync_batch_id: batch_id },
+                callback: (r) => {
+                    if (r.message) {
+                        const data = r.message;
+                        // Check if sync has produced results (more than just the "started" Info log)
+                        if (data.total_logs > 1 || poll_count >= max_polls) {
+                            clearInterval(poll_interval);
+                            
+                            // Show a summary notification
+                            if (data.total_logs > 1) {
+                                const indicator = data.error_count > 0 ? 'orange' : 'green';
+                                let msg = `${entity} sync complete: ${data.success_count} succeeded`;
+                                if (data.error_count > 0) msg += `, ${data.error_count} failed`;
+                                if (data.warning_count > 0) msg += `, ${data.warning_count} warnings`;
+                                
+                                frappe.show_alert({
+                                    message: msg,
+                                    indicator: indicator
+                                }, 10);
+                            }
+                            
+                            // Refresh the current tab to show updated data
+                            this.refresh_current_tab();
+                        }
+                    }
+                },
+                error: () => {
+                    // Stop polling on error
+                    clearInterval(poll_interval);
+                }
+            });
+        }, 5000);
     }
 
     bulk_retry_failed() {
@@ -1742,13 +1801,14 @@ class XeroSyncDashboard {
                                     <div class="card mb-3 border-${this.get_sync_attempt_color(attempt.overall_status)}">
                                         <div class="card-header bg-${this.get_sync_attempt_color(attempt.overall_status)} text-white">
                                             <div class="row align-items-center">
-                                                <div class="col-md-6">
+                                                <div class="col-md-5">
                                                     <h6 class="mb-0">
                                                         <i class="fa fa-${this.get_sync_direction_icon(attempt.sync_direction)}"></i>
-                                                        ${attempt.sync_direction}
+                                                        ${attempt.sync_label ? `<strong>${attempt.sync_label}</strong>` : attempt.sync_direction}
                                                     </h6>
+                                                    ${attempt.sync_label ? `<small style="opacity: 0.85">${attempt.sync_direction}</small>` : ''}
                                                 </div>
-                                                <div class="col-md-3">
+                                                <div class="col-md-4">
                                                     <small>${frappe.datetime.str_to_user(attempt.sync_time)}</small>
                                                 </div>
                                                 <div class="col-md-3 text-right">

@@ -9,6 +9,7 @@
   "timestamp",
   "status",
   "category",
+  "sync_batch_id",
   "erpnext_doc_type",
   "erpnext_doc_name",
   "xero_entity_type",
@@ -42,6 +43,12 @@
    "label": "Category",
    "options": "\nConnection Issues\nValidation Errors\nAuthentication Issues\nRate Limiting\nSystem Monitoring\nMapping Errors\nOther Errors",
    "description": "Classification of the log entry for easier filtering and analysis"
+  },
+  {
+   "fieldname": "sync_batch_id",
+   "fieldtype": "Data",
+   "label": "Sync Batch ID",
+   "description": "Unique identifier to group log entries from the same sync operation"
   },
   {
    "fieldname": "erpnext_doc_type",

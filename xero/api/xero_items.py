@@ -107,14 +107,28 @@ def sync_item_to_xero(item_code, **kwargs):
         # Xero requires specifying if an item is sold, purchased, or both.
         # We'll assume both if relevant fields exist in ERPNext Item.
 
+        # Get accounts from item_defaults child table
+        sales_account = None
+        purchase_account = None
+        
+        # Get default company from system
+        company = frappe.db.get_default("company")
+        
+        # Access item_defaults child table directly from doc
+        if hasattr(doc, 'item_defaults') and doc.item_defaults:
+            for id_row in doc.item_defaults:
+                if id_row.company == company:
+                    sales_account = id_row.income_account or getattr(id_row, 'default_income_account', None)
+                    purchase_account = id_row.expense_account
+                    break
+
         # Sales Details - only add if account mapping exists
-        if doc.is_sales_item and doc.standard_selling_rate:
-            sales_account = doc.income_account # Get default income account
-            sales_account_code = get_xero_account_code(sales_account, settings) if sales_account else None
+        if doc.is_sales_item and doc.get("standard_rate") and sales_account:
+            sales_account_code = get_xero_account_code(sales_account, settings)
             if sales_account_code:
                 item_payload["IsSold"] = True
                 item_payload["SalesDetails"] = {
-                    "UnitPrice": doc.standard_selling_rate,
+                    "UnitPrice": doc.standard_rate,
                     "AccountCode": sales_account_code,
                     # TODO: Map default sales tax template?
                     # "TaxType": map_erpnext_tax_to_xero(doc.sales_tax_template, settings)
@@ -128,13 +142,12 @@ def sync_item_to_xero(item_code, **kwargs):
                 )
 
         # Purchase Details - only add if account mapping exists
-        if doc.is_purchase_item and doc.standard_buying_rate:
-            purchase_account = doc.expense_account # Get default expense account
-            purchase_account_code = get_xero_account_code(purchase_account, settings) if purchase_account else None
+        if doc.is_purchase_item and doc.get("last_purchase_rate") and purchase_account:
+            purchase_account_code = get_xero_account_code(purchase_account, settings)
             if purchase_account_code:
                 item_payload["IsPurchased"] = True
                 item_payload["PurchaseDetails"] = {
-                    "UnitPrice": doc.standard_buying_rate,
+                    "UnitPrice": doc.last_purchase_rate,
                     "AccountCode": purchase_account_code,
                      # TODO: Map default purchase tax template?
                     # "TaxType": map_erpnext_tax_to_xero(doc.purchase_tax_template, settings) # Need different mapping for purchase tax?
@@ -305,14 +318,14 @@ def process_xero_item(xero_item_data, settings):
 
     # Map Sales/Purchase details if they exist
     if xero_item_data.get("SalesDetails"):
-        erpnext_data["standard_selling_rate"] = xero_item_data["SalesDetails"].get("UnitPrice")
+        erpnext_data["standard_rate"] = xero_item_data["SalesDetails"].get("UnitPrice")
         # Map Account Code back to ERPNext Account? Requires reverse lookup on mapping table.
         # erpnext_data["income_account"] = get_erpnext_account_from_xero_code(xero_item_data["SalesDetails"].get("AccountCode"), settings)
         # Map TaxType back to ERPNext Tax Template? Requires reverse lookup.
         # erpnext_data["sales_tax_template"] = get_erpnext_tax_template_from_xero_type(xero_item_data["SalesDetails"].get("TaxType"), settings)
 
     if xero_item_data.get("PurchaseDetails"):
-        erpnext_data["standard_buying_rate"] = xero_item_data["PurchaseDetails"].get("UnitPrice")
+        erpnext_data["last_purchase_rate"] = xero_item_data["PurchaseDetails"].get("UnitPrice")
         # erpnext_data["expense_account"] = get_erpnext_account_from_xero_code(xero_item_data["PurchaseDetails"].get("AccountCode"), settings)
         # erpnext_data["purchase_tax_template"] = get_erpnext_tax_template_from_xero_type(xero_item_data["PurchaseDetails"].get("TaxType"), settings)
 
@@ -330,8 +343,8 @@ def process_xero_item(xero_item_data, settings):
                 "item_name": erpnext_data["item_name"],
                 "description": erpnext_data["description"],
                 "purchase_description": erpnext_data["purchase_description"],
-                "standard_selling_rate": erpnext_data.get("standard_selling_rate"),
-                "standard_buying_rate": erpnext_data.get("standard_buying_rate"),
+                "standard_rate": erpnext_data.get("standard_rate"),
+                "last_purchase_rate": erpnext_data.get("last_purchase_rate"),
                 "xero_item_id": xero_item_id, # Ensure ID is set
                 "xero_sync_status": "Synced",
                 # Avoid changing is_stock_item, is_sales_item etc. based on Xero? Or allow it?

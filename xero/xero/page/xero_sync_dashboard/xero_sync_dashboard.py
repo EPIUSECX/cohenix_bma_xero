@@ -342,16 +342,16 @@ def trigger_manual_sync(entity_type, filters=None, sync_type="full"):
         
         # Determine sync direction and check directional toggle
         from_xero_entities = [
-            "Sync Xero Accounts",
-            "Sync Xero Contacts",
-            "Sync Xero Items",
-            "Sync Xero Invoices",
-            "Sync Xero Credit Notes",
-            "Sync Xero Payments",
-            "Sync Xero Bank Transactions",
-            "Sync Xero Quotes",
-            "Sync Xero Purchase Orders",
-            "Sync Xero Manual Journals"
+            "Xero Accounts",
+            "Xero Contacts",
+            "Xero Items",
+            "Xero Invoices",
+            "Xero Credit Notes",
+            "Xero Payments",
+            "Xero Bank Transactions",
+            "Xero Quotes",
+            "Xero Purchase Orders",
+            "Xero Manual Journals"
         ]
         
         if entity_type in from_xero_entities:
@@ -367,6 +367,9 @@ def trigger_manual_sync(entity_type, filters=None, sync_type="full"):
         if filters and isinstance(filters, str):
             filters = json.loads(filters)
         
+        # Generate a unique batch ID for this sync operation
+        sync_batch_id = frappe.generate_hash(length=12)
+        
         sync_functions = {
             # ERPNext to Xero syncs
             "Sales Invoice": "xero.api.xero_invoices.sync_invoices_to_xero",
@@ -380,24 +383,42 @@ def trigger_manual_sync(entity_type, filters=None, sync_type="full"):
             "Quotation": "xero.api.xero_quotes.sync_quotes_to_xero",
             "Bank Transaction": "xero.api.xero_bank_transactions.sync_bank_transactions_to_xero",
             # Xero to ERPNext syncs - These sync FROM Xero TO ERPNext DocTypes
-            "Sync Xero Accounts": "xero.api.xero_accounts.sync_accounts_from_xero",
-            "Sync Xero Contacts": "xero.api.xero_contacts.sync_contacts_from_xero",
-            "Sync Xero Items": "xero.api.xero_items.sync_items_from_xero",
-            "Sync Xero Invoices": "xero.api.xero_invoices.sync_invoices_from_xero",
-            "Sync Xero Credit Notes": "xero.api.xero_credit_notes.sync_credit_notes_from_xero",
-            "Sync Xero Payments": "xero.api.xero_payments.sync_payments_from_xero",
-            "Sync Xero Bank Transactions": "xero.api.xero_bank_transactions.sync_bank_transactions_from_xero",
-            "Sync Xero Quotes": "xero.api.xero_quotes.sync_quotes_from_xero",
-            "Sync Xero Purchase Orders": "xero.api.xero_purchase_orders.sync_purchase_orders_from_xero",
-            "Sync Xero Manual Journals": "xero.api.xero_journals.sync_manual_journals_from_xero"
+            "Xero Accounts": "xero.api.xero_accounts.sync_accounts_from_xero",
+            "Xero Contacts": "xero.api.xero_contacts.sync_contacts_from_xero",
+            "Xero Items": "xero.api.xero_items.sync_items_from_xero",
+            "Xero Invoices": "xero.api.xero_invoices.sync_invoices_from_xero",
+            "Xero Credit Notes": "xero.api.xero_credit_notes.sync_credit_notes_from_xero",
+            "Xero Payments": "xero.api.xero_payments.sync_payments_from_xero",
+            "Xero Bank Transactions": "xero.api.xero_bank_transactions.sync_bank_transactions_from_xero",
+            "Xero Quotes": "xero.api.xero_quotes.sync_quotes_from_xero",
+            "Xero Purchase Orders": "xero.api.xero_purchase_orders.sync_purchase_orders_from_xero",
+            "Xero Manual Journals": "xero.api.xero_journals.sync_manual_journals_from_xero"
         }
         
         function_path = sync_functions.get(entity_type)
         if not function_path:
             frappe.throw(_("Sync function not found for entity type: {0}").format(entity_type))
         
-        # For "Sync Xero" functions, we don't pass filters since they sync FROM Xero
-        if entity_type.startswith("Sync Xero"):
+        # Determine direction for logging
+        is_from_xero = entity_type in from_xero_entities
+        direction = "Xero to ERPNext" if is_from_xero else "ERPNext to Xero"
+        
+        # Map entity types to the actual ERPNext DocTypes they create/sync
+        target_doctype_map = {
+            "Xero Accounts": "Account",
+            "Xero Contacts": "Customer",
+            "Xero Items": "Item",
+            "Xero Invoices": "Sales Invoice",
+            "Xero Credit Notes": "Sales Invoice",
+            "Xero Payments": "Payment Entry",
+            "Xero Bank Transactions": "Bank Transaction",
+            "Xero Quotes": "Quotation",
+            "Xero Purchase Orders": "Purchase Order",
+            "Xero Manual Journals": "Journal Entry"
+        }
+        target_doctype = target_doctype_map.get(entity_type, entity_type)
+        
+        if is_from_xero:
             # These are Xero to ERPNext sync functions - no filters needed
             job = frappe.enqueue(
                 function_path,
@@ -405,31 +426,6 @@ def trigger_manual_sync(entity_type, filters=None, sync_type="full"):
                 timeout=3600,
                 job_name=f"Manual Sync: {entity_type}"
             )
-            
-            # Map Xero sync operations to the actual ERPNext DocTypes they create
-            target_doctype_map = {
-                "Sync Xero Accounts": "Account",
-                "Sync Xero Contacts": "Customer",
-                "Sync Xero Items": "Item",
-                "Sync Xero Invoices": "Sales Invoice",
-                "Sync Xero Credit Notes": "Sales Invoice",
-                "Sync Xero Payments": "Payment Entry",
-                "Sync Xero Bank Transactions": "Bank Transaction",
-                "Sync Xero Quotes": "Quotation",
-                "Sync Xero Purchase Orders": "Purchase Order",
-                "Sync Xero Manual Journals": "Journal Entry"
-            }
-            
-            target_doctype = target_doctype_map.get(entity_type, "Account")  # Default to Account
-            
-            # Log the manual sync trigger with the target ERPNext DocType
-            frappe.get_doc({
-                "doctype": "Xero Log",
-                "status": "Info",
-                "message": f"Manual sync triggered for {entity_type}",
-                "erpnext_doc_type": target_doctype,
-                "timestamp": now_datetime()
-            }).insert(ignore_permissions=True)
         else:
             # These are ERPNext to Xero sync functions - use filters
             job = frappe.enqueue(
@@ -440,19 +436,22 @@ def trigger_manual_sync(entity_type, filters=None, sync_type="full"):
                 sync_type=sync_type,
                 job_name=f"Manual Sync: {entity_type}"
             )
-            
-            # Log the manual sync trigger
-            frappe.get_doc({
-                "doctype": "Xero Log",
-                "status": "Info",
-                "message": f"Manual sync triggered for {entity_type}",
-                "erpnext_doc_type": entity_type,
-                "timestamp": now_datetime()
-            }).insert(ignore_permissions=True)
+        
+        # Log the manual sync trigger with batch ID
+        frappe.get_doc({
+            "doctype": "Xero Log",
+            "status": "Info",
+            "message": f"Manual sync started: {entity_type}",
+            "erpnext_doc_type": target_doctype,
+            "direction": direction,
+            "sync_batch_id": sync_batch_id,
+            "timestamp": now_datetime()
+        }).insert(ignore_permissions=True)
         
         return {
             "success": True,
             "job_id": job.id,
+            "sync_batch_id": sync_batch_id,
             "message": f"Manual sync for {entity_type} has been queued successfully"
         }
         
@@ -1698,46 +1697,49 @@ def get_recommendations(sync_time, direction):
 
 @frappe.whitelist()
 def get_last_sync_attempts():
-    """Get detailed breakdown of last sync attempts with item-level status"""
+    """Get detailed breakdown of last sync attempts with item-level status.
+    
+    Uses sync_batch_id to group logs from the same sync operation, preventing
+    different sync operations (e.g. Contacts then Items) from merging together.
+    Falls back to timestamp-based grouping for older logs without batch IDs.
+    """
     try:
         from datetime import datetime, timedelta
         
         # Get sync attempts from the last 7 days
         seven_days_ago = add_days(now_datetime(), -7)
         
-        # Group logs by timestamp (rounded to nearest minute) to identify sync batches
-        # Include Warning logs to show skipped items and provide actionable feedback
-        # Exclude only Info logs which are purely informational
-        sync_batches = frappe.db.sql("""
+        sync_attempts = []
+        
+        # --- Part 1: Get batches that have a sync_batch_id (new-style) ---
+        batched_syncs = frappe.db.sql("""
             SELECT
-                DATE_FORMAT(timestamp, '%%Y-%%m-%%d %%H:%%i:00') as sync_time,
+                sync_batch_id,
                 direction,
                 COUNT(*) as item_count,
                 SUM(CASE WHEN status = 'Success' THEN 1 ELSE 0 END) as success_count,
                 SUM(CASE WHEN status = 'Error' THEN 1 ELSE 0 END) as error_count,
                 SUM(CASE WHEN status = 'Warning' THEN 1 ELSE 0 END) as warning_count,
-                SUM(CASE WHEN message LIKE '%%Skipping%%' THEN 1 ELSE 0 END) as skipped_count,
+                SUM(CASE WHEN status = 'Info' THEN 1 ELSE 0 END) as info_count,
+                SUM(CASE WHEN message LIKE '%%Skipping%%' OR message LIKE '%%Cannot sync%%' THEN 1 ELSE 0 END) as skipped_count,
                 GROUP_CONCAT(DISTINCT erpnext_doc_type ORDER BY erpnext_doc_type SEPARATOR ', ') as entities_synced,
                 MIN(timestamp) as start_time,
                 MAX(timestamp) as end_time,
                 TIMESTAMPDIFF(SECOND, MIN(timestamp), MAX(timestamp)) as duration
             FROM `tabXero Log`
             WHERE timestamp >= %s
+            AND sync_batch_id IS NOT NULL
+            AND sync_batch_id != ''
             AND erpnext_doc_type IS NOT NULL
             AND erpnext_doc_type != 'Unknown'
-            AND status IN ('Success', 'Error', 'Warning')
-            AND message NOT LIKE '%%Manual sync triggered%%'
-            AND message NOT LIKE '%%sync is disabled%%'
-            GROUP BY DATE_FORMAT(timestamp, '%%Y-%%m-%%d %%H:%%i:00'), direction
+            GROUP BY sync_batch_id, direction
             HAVING item_count > 0
-            ORDER BY sync_time DESC
+            ORDER BY start_time DESC
             LIMIT 20
         """, (seven_days_ago,), as_dict=True)
         
-        # For each sync batch, get detailed item-level information
-        sync_attempts = []
-        for batch in sync_batches:
-            # Get all log entries for this sync batch
+        for batch in batched_syncs:
+            # Get all log entries for this batch
             items = frappe.db.sql("""
                 SELECT
                     name as log_name,
@@ -1750,35 +1752,35 @@ def get_last_sync_attempts():
                     error_details,
                     processing_time
                 FROM `tabXero Log`
-                WHERE DATE_FORMAT(timestamp, '%%Y-%%m-%%d %%H:%%i:00') = %s
-                AND direction = %s
+                WHERE sync_batch_id = %s
                 AND erpnext_doc_type IS NOT NULL
                 AND erpnext_doc_type != 'Unknown'
+                AND status IN ('Success', 'Error', 'Warning')
                 ORDER BY timestamp ASC
-            """, (batch.sync_time, batch.direction), as_dict=True)
+            """, (batch.sync_batch_id,), as_dict=True)
             
-            # Determine overall status for this sync attempt
-            # Enhanced status logic to handle warnings
-            if batch.error_count > 0 and batch.success_count > 0:
-                overall_status = "Partial Success"
-            elif batch.error_count > 0:
-                overall_status = "Failed"
-            elif batch.warning_count > 0 and batch.success_count == 0:
-                overall_status = "Warnings Only"
-            elif batch.warning_count > 0 and batch.success_count > 0:
-                overall_status = "Success with Warnings"
-            else:
-                overall_status = "Success"
+            # Determine overall status
+            overall_status = _determine_overall_status(batch)
             
             # Parse entities synced
             entities_list = batch.entities_synced.split(', ') if batch.entities_synced else []
             
-            # Get failure summary and recommendations for this sync attempt
-            failure_summary = get_failure_summary(batch.sync_time, batch.direction)
-            recommendations = get_recommendations(batch.sync_time, batch.direction)
+            # Get the sync operation name from the Info log
+            sync_label = None
+            info_log = frappe.db.get_value("Xero Log",
+                {"sync_batch_id": batch.sync_batch_id, "status": "Info", "message": ["like", "Manual sync started:%"]},
+                "message")
+            if info_log:
+                sync_label = info_log.replace("Manual sync started: ", "")
+            
+            # Get failure summary and recommendations using batch_id
+            failure_summary = get_failure_summary_by_batch(batch.sync_batch_id)
+            recommendations = get_recommendations_by_batch(batch.sync_batch_id)
             
             sync_attempts.append({
-                "sync_time": batch.sync_time,
+                "sync_batch_id": batch.sync_batch_id,
+                "sync_time": str(batch.start_time),
+                "sync_label": sync_label,
                 "sync_direction": batch.direction or "Unknown",
                 "overall_status": overall_status,
                 "entities_synced": entities_list,
@@ -1791,6 +1793,86 @@ def get_last_sync_attempts():
                 "failure_summary": failure_summary,
                 "actionable_recommendations": recommendations
             })
+        
+        # --- Part 2: Get older logs without batch IDs (legacy fallback) ---
+        # Only if we have fewer than 20 batched results
+        if len(sync_attempts) < 20:
+            remaining_limit = 20 - len(sync_attempts)
+            legacy_batches = frappe.db.sql("""
+                SELECT
+                    DATE_FORMAT(timestamp, '%%Y-%%m-%%d %%H:%%i:00') as sync_time,
+                    direction,
+                    COUNT(*) as item_count,
+                    SUM(CASE WHEN status = 'Success' THEN 1 ELSE 0 END) as success_count,
+                    SUM(CASE WHEN status = 'Error' THEN 1 ELSE 0 END) as error_count,
+                    SUM(CASE WHEN status = 'Warning' THEN 1 ELSE 0 END) as warning_count,
+                    SUM(CASE WHEN message LIKE '%%Skipping%%' OR message LIKE '%%Cannot sync%%' THEN 1 ELSE 0 END) as skipped_count,
+                    GROUP_CONCAT(DISTINCT erpnext_doc_type ORDER BY erpnext_doc_type SEPARATOR ', ') as entities_synced,
+                    MIN(timestamp) as start_time,
+                    MAX(timestamp) as end_time,
+                    TIMESTAMPDIFF(SECOND, MIN(timestamp), MAX(timestamp)) as duration
+                FROM `tabXero Log`
+                WHERE timestamp >= %s
+                AND (sync_batch_id IS NULL OR sync_batch_id = '')
+                AND erpnext_doc_type IS NOT NULL
+                AND erpnext_doc_type != 'Unknown'
+                AND status IN ('Success', 'Error', 'Warning')
+                AND message NOT LIKE '%%Manual sync started%%'
+                AND message NOT LIKE '%%sync is disabled%%'
+                GROUP BY DATE_FORMAT(timestamp, '%%Y-%%m-%%d %%H:%%i:00'), direction
+                HAVING item_count > 0
+                ORDER BY sync_time DESC
+                LIMIT %s
+            """, (seven_days_ago, remaining_limit), as_dict=True)
+            
+            for batch in legacy_batches:
+                items = frappe.db.sql("""
+                    SELECT
+                        name as log_name,
+                        status,
+                        message,
+                        erpnext_doc_type,
+                        erpnext_doc_name,
+                        xero_entity_id,
+                        timestamp,
+                        error_details,
+                        processing_time
+                    FROM `tabXero Log`
+                    WHERE DATE_FORMAT(timestamp, '%%Y-%%m-%%d %%H:%%i:00') = %s
+                    AND direction = %s
+                    AND (sync_batch_id IS NULL OR sync_batch_id = '')
+                    AND erpnext_doc_type IS NOT NULL
+                    AND erpnext_doc_type != 'Unknown'
+                    AND status IN ('Success', 'Error', 'Warning')
+                    ORDER BY timestamp ASC
+                """, (batch.sync_time, batch.direction), as_dict=True)
+                
+                overall_status = _determine_overall_status(batch)
+                entities_list = batch.entities_synced.split(', ') if batch.entities_synced else []
+                
+                failure_summary = get_failure_summary(batch.sync_time, batch.direction)
+                recommendations = get_recommendations(batch.sync_time, batch.direction)
+                
+                sync_attempts.append({
+                    "sync_batch_id": None,
+                    "sync_time": batch.sync_time,
+                    "sync_label": None,
+                    "sync_direction": batch.direction or "Unknown",
+                    "overall_status": overall_status,
+                    "entities_synced": entities_list,
+                    "success_count": batch.success_count,
+                    "error_count": batch.error_count,
+                    "warning_count": batch.warning_count,
+                    "skipped_count": batch.skipped_count,
+                    "duration": batch.duration,
+                    "items": items,
+                    "failure_summary": failure_summary,
+                    "actionable_recommendations": recommendations
+                })
+        
+        # Sort all attempts by time descending
+        sync_attempts.sort(key=lambda a: a['sync_time'], reverse=True)
+        sync_attempts = sync_attempts[:20]
         
         # Calculate summary statistics
         total_attempts = len(sync_attempts)
@@ -1808,7 +1890,7 @@ def get_last_sync_attempts():
             "partial_success_attempts": partial_success_attempts,
             "warning_only_attempts": warning_only_attempts,
             "success_with_warnings_attempts": success_with_warnings_attempts,
-            "in_progress_attempts": 0  # Always 0 since we don't show in-progress syncs
+            "in_progress_attempts": 0
         }
         
     except Exception as e:
@@ -1821,6 +1903,166 @@ def get_last_sync_attempts():
             "failed_attempts": 0,
             "in_progress_attempts": 0
         }
+
+
+def _determine_overall_status(batch):
+    """Determine the overall status for a sync batch based on counts."""
+    if batch.error_count > 0 and batch.success_count > 0:
+        return "Partial Success"
+    elif batch.error_count > 0:
+        return "Failed"
+    elif batch.warning_count > 0 and batch.success_count == 0:
+        return "Warnings Only"
+    elif batch.warning_count > 0 and batch.success_count > 0:
+        return "Success with Warnings"
+    else:
+        return "Success"
+
+
+def get_failure_summary_by_batch(sync_batch_id):
+    """Aggregates failure reasons for a sync batch identified by sync_batch_id."""
+    try:
+        failures = frappe.db.sql("""
+            SELECT
+                CASE
+                    WHEN message LIKE '%%No account mapping%%' OR message LIKE '%%Account Code mapping not found%%' THEN 'Missing Account Mappings'
+                    WHEN message LIKE '%%not found in ERPNext%%' THEN 'Missing Master Data'
+                    WHEN message LIKE '%%must be synced first%%' OR message LIKE '%%Pending Prerequisites%%' OR message LIKE '%%Please sync%%' THEN 'Missing Prerequisites'
+                    WHEN message LIKE '%%No contact information%%' OR message LIKE '%%not found for Xero Contact%%' THEN 'Missing Contact'
+                    WHEN message LIKE '%%No valid line items%%' THEN 'Invalid Line Items'
+                    WHEN message LIKE '%%Cannot sync%%' THEN 'Sync Blocked'
+                    ELSE 'Other Issues'
+                END as failure_category,
+                COUNT(*) as count,
+                GROUP_CONCAT(DISTINCT COALESCE(erpnext_doc_name, 'Unknown') ORDER BY erpnext_doc_name SEPARATOR ', ') as affected_docs,
+                MAX(message) as example_message
+            FROM `tabXero Log`
+            WHERE sync_batch_id = %s
+            AND status IN ('Warning', 'Error')
+            GROUP BY failure_category
+            ORDER BY count DESC
+        """, (sync_batch_id,), as_dict=True)
+        
+        return failures
+    except Exception as e:
+        frappe.log_error(frappe.get_traceback(), "Get Failure Summary By Batch Error")
+        return []
+
+
+def get_recommendations_by_batch(sync_batch_id):
+    """Provides actionable recommendations based on failure patterns for a specific batch."""
+    try:
+        recommendations = []
+        
+        # Check for missing account mappings
+        missing_accounts_data = frappe.db.sql("""
+            SELECT
+                COUNT(*) as count,
+                GROUP_CONCAT(DISTINCT
+                    SUBSTRING_INDEX(SUBSTRING_INDEX(message, 'AccountCode ', -1), ' ', 1)
+                    SEPARATOR ', '
+                ) as account_codes
+            FROM `tabXero Log`
+            WHERE sync_batch_id = %s
+            AND (message LIKE '%%No account mapping%%' OR message LIKE '%%Account Code mapping not found%%')
+        """, (sync_batch_id,), as_dict=True)
+        
+        if missing_accounts_data and missing_accounts_data[0]['count'] > 0:
+            account_codes = missing_accounts_data[0]['account_codes'] or "unknown"
+            recommendations.append({
+                "type": "account_mapping",
+                "severity": "high",
+                "title": "Missing Account Mappings",
+                "message": f"{missing_accounts_data[0]['count']} items skipped due to missing account mappings for Xero AccountCode(s): {account_codes}",
+                "action": "Go to Xero Settings → Account Mappings and map these Xero account codes to ERPNext accounts",
+                "icon": "fa-link",
+                "action_button": {
+                    "label": "Configure Mappings",
+                    "route": "/app/xero-settings"
+                },
+                "secondary_button": {
+                    "label": "View Logs",
+                    "action": "view_logs",
+                    "filter": {"message": "account mapping"}
+                }
+            })
+        
+        # Check for missing prerequisites (invoices, contacts, accounts not synced)
+        missing_prereqs_data = frappe.db.sql("""
+            SELECT COUNT(*) as count
+            FROM `tabXero Log`
+            WHERE sync_batch_id = %s
+            AND (message LIKE '%%Please sync%%' OR message LIKE '%%has not been synced%%' OR message LIKE '%%must be synced first%%')
+        """, (sync_batch_id,), as_dict=True)
+        
+        if missing_prereqs_data and missing_prereqs_data[0]['count'] > 0:
+            recommendations.append({
+                "type": "missing_prerequisites",
+                "severity": "high",
+                "title": "Missing Prerequisites",
+                "message": f"{missing_prereqs_data[0]['count']} items could not sync because required data hasn't been synced yet",
+                "action": "Sync the prerequisite data first (e.g. Contacts before Invoices, Invoices before Payments, Chart of Accounts before Payments)",
+                "icon": "fa-exclamation-triangle",
+                "action_button": {
+                    "label": "View Xero Settings",
+                    "route": "/app/xero-settings"
+                }
+            })
+        
+        # Check for missing contacts
+        missing_contacts_data = frappe.db.sql("""
+            SELECT COUNT(*) as count
+            FROM `tabXero Log`
+            WHERE sync_batch_id = %s
+            AND (message LIKE '%%not found for Xero Contact%%' OR message LIKE '%%No contact information%%')
+        """, (sync_batch_id,), as_dict=True)
+        
+        if missing_contacts_data and missing_contacts_data[0]['count'] > 0:
+            recommendations.append({
+                "type": "missing_contacts",
+                "severity": "high",
+                "title": "Missing Contacts",
+                "message": f"{missing_contacts_data[0]['count']} documents skipped due to missing contacts",
+                "action": "Click 'Sync Xero Contacts' first to import customers and suppliers from Xero",
+                "icon": "fa-users",
+                "action_button": {
+                    "label": "Sync Xero Contacts",
+                    "entity": "Xero Contacts"
+                }
+            })
+        
+        return recommendations
+    except Exception as e:
+        frappe.log_error(frappe.get_traceback(), "Get Recommendations By Batch Error")
+        return []
+
+
+@frappe.whitelist()
+def get_sync_batch_status(sync_batch_id):
+    """Get the current status of a sync batch by its ID.
+    Used for polling after triggering a manual sync."""
+    try:
+        if not sync_batch_id:
+            return {"total_logs": 0, "success_count": 0, "error_count": 0, "warning_count": 0}
+        
+        result = frappe.db.sql("""
+            SELECT
+                COUNT(*) as total_logs,
+                SUM(CASE WHEN status = 'Success' THEN 1 ELSE 0 END) as success_count,
+                SUM(CASE WHEN status = 'Error' THEN 1 ELSE 0 END) as error_count,
+                SUM(CASE WHEN status = 'Warning' THEN 1 ELSE 0 END) as warning_count,
+                SUM(CASE WHEN status = 'Info' THEN 1 ELSE 0 END) as info_count
+            FROM `tabXero Log`
+            WHERE sync_batch_id = %s
+        """, (sync_batch_id,), as_dict=True)
+        
+        if result:
+            return result[0]
+        return {"total_logs": 0, "success_count": 0, "error_count": 0, "warning_count": 0}
+        
+    except Exception as e:
+        frappe.log_error(frappe.get_traceback(), "Get Sync Batch Status Error")
+        return {"total_logs": 0, "success_count": 0, "error_count": 0, "warning_count": 0, "error": str(e)}
 
 
 @frappe.whitelist()
