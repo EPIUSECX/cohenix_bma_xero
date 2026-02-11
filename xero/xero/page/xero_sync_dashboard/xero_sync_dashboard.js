@@ -127,35 +127,44 @@ class XeroSyncDashboard {
                 display: block;
             }
 
-            .nav-tabs {
-                border-bottom: 2px solid var(--xero-border);
-                padding: 0 20px;
-                background: var(--xero-bg);
-                border-radius: 8px 8px 0 0;
-                box-shadow: 0 2px 8px var(--xero-shadow);
-                border: 1px solid var(--xero-border);
-                border-bottom: 2px solid var(--xero-border);
+            /* Modern pill-style tabs for the dashboard */
+            .xero-dashboard-container .nav-tabs {
+                border: none;
+                padding: 0;
+                background: transparent;
+                box-shadow: none;
+                display: flex;
+                flex-wrap: wrap;
+                gap: 8px;
+                align-items: center;
+                justify-content: center;
+                width: 100%;
+                margin: 0 auto;
             }
 
-            .nav-tabs .nav-link {
+            .xero-dashboard-container .nav-tabs .nav-link {
                 color: var(--xero-text-muted);
-                border: none;
-                padding: 16px 20px;
+                border: 1px solid var(--xero-border);
+                padding: 8px 18px;
                 font-weight: 500;
+                border-radius: 999px;
+                margin: 4px 0;
+                background: var(--xero-bg);
                 transition: all 0.2s ease;
             }
 
-            .nav-tabs .nav-link.active {
+            .xero-dashboard-container .nav-tabs .nav-link.active {
                 background-color: var(--xero-primary) !important;
-                color: white !important;
-                border-radius: 6px 6px 0 0;
-                border: none !important;
-                position: relative;
+                color: #ffffff !important;
+                border-color: var(--xero-primary) !important;
+                box-shadow: 0 2px 6px var(--xero-shadow);
+                transform: translateY(-1px);
             }
 
-            .nav-tabs .nav-link:hover:not(.active) {
+            .xero-dashboard-container .nav-tabs .nav-link:hover:not(.active) {
                 color: var(--xero-primary);
-                background-color: transparent;
+                background-color: var(--xero-bg-alt);
+                border-color: var(--xero-primary);
             }
 
             .xero-loading-overlay {

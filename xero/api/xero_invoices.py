@@ -122,11 +122,10 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
             # Queue contact sync asynchronously instead of inline
             frappe.logger().info(f"Xero Contact ID not found for {contact_party_type} {contact_party_name}. Queuing contact sync.", "Xero Sync")
             
-            # Queue contact sync
+            # Queue contact sync (pass party name and type so worker gets correct doc_name, doc_type)
             from .xero_contacts import enqueue_sync_contact
             try:
-                contact_doc = frappe.get_doc(contact_party_type, contact_party_name)
-                enqueue_sync_contact(contact_doc, "manual_trigger")
+                enqueue_sync_contact(contact_party_name, contact_party_type)
             except Exception as e:
                 frappe.log_error(f"Failed to queue contact sync: {str(e)}", "Xero Contact Queue Error")
             

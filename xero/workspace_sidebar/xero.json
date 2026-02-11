@@ -1,0 +1,64 @@
+{
+ "app": "xero",
+ "creation": "2026-02-11 08:40:53.374979",
+ "docstatus": 0,
+ "doctype": "Workspace Sidebar",
+ "idx": 0,
+ "items": [
+  {
+   "child": 0,
+   "collapsible": 1,
+   "icon": "setting",
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "Xero Settings",
+   "link_to": "Xero Settings",
+   "link_type": "DocType",
+   "show_arrow": 0,
+   "type": "Link"
+  },
+  {
+   "child": 0,
+   "collapsible": 1,
+   "icon": "sell",
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "Xero Dashboard",
+   "link_to": "xero-sync-dashboard",
+   "link_type": "Page",
+   "show_arrow": 0,
+   "type": "Link"
+  },
+  {
+   "child": 0,
+   "collapsible": 1,
+   "icon": "contact-round",
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "Xero Account",
+   "link_to": "Xero Account",
+   "link_type": "DocType",
+   "show_arrow": 0,
+   "type": "Link"
+  },
+  {
+   "child": 0,
+   "collapsible": 1,
+   "icon": "settings",
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "Mapping Settings",
+   "link_to": "Xero Mapping Settings",
+   "link_type": "DocType",
+   "show_arrow": 0,
+   "type": "Link"
+  }
+ ],
+ "modified": "2026-02-11 08:47:31.895907",
+ "modified_by": "Administrator",
+ "module": "Xero",
+ "name": "Xero",
+ "owner": "Administrator",
+ "standard": 1,
+ "title": "Xero"
+}
