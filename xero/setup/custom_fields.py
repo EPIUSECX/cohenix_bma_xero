@@ -21,6 +21,7 @@ def setup_custom_fields():
         # Customer fields
         "xero_contact_id",
         "xero_sync_status",
+        "xero_data_hash",
         "xero_last_contact_sync",
         # Supplier fields - same field names as Customer
         # Item fields
@@ -269,13 +270,25 @@ def setup_custom_fields():
                 "insert_after": "xero_contact_id"
             },
             {
+                "fieldname": "xero_data_hash",
+                "fieldtype": "Data",
+                "label": "Xero Data Hash",
+                "length": 32,
+                "no_copy": 1,
+                "read_only": 1,
+                "print_hide": 1,
+                "report_hide": 1,
+                "hidden": 1,
+                "insert_after": "xero_sync_status"
+            },
+            {
                 "fieldname": "xero_last_contact_sync",
                 "fieldtype": "Datetime",
                 "label": "Xero Last Contact Sync",
                 "no_copy": 1,
                 "read_only": 1,
                 "print_hide": 1,
-                "insert_after": "xero_sync_status"
+                "insert_after": "xero_data_hash"
             }
         ],
         "Supplier": [
@@ -304,13 +317,25 @@ def setup_custom_fields():
                 "insert_after": "xero_contact_id"
             },
             {
+                "fieldname": "xero_data_hash",
+                "fieldtype": "Data",
+                "label": "Xero Data Hash",
+                "length": 32,
+                "no_copy": 1,
+                "read_only": 1,
+                "print_hide": 1,
+                "report_hide": 1,
+                "hidden": 1,
+                "insert_after": "xero_sync_status"
+            },
+            {
                 "fieldname": "xero_last_contact_sync",
                 "fieldtype": "Datetime",
                 "label": "Xero Last Contact Sync",
                 "no_copy": 1,
                 "read_only": 1,
                 "print_hide": 1,
-                "insert_after": "xero_sync_status"
+                "insert_after": "xero_data_hash"
             }
         ],
         "Item": [

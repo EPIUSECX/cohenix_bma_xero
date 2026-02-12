@@ -4,9 +4,99 @@
 import frappe
 from frappe import _
 from frappe.utils import get_fullname
+import hashlib
+import re
 from ..utils.xero_client import xero_request, get_xero_settings
 from ..utils.logging import log_xero_error # We'll create this logging utility next
 from ..utils.retry_handler import retry_with_exponential_backoff
+
+
+# =============================================================================
+# CONSTANTS
+# =============================================================================
+
+# Xero API limits
+XERO_MAX_CONTACT_PERSONS = 5  # Xero allows max 5 ContactPersons per contact
+
+
+# =============================================================================
+# HELPER FUNCTIONS
+# =============================================================================
+
+def validate_and_sanitize_name(name, doc_type, doc_name):
+    """Validate and sanitize contact name for Xero API.
+    
+    Xero requirements:
+    - Max 255 characters
+    - No angle brackets
+    - No leading/trailing whitespace
+    - No repeating spaces
+    
+    Returns: tuple (sanitized_name, error_message or None)
+    """
+    if not name or not str(name).strip():
+        return None, f"Contact name is required for {doc_type} {doc_name}"
+    
+    name = str(name).strip()
+    
+    # Check for angle brackets and remove them
+    if '<' in name or '>' in name:
+        name = name.replace('<', '').replace('>', '').strip()
+        if not name:
+            return None, f"Contact name for {doc_type} {doc_name} contains only invalid characters (< >)"
+    
+    # Collapse multiple spaces into single space
+    name = re.sub(r'\s+', ' ', name)
+    
+    # Check length
+    if len(name) > 255:
+        return None, f"Contact name for {doc_type} {doc_name} exceeds 255 characters (current: {len(name)})"
+    
+    return name, None
+
+
+def compute_data_hash(doc):
+    """Compute hash of relevant fields to detect changes.
+    
+    This is used to prevent unnecessary re-syncs when data hasn't changed.
+    """
+    name_field = "customer_name" if doc.doctype == "Customer" else "supplier_name"
+    data = f"{doc.get(name_field) or ''}|{doc.get('tax_id') or ''}|{doc.get('website') or ''}|{doc.get('disabled') or 0}"
+    return hashlib.md5(data.encode()).hexdigest()
+
+
+def parse_erpnext_reference(contact_number):
+    """Parse ERPNext reference from Xero ContactNumber.
+    
+    Format: "ERP:{type_code}:{doc_name}"
+    Example: "ERP:C:CUST-001" for Customer, "ERP:S:SUPP-001" for Supplier
+    
+    Returns: tuple (doc_type, doc_name) or (None, None) if not found
+    """
+    if not contact_number or not str(contact_number).startswith("ERP:"):
+        return None, None
+    
+    parts = str(contact_number).split(":")
+    if len(parts) != 3:
+        return None, None
+    
+    type_code, doc_name = parts[1], parts[2]
+    doc_type = "Customer" if type_code == "C" else "Supplier" if type_code == "S" else None
+    return doc_type, doc_name
+
+
+def build_contact_number(doc_type, doc_name):
+    """Build ContactNumber for Xero contact.
+    
+    Format: "ERP:{type_code}:{doc_name}"
+    """
+    type_code = "C" if doc_type == "Customer" else "S"
+    return f"ERP:{type_code}:{doc_name}"
+
+
+# =============================================================================
+# SYNC FUNCTIONS
+# =============================================================================
 
 @frappe.whitelist()
 def enqueue_sync_contact(doc_name, doc_type=None):
@@ -22,11 +112,22 @@ def enqueue_sync_contact(doc_name, doc_type=None):
         # Second arg was method name; doc_name might be a string identifier
         frappe.throw(_("enqueue_sync_contact requires (doc_name, doc_type) or a document as first argument."))
 
-    # Guard against double-trigger from on_update hook
-    # When sync_contact_to_xero updates xero_contact_id, it triggers on_update again
-    xero_status = frappe.db.get_value(doc_type, doc_name, "xero_sync_status")
-    if xero_status == "Synced":
-        return  # Already synced, skip re-trigger
+    # Improved guard against double-trigger from on_update hook
+    # Check if sync should be skipped based on status and data changes
+    sync_status = frappe.db.get_value(doc_type, doc_name, "xero_sync_status")
+    
+    # Allow re-sync if status is Error or Pending
+    if sync_status in ("Error", "Pending"):
+        pass  # Continue to sync
+    elif sync_status == "Synced":
+        # Check if data has changed since last sync
+        doc = frappe.get_doc(doc_type, doc_name)
+        current_hash = compute_data_hash(doc)
+        stored_hash = frappe.db.get_value(doc_type, doc_name, "xero_data_hash") or ""
+        
+        if current_hash == stored_hash:
+            # No changes since last sync, skip
+            return
 
     frappe.enqueue(
         "xero.api.xero_contacts.sync_contact_to_xero",
@@ -42,12 +143,15 @@ def enqueue_sync_contact(doc_name, doc_type=None):
 def sync_contact_to_xero(doc_name, doc_type, **kwargs):
     """
     Syncs an ERPNext Customer or Supplier to Xero Contacts.
-    Uses PUT for both create and update as per Xero API recommendation.
+    
+    CRITICAL: Uses POST for updates (when ContactID is known) and PUT for creates.
+    This is because PUT errors if ContactName matches an existing contact.
+    
+    NOTE: IsCustomer/IsSupplier are NOT sent - they are read-only fields in Xero API.
+    Xero sets these automatically when invoices are created against the contact.
     """
     settings = get_xero_settings()
     if not settings.enable_xero_sync:
-        # Log only once if master switch is off? Or not at all?
-        # frappe.logger().info("Xero Sync master switch is disabled.", "Xero Info")
         return # Master switch disabled
     
     # Check directional toggle for outbound sync
@@ -68,12 +172,13 @@ def sync_contact_to_xero(doc_name, doc_type, **kwargs):
         doc = frappe.get_doc(doc_type, doc_name)
         xero_contact_id = doc.get("xero_contact_id")
 
-        # --- Validate Name (required by Xero for create; recommended for update) ---
+        # --- Validate and Sanitize Name (required by Xero) ---
         raw_name = doc.get("customer_name") or doc.get("supplier_name")
-        name = (raw_name or "").strip()
-        if not name:
+        name, error = validate_and_sanitize_name(raw_name, doc_type, doc_name)
+        
+        if error:
             log_xero_error(
-                message=f"Contact sync skipped: {doc_type} name is required. Document: {doc_name}.",
+                message=error,
                 status="Warning",
                 erpnext_doc_type=doc_type,
                 erpnext_doc_name=doc_name,
@@ -86,11 +191,14 @@ def sync_contact_to_xero(doc_name, doc_type, **kwargs):
         # --- Map ERPNext Data to Xero Contact Format ---
         primary_contact_details = get_primary_contact_details(doc_type, doc_name)
 
-        # Build contact payload. Name is required; FirstName/LastName optional (from linked Contact or omitted for company-only).
+        # Build contact payload
+        # NOTE: IsCustomer/IsSupplier are READ-ONLY in Xero API - do NOT send them
+        # Xero sets these automatically when invoices are created against the contact
         contact_payload = {
             "Name": name,
-            "IsCustomer": True if doc_type == "Customer" else False,
-            "IsSupplier": True if doc_type == "Supplier" else False,
+            # ContactNumber stores ERPNext reference for reliable matching on inbound sync
+            # Format: "ERP:{C|S}:{doc_name}" where C=Customer, S=Supplier
+            "ContactNumber": build_contact_number(doc_type, doc_name),
             "ContactStatus": "ARCHIVED" if doc.get("disabled") else "ACTIVE",
         }
         # Set FirstName/LastName only when we have them from linked Contact; for company-only, omit (Name is sufficient).
@@ -203,15 +311,17 @@ def sync_contact_to_xero(doc_name, doc_type, **kwargs):
             return cleaned
         
         contact_payload = clean_dict(contact_payload)
-        # Ensure Name is always present (Xero requirement); never let clean_dict remove it.
+        # Ensure Name and ContactNumber are always present (Xero requirement); never let clean_dict remove them.
         contact_payload["Name"] = name
+        contact_payload["ContactNumber"] = build_contact_number(doc_type, doc_name)
         if xero_contact_id:
             contact_payload["ContactID"] = xero_contact_id
 
         # --- Make API Call ---
-        # Xero API uses PUT for creating contacts if no ID is provided, or updating if ID is provided.
-        # It can also update based on ContactNumber if provided and unique. We use ContactID for reliability.
-        response = xero_request("PUT", "Contacts", data={"Contacts": [contact_payload]})
+        # CRITICAL: Use POST for updates (when ContactID is known), PUT for creates only.
+        # PUT errors if ContactName matches an existing contact, POST creates or updates.
+        method = "POST" if xero_contact_id else "PUT"
+        response = xero_request(method, "Contacts", data={"Contacts": [contact_payload]})
 
         if response and response.get("Contacts"):
             updated_contact = response["Contacts"][0]
@@ -219,9 +329,12 @@ def sync_contact_to_xero(doc_name, doc_type, **kwargs):
 
             # --- Update ERPNext Document ---
             if new_xero_contact_id:
+                # Compute and store data hash for change detection
+                data_hash = compute_data_hash(doc)
                 frappe.db.set_value(doc_type, doc_name, {
                     "xero_contact_id": new_xero_contact_id,
-                    "xero_sync_status": "Synced"
+                    "xero_sync_status": "Synced",
+                    "xero_data_hash": data_hash
                 }, update_modified=False)
                 frappe.db.commit() # Commit changes immediately
 
@@ -469,36 +582,63 @@ def sync_contacts_from_xero():
         )
 
 def process_xero_contact(xero_contact_data):
-    """Creates or updates an ERPNext Customer/Supplier from Xero contact data."""
+    """Creates or updates an ERPNext Customer/Supplier from Xero contact data.
+    
+    Priority for determining DocType:
+    1. ContactNumber field (if it contains ERP: prefix)
+    2. IsCustomer/IsSupplier flags (only set after invoices are created)
+    3. Skip with warning if no type information available
+    """
     xero_contact_id = xero_contact_data.get("ContactID")
     contact_name = xero_contact_data.get("Name")
+    contact_number = xero_contact_data.get("ContactNumber")
 
     if not xero_contact_id or not contact_name:
         log_xero_error(message=f"Skipping Xero contact due to missing ID or Name: {xero_contact_data}", status="Info")
         return
 
-    # Determine if Customer or Supplier (Xero has IsSupplier/IsCustomer flags)
+    # Priority 1: Check ContactNumber for ERPNext reference
+    # This is the most reliable way to determine the correct DocType
+    doc_type, doc_name = parse_erpnext_reference(contact_number)
+    if doc_type and doc_name:
+        # Found ERPNext reference - sync to correct DocType
+        log_xero_error(
+            message=f"Xero Contact {contact_name} ({xero_contact_id}) has ContactNumber '{contact_number}' - syncing as {doc_type}",
+            status="Info",
+            xero_entity_id=xero_contact_id,
+            xero_entity_type="Contact"
+        )
+        sync_xero_contact_to_erpnext(xero_contact_data, doc_type)
+        return
+
+    # Priority 2: Check IsCustomer/IsSupplier flags
+    # NOTE: These are only set after invoices are created against the contact
     is_customer = xero_contact_data.get("IsCustomer", False)
     is_supplier = xero_contact_data.get("IsSupplier", False)
-
-    # Decide which ERPNext DocType(s) to create/update
-    # Simple approach: Create both if flags are true? Or prioritize one?
-    # Or require manual mapping/selection? For now, let's try creating based on flags.
 
     if is_customer:
         sync_xero_contact_to_erpnext(xero_contact_data, "Customer")
     if is_supplier:
         sync_xero_contact_to_erpnext(xero_contact_data, "Supplier")
 
+    # Priority 3: No type information available
     if not is_customer and not is_supplier:
-        # Default to Customer when Xero hasn't classified the contact yet
-        # This happens for contacts created via API that haven't been used on invoices
-        # Xero only sets IsCustomer/IsSupplier when a contact is used on a transaction
+        # Contact has no type information - this happens for:
+        # - New contacts created via API that haven't been used on invoices
+        # - Contacts created manually in Xero without transactions
+        # 
+        # We skip these contacts with a warning instead of defaulting to Customer
+        # to prevent incorrect type assignment on round-trip syncs
         log_xero_error(
-            message=f"Xero Contact {contact_name} ({xero_contact_id}) has no Customer/Supplier flag set. Creating as Customer by default.",
-            status="Info"
+            message=f"Xero Contact {contact_name} ({xero_contact_id}) has no type information. "
+                    f"IsCustomer={is_customer}, IsSupplier={is_supplier}, ContactNumber={contact_number}. "
+                    f"Skipping - cannot determine if Customer or Supplier. "
+                    f"This contact will be synced when it's used on an invoice.",
+            status="Warning",
+            xero_entity_id=xero_contact_id,
+            xero_entity_type="Contact",
+            category="Sync Skipped"
         )
-        sync_xero_contact_to_erpnext(xero_contact_data, "Customer")
 
 
 def sync_xero_contact_to_erpnext(xero_contact_data, target_doctype):
@@ -606,8 +746,20 @@ def sync_xero_contact_to_erpnext(xero_contact_data, target_doctype):
                 )
         
         # Then, sync additional contact persons from ContactPersons array
+        # NOTE: Xero allows max 5 ContactPersons per contact
         contact_persons = xero_contact_data.get("ContactPersons", [])
         if contact_persons:
+            # Limit to XERO_MAX_CONTACT_PERSONS to avoid API errors
+            contact_persons = contact_persons[:XERO_MAX_CONTACT_PERSONS]
+            if len(xero_contact_data.get("ContactPersons", [])) > XERO_MAX_CONTACT_PERSONS:
+                log_xero_error(
+                    message=f"Xero Contact {contact_name} has {len(xero_contact_data.get('ContactPersons', []))} ContactPersons. "
+                            f"Only syncing first {XERO_MAX_CONTACT_PERSONS}.",
+                    status="Warning",
+                    xero_entity_id=xero_contact_id,
+                    xero_entity_type="Contact"
+                )
+            
             for person in contact_persons:
                 try:
                     sync_contact_person_to_erpnext(person, target_doctype, erpnext_doc_name, xero_contact_id)
