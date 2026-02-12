@@ -358,13 +358,25 @@ def xero_request(method, endpoint, data=None, params=None):
                     error_data = e.response.json()
                     error_details = dumps(error_data, indent=2)
                 except Exception:
-                    error_details = e.response.text
+                    error_details = e.response.text or ""
                 
+                # Log to frappe error log
                 frappe.log_error(
                     message=f"Xero API Error ({e.response.status_code}) on {method} {url}:\n{error_details}",
                     title="Xero API Error"
                 )
-                frappe.throw(f"Xero API request failed: {e.response.reason} ({e.response.status_code})")
+                
+                # Also log to Xero Log for visibility in the dashboard
+                from ..utils.logging import log_xero_error
+                log_xero_error(
+                    message=f"Xero API Error ({e.response.status_code}) on {method} {endpoint}: {error_details[:500]}",
+                    status="Error",
+                    category="Validation Errors",
+                    error_details=error_details
+                )
+                
+                # Include response body in the thrown error so callers can see it
+                frappe.throw(f"Xero API request failed: {e.response.reason} ({e.response.status_code})\nDetails: {error_details[:1000]}")
 
         except requests.exceptions.RequestException as e:
             # Network errors, timeouts, etc.

@@ -122,43 +122,31 @@ def sync_item_to_xero(item_code, **kwargs):
                     purchase_account = id_row.expense_account
                     break
 
-        # Sales Details - only add if account mapping exists
-        if doc.is_sales_item and doc.get("standard_rate") and sales_account:
-            sales_account_code = get_xero_account_code(sales_account, settings)
-            if sales_account_code:
-                item_payload["IsSold"] = True
-                item_payload["SalesDetails"] = {
-                    "UnitPrice": doc.standard_rate,
-                    "AccountCode": sales_account_code,
-                    # TODO: Map default sales tax template?
-                    # "TaxType": map_erpnext_tax_to_xero(doc.sales_tax_template, settings)
-                }
-            else:
-                log_xero_error(
-                    message=f"Skipping sales details for Item {item_code}: Xero Account Code mapping not found for Income Account {sales_account}.",
-                    status="Warning",
-                    erpnext_doc_type="Item",
-                    erpnext_doc_name=item_code
-                )
+        # Sales Details - send UnitPrice even without AccountCode (AccountCode is optional in Xero)
+        if doc.is_sales_item and doc.get("standard_rate"):
+            item_payload["IsSold"] = True
+            sales_details = {
+                "UnitPrice": doc.standard_rate,
+            }
+            # Add AccountCode if mapping exists (optional)
+            if sales_account:
+                sales_account_code = get_xero_account_code(sales_account, settings)
+                if sales_account_code:
+                    sales_details["AccountCode"] = sales_account_code
+            item_payload["SalesDetails"] = sales_details
 
-        # Purchase Details - only add if account mapping exists
-        if doc.is_purchase_item and doc.get("last_purchase_rate") and purchase_account:
-            purchase_account_code = get_xero_account_code(purchase_account, settings)
-            if purchase_account_code:
-                item_payload["IsPurchased"] = True
-                item_payload["PurchaseDetails"] = {
-                    "UnitPrice": doc.last_purchase_rate,
-                    "AccountCode": purchase_account_code,
-                     # TODO: Map default purchase tax template?
-                    # "TaxType": map_erpnext_tax_to_xero(doc.purchase_tax_template, settings) # Need different mapping for purchase tax?
-                }
-            else:
-                log_xero_error(
-                    message=f"Skipping purchase details for Item {item_code}: Xero Account Code mapping not found for Expense Account {purchase_account}.",
-                    status="Warning",
-                    erpnext_doc_type="Item",
-                    erpnext_doc_name=item_code
-                )
+        # Purchase Details - send UnitPrice even without AccountCode
+        if doc.is_purchase_item and doc.get("last_purchase_rate"):
+            item_payload["IsPurchased"] = True
+            purchase_details = {
+                "UnitPrice": doc.last_purchase_rate,
+            }
+            # Add AccountCode if mapping exists (optional)
+            if purchase_account:
+                purchase_account_code = get_xero_account_code(purchase_account, settings)
+                if purchase_account_code:
+                    purchase_details["AccountCode"] = purchase_account_code
+            item_payload["PurchaseDetails"] = purchase_details
 
         # Inventory Asset Account (for tracked items)
         if doc.is_stock_item:

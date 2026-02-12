@@ -21,6 +21,13 @@ def enqueue_sync_contact(doc_name, doc_type=None):
     elif not doc_type or doc_type in ("on_update", "manual_trigger"):
         # Second arg was method name; doc_name might be a string identifier
         frappe.throw(_("enqueue_sync_contact requires (doc_name, doc_type) or a document as first argument."))
+
+    # Guard against double-trigger from on_update hook
+    # When sync_contact_to_xero updates xero_contact_id, it triggers on_update again
+    xero_status = frappe.db.get_value(doc_type, doc_name, "xero_sync_status")
+    if xero_status == "Synced":
+        return  # Already synced, skip re-trigger
+
     frappe.enqueue(
         "xero.api.xero_contacts.sync_contact_to_xero",
         queue="short",
@@ -484,7 +491,14 @@ def process_xero_contact(xero_contact_data):
         sync_xero_contact_to_erpnext(xero_contact_data, "Supplier")
 
     if not is_customer and not is_supplier:
-         log_xero_error(message=f"Xero Contact {contact_name} ({xero_contact_id}) is neither Customer nor Supplier.", status="Info")
+        # Default to Customer when Xero hasn't classified the contact yet
+        # This happens for contacts created via API that haven't been used on invoices
+        # Xero only sets IsCustomer/IsSupplier when a contact is used on a transaction
+        log_xero_error(
+            message=f"Xero Contact {contact_name} ({xero_contact_id}) has no Customer/Supplier flag set. Creating as Customer by default.",
+            status="Info"
+        )
+        sync_xero_contact_to_erpnext(xero_contact_data, "Customer")
 
 
 def sync_xero_contact_to_erpnext(xero_contact_data, target_doctype):

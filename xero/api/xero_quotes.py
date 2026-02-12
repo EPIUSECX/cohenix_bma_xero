@@ -94,7 +94,7 @@ def sync_quotation_to_xero(doc_name, doc_type, **kwargs):
             "LineItems": [],
             "QuoteNumber": doc.name,
             "Reference": doc.customer_name,
-            "Title": doc.title or f"Quote for {doc.customer_name}",
+            "Title": doc.get("title") or f"Quote for {doc.customer_name}",
             "Summary": doc.terms or "Quote generated from ERPNext",
             "Status": "DRAFT",  # Xero quotes start as DRAFT
             "CurrencyCode": doc.currency,
@@ -106,21 +106,39 @@ def sync_quotation_to_xero(doc_name, doc_type, **kwargs):
 
         # --- Map Line Items ---
         for item in doc.items:
-            # Get Xero Account Code from mapping in settings
-            erpnext_account = item.income_account
-            xero_account_code = get_xero_account_code(erpnext_account, settings)
-            if not xero_account_code:
-                raise Exception(f"Xero Account Code mapping not found in Xero Settings for ERPNext Account: {erpnext_account} (Item: {item.item_code or item.description})")
+            # QuotationItem doesn't have income_account - try item_defaults child table, then company default
+            erpnext_account = item.get("income_account")
+            if not erpnext_account and item.item_code:
+                # Item's income_account is in item_defaults child table, not a direct field
+                company = frappe.db.get_default("company")
+                erpnext_account = frappe.db.get_value("Item Default",
+                    {"parent": item.item_code, "company": company}, "income_account")
+            if not erpnext_account:
+                company = company if 'company' in dir() else frappe.db.get_default("company")
+                erpnext_account = frappe.get_cached_value("Company", company, "default_income_account")
+
+            # Get Xero Account Code - optional for quotes
+            xero_account_code = get_xero_account_code(erpnext_account, settings) if erpnext_account else None
+
+            # Xero requires Description to be non-empty
+            description = (item.description or "").strip()
+            if description and "<" in description:
+                import re
+                description = re.sub(r'<[^>]+>', '', description).strip()
+            if not description:
+                description = item.item_name or item.item_code or "Item"
 
             line_item = {
-                "Description": item.description,
+                "Description": description,
                 "Quantity": item.qty,
                 "UnitAmount": item.rate,
-                "AccountCode": xero_account_code,
                 "LineAmount": item.amount,
                 # Map Tax Type using mapping in settings
-                "TaxType": map_erpnext_tax_to_xero(item.item_tax_template, settings),
+                "TaxType": map_erpnext_tax_to_xero(item.get("item_tax_template"), settings),
             }
+            # AccountCode is optional for Xero quotes
+            if xero_account_code:
+                line_item["AccountCode"] = xero_account_code
             quote_payload["LineItems"].append(line_item)
 
         # Remove None values from payload

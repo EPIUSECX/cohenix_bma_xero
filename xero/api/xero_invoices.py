@@ -174,8 +174,8 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
             "CurrencyCode": doc.currency,
             "Status": "AUTHORISED", # Or SUBMITTED? AUTHORISED seems more appropriate for synced invoices.
             # LineAmountTypes: Inclusive, Exclusive, NoTax (default Exclusive)
-            # Determine based on ERPNext settings (e.g., taxes_and_charges_added_to_totals)
-            "LineAmountTypes": "Exclusive" if doc.taxes_and_charges_added_to_totals == 0 else "Inclusive",
+            # ERPNext invoices are typically tax-exclusive; use Exclusive as safe default
+            "LineAmountTypes": "Exclusive",
         }
 
         # If updating, include the Xero Invoice ID
@@ -190,8 +190,18 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
             if not xero_account_code:
                  raise Exception(f"Xero Account Code mapping not found in Xero Settings for ERPNext Account: {erpnext_account} (Item: {item.item_code or item.description})")
 
+            # Xero requires Description to be non-empty for each line item
+            description = (item.description or "").strip()
+            # Strip HTML tags if description contains them
+            if description and "<" in description:
+                import re
+                description = re.sub(r'<[^>]+>', '', description).strip()
+            # Fallback to item_name or item_code if description is empty
+            if not description:
+                description = item.item_name or item.item_code or "Item"
+
             line_item = {
-                "Description": item.description,
+                "Description": description,
                 "Quantity": item.qty,
                 "UnitAmount": item.rate,
                 "AccountCode": xero_account_code,

@@ -42,6 +42,7 @@
     "sync_quotes",
     "sync_financial_reports",
     "sync_bank_transactions",
+    "sync_purchase_orders",
     "section_break_webhook",
     "enable_webhooks",
     "webhook_secret",
@@ -279,6 +280,13 @@
       "label": "Sync Bank Transactions",
       "default": 0,
       "description": "Enable syncing of Bank Transactions between ERPNext and Xero."
+    },
+    {
+      "fieldname": "sync_purchase_orders",
+      "fieldtype": "Check",
+      "label": "Sync Purchase Orders",
+      "default": 0,
+      "description": "Enable syncing of Purchase Orders between ERPNext and Xero."
     },
     {
       "fieldname": "section_break_webhook",

@@ -1,0 +1,122 @@
+{
+  "test_date": "2026-02-11 09:08:02.858120",
+  "entities_tested": [
+    {
+      "entity_type": "Item",
+      "doc_name": "TEST-ITEM-SALES-001",
+      "status": "failed",
+      "timestamp": "2026-02-11 09:08:02.884636",
+      "error": "sync_item_to_xero() takes 1 positional argument but 2 were given",
+      "notes": null
+    },
+    {
+      "entity_type": "Item",
+      "doc_name": "TEST-ITEM-PURCH-001",
+      "status": "failed",
+      "timestamp": "2026-02-11 09:08:02.884658",
+      "error": "sync_item_to_xero() takes 1 positional argument but 2 were given",
+      "notes": null
+    },
+    {
+      "entity_type": "Item",
+      "doc_name": "TEST-ITEM-MULTI-001",
+      "status": "failed",
+      "timestamp": "2026-02-11 09:08:02.884670",
+      "error": "sync_item_to_xero() takes 1 positional argument but 2 were given",
+      "notes": null
+    },
+    {
+      "entity_type": "Quotation",
+      "doc_name": "N/A",
+      "status": "skipped",
+      "timestamp": "2026-02-11 09:08:02.887973",
+      "error": null,
+      "notes": "No submitted quotations found"
+    },
+    {
+      "entity_type": "Sales Invoice",
+      "doc_name": "N/A",
+      "status": "skipped",
+      "timestamp": "2026-02-11 09:08:02.892791",
+      "error": null,
+      "notes": "No submitted sales invoices found"
+    },
+    {
+      "entity_type": "Purchase Invoice",
+      "doc_name": "N/A",
+      "status": "skipped",
+      "timestamp": "2026-02-11 09:08:02.897762",
+      "error": null,
+      "notes": "No submitted purchase invoices found"
+    },
+    {
+      "entity_type": "Credit Note",
+      "doc_name": "N/A",
+      "status": "skipped",
+      "timestamp": "2026-02-11 09:08:02.898389",
+      "error": null,
+      "notes": "No credit notes found"
+    },
+    {
+      "entity_type": "Payment Entry",
+      "doc_name": "N/A",
+      "status": "skipped",
+      "timestamp": "2026-02-11 09:08:02.901694",
+      "error": null,
+      "notes": "No submitted payments found"
+    },
+    {
+      "entity_type": "Purchase Order",
+      "doc_name": "N/A",
+      "status": "skipped",
+      "timestamp": "2026-02-11 09:08:02.906323",
+      "error": null,
+      "notes": "No submitted purchase orders found"
+    },
+    {
+      "entity_type": "Journal Entry",
+      "doc_name": "N/A",
+      "status": "skipped",
+      "timestamp": "2026-02-11 09:08:02.910077",
+      "error": null,
+      "notes": "No submitted journal entries found"
+    },
+    {
+      "entity_type": "Bank Transaction",
+      "doc_name": "N/A",
+      "status": "skipped",
+      "timestamp": "2026-02-11 09:08:02.913247",
+      "error": null,
+      "notes": "No submitted bank transactions found"
+    }
+  ],
+  "total_attempted": 11,
+  "total_successful": 0,
+  "total_failed": 3,
+  "failures": [
+    {
+      "entity_type": "Item",
+      "doc_name": "TEST-ITEM-SALES-001",
+      "status": "failed",
+      "timestamp": "2026-02-11 09:08:02.884636",
+      "error": "sync_item_to_xero() takes 1 positional argument but 2 were given",
+      "notes": null
+    },
+    {
+      "entity_type": "Item",
+      "doc_name": "TEST-ITEM-PURCH-001",
+      "status": "failed",
+      "timestamp": "2026-02-11 09:08:02.884658",
+      "error": "sync_item_to_xero() takes 1 positional argument but 2 were given",
+      "notes": null
+    },
+    {
+      "entity_type": "Item",
+      "doc_name": "TEST-ITEM-MULTI-001",
+      "status": "failed",
+      "timestamp": "2026-02-11 09:08:02.884670",
+      "error": "sync_item_to_xero() takes 1 positional argument but 2 were given",
+      "notes": null
+    }
+  ]
+}
