@@ -14,7 +14,7 @@ app_license = "mit"
 add_to_apps_screen = [
  	{
  		"name": "xero",
- 		"logo": "/assets/xero/image.png",
+ 		"logo": "/assets/xero/Xero_software_logo.svg",
  		"title": "Xero Integration",
  		"route": "/desk",
  		#"has_permission": "liftlogic.api.permission.has_app_permission"
