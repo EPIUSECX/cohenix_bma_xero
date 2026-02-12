@@ -153,6 +153,9 @@ doc_events = {
 	"Supplier": {
 		"on_update": "xero.api.xero_contacts.enqueue_sync_contact"
 	},
+	"Account": {
+		"on_update": "xero.api.xero_accounts.enqueue_sync_account"
+	},
     "Payment Entry": {
         "on_submit": "xero.api.xero_payments.enqueue_sync_payment"
     },
