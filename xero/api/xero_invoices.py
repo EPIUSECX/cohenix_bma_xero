@@ -5,10 +5,119 @@ import frappe
 from frappe import _
 from frappe.utils import flt, getdate, nowdate, now_datetime
 from frappe.model.mapper import get_mapped_doc
+import hashlib
+import json
+import re
 from ..utils.xero_client import xero_request, get_xero_settings, check_xero_entity_exists
 from ..utils.logging import log_xero_error
 from ..utils.retry_handler import retry_with_exponential_backoff
 # from .xero_accounts import get_xero_tax_rates # No longer needed here directly
+
+# --- Validation Functions ---
+
+def validate_invoice_description(description, item_name=None, item_code=None):
+    """
+    Validate and sanitize invoice line item description for Xero.
+    Xero requires: min 1 char, max 4000 chars
+    """
+    description = (description or "").strip()
+    
+    # Strip HTML tags if description contains them
+    if description and "<" in description:
+        description = re.sub(r'<[^>]+>', '', description).strip()
+    
+    # Fallback if empty
+    if not description:
+        description = item_name or item_code or "Item"
+    
+    # Xero max length is 4000 chars
+    if len(description) > 4000:
+        description = description[:3997] + "..."
+    
+    return description
+
+
+def validate_invoice_number(invoice_name):
+    """
+    Validate invoice number for Xero.
+    Xero requires: max 255 chars, printable ASCII only
+    """
+    if not invoice_name:
+        return None
+    
+    # Truncate to 255 chars
+    invoice_number = invoice_name[:255]
+    
+    # Remove non-printable ASCII characters (keep 32-126)
+    invoice_number = ''.join(c for c in invoice_number if 32 <= ord(c) <= 126)
+    
+    return invoice_number or None
+
+
+def validate_invoice_reference(reference):
+    """
+    Validate invoice reference for Xero.
+    Xero requires: max 255 chars
+    """
+    if not reference:
+        return None
+    
+    # Truncate to 255 chars
+    reference = str(reference)[:255]
+    
+    return reference or None
+
+
+# --- Hash Functions for Change Detection ---
+
+def compute_invoice_hash(doc):
+    """
+    Compute MD5 hash of invoice data for change detection.
+    """
+    hash_data = {
+        "posting_date": str(doc.posting_date),
+        "due_date": str(doc.due_date),
+        "currency": doc.currency,
+        "customer": doc.get("customer") or doc.get("supplier"),
+        "items": [],
+        "taxes": []
+    }
+    
+    # Add line items
+    for item in doc.items:
+        hash_data["items"].append({
+            "item_code": item.item_code,
+            "description": item.description,
+            "qty": flt(item.qty),
+            "rate": flt(item.rate),
+            "amount": flt(item.amount),
+            "income_account": item.get("income_account") or item.get("expense_account")
+        })
+    
+    # Add taxes
+    for tax in doc.taxes:
+        hash_data["taxes"].append({
+            "account_head": tax.account_head,
+            "tax_amount": flt(tax.tax_amount_after_discount_amount)
+        })
+    
+    # Compute hash
+    hash_string = json.dumps(hash_data, sort_keys=True)
+    return hashlib.md5(hash_string.encode()).hexdigest()
+
+
+def invoice_data_changed(doc):
+    """
+    Check if invoice data has changed since last sync.
+    Returns True if data has changed or no hash exists.
+    """
+    stored_hash = doc.get("xero_data_hash")
+    if not stored_hash:
+        return True
+    
+    current_hash = compute_invoice_hash(doc)
+    return current_hash != stored_hash
+
 
 # --- Invoice Sync (ERPNext to Xero) ---
 
@@ -30,6 +139,20 @@ def enqueue_sync_invoice(doc, method):
     settings = get_xero_settings()
     if not settings.sync_invoices:
         return
+    
+    # Double-trigger guard: Only sync if not already synced
+    # This prevents infinite loops when syncing FROM Xero triggers on_update
+    if doc.get("xero_sync_status") == "Synced" and doc.get("xero_invoice_id"):
+        # Check if data has changed
+        if not invoice_data_changed(doc):
+            log_xero_error(
+                message=f"Skipping sync for {doc.doctype} {doc.name}: already synced and data unchanged",
+                status="Info",
+                erpnext_doc_type=doc.doctype,
+                erpnext_doc_name=doc.name,
+                category="System Monitoring"
+            )
+            return
 
     frappe.enqueue(
         "xero.api.xero_invoices.sync_invoice_to_xero",
@@ -46,7 +169,7 @@ def enqueue_sync_invoice(doc, method):
 def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
     """
     Syncs a submitted ERPNext Sales Invoice or Purchase Invoice to Xero.
-    Uses PUT for create/update.
+    Uses POST for both create and update (Xero API requirement).
     """
     settings = get_xero_settings()
     if not settings.enable_xero_sync:
@@ -76,12 +199,11 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
             log_xero_error(f"Cannot sync non-submitted document: {doc_type} {doc_name}", status="Info")
             return
         
-        # --- Duplicate Prevention ---
-        # Check if already synced and verify in Xero
+        # --- Check if data has changed (for already synced invoices) ---
         if xero_invoice_id:
-            if check_xero_entity_exists("Invoices", xero_invoice_id):
+            if not invoice_data_changed(doc):
                 log_xero_error(
-                    message=f"{doc_type} {doc_name} already synced to Xero (ID: {xero_invoice_id}). Skipping to prevent duplicate.",
+                    message=f"{doc_type} {doc_name} already synced and data unchanged. Skipping.",
                     status="Info",
                     erpnext_doc_type=doc_type,
                     erpnext_doc_name=doc_name,
@@ -90,17 +212,6 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
                     category="System Monitoring"
                 )
                 return
-            else:
-                # Xero ID exists in ERPNext but not found in Xero - might have been deleted
-                log_xero_error(
-                    message=f"{doc_type} {doc_name} has Xero ID {xero_invoice_id} but not found in Xero. Will re-sync.",
-                    status="Warning",
-                    erpnext_doc_type=doc_type,
-                    erpnext_doc_name=doc_name,
-                    xero_entity_id=xero_invoice_id,
-                    category="System Monitoring"
-                )
-                xero_invoice_id = None  # Reset to create new invoice
 
         # --- Determine Invoice Type and Contact ---
         if doc_type == "Sales Invoice":
@@ -169,14 +280,20 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
             "Date": getdate(doc.posting_date).isoformat(),
             "DueDate": getdate(doc.due_date).isoformat(),
             "LineItems": [],
-            "InvoiceNumber": doc.name, # Use ERPNext name as Invoice Number
-            "Reference": doc.get("po_no") if doc_type == "Sales Invoice" else doc.get("bill_no"), # Optional reference
+            "InvoiceNumber": validate_invoice_number(doc.name), # Validate invoice number
             "CurrencyCode": doc.currency,
             "Status": "AUTHORISED", # Or SUBMITTED? AUTHORISED seems more appropriate for synced invoices.
             # LineAmountTypes: Inclusive, Exclusive, NoTax (default Exclusive)
             # ERPNext invoices are typically tax-exclusive; use Exclusive as safe default
             "LineAmountTypes": "Exclusive",
         }
+        
+        # Add Reference field (ACCREC only, max 255 chars)
+        if doc_type == "Sales Invoice":
+            reference = validate_invoice_reference(doc.get("po_no"))
+            if reference:
+                invoice_payload["Reference"] = reference
+        # Note: ACCPAY uses bill_no but Xero doesn't have a Reference field for ACCPAY in the same way
 
         # If updating, include the Xero Invoice ID
         if xero_invoice_id:
@@ -190,15 +307,12 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
             if not xero_account_code:
                  raise Exception(f"Xero Account Code mapping not found in Xero Settings for ERPNext Account: {erpnext_account} (Item: {item.item_code or item.description})")
 
-            # Xero requires Description to be non-empty for each line item
-            description = (item.description or "").strip()
-            # Strip HTML tags if description contains them
-            if description and "<" in description:
-                import re
-                description = re.sub(r'<[^>]+>', '', description).strip()
-            # Fallback to item_name or item_code if description is empty
-            if not description:
-                description = item.item_name or item.item_code or "Item"
+            # Validate description (min 1 char, max 4000 chars)
+            description = validate_invoice_description(
+                item.description, 
+                item.item_name, 
+                item.item_code
+            )
 
             line_item = {
                 "Description": description,
@@ -209,6 +323,17 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
                 # Map Tax Type using mapping in settings
                 "TaxType": map_erpnext_tax_to_xero(item.item_tax_template, settings), # Pass settings
             }
+            
+            # Add ItemCode if item has been synced to Xero
+            if item.item_code:
+                xero_item_code = frappe.db.get_value("Item", item.item_code, "xero_item_id")
+                if xero_item_code:
+                    line_item["ItemCode"] = item.item_code
+            
+            # Add discount if present
+            if item.discount_percentage and item.discount_percentage > 0:
+                line_item["DiscountRate"] = item.discount_percentage
+            
             invoice_payload["LineItems"].append(line_item)
 
         # --- Map Taxes and Charges ---
@@ -218,8 +343,10 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
             if not tax_account_code:
                 raise Exception(f"Xero Account Code mapping not found for Tax/Charge Account: {tax.account_head}")
 
+            tax_description = validate_invoice_description(tax.description, "Tax/Charge")
+            
             tax_line_item = {
-                "Description": tax.description,
+                "Description": tax_description,
                 "Quantity": 1,
                 "UnitAmount": tax.tax_amount_after_discount_amount,
                 "AccountCode": tax_account_code,
@@ -229,8 +356,9 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
             }
             invoice_payload["LineItems"].append(tax_line_item)
 
-        # --- Make API Call (PUT for create/update) ---
-        response = xero_request("PUT", "Invoices", data={"Invoices": [invoice_payload]})
+        # --- Make API Call (POST for both create and update) ---
+        # Xero API: POST creates OR updates (if InvoiceID provided, updates; otherwise creates)
+        response = xero_request("POST", "Invoices", data={"Invoices": [invoice_payload]})
 
         if response and response.get("Invoices"):
             updated_invoice = response["Invoices"][0]
@@ -238,9 +366,13 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
 
             # --- Update ERPNext Document ---
             if new_xero_invoice_id:
+                # Compute hash for change detection
+                data_hash = compute_invoice_hash(doc)
+                
                 frappe.db.set_value(doc_type, doc_name, {
                     "xero_invoice_id": new_xero_invoice_id,
-                    "xero_sync_status": "Synced"
+                    "xero_sync_status": "Synced",
+                    "xero_data_hash": data_hash
                 }, update_modified=False)
                 frappe.db.commit()
 
@@ -290,8 +422,9 @@ def enqueue_void_invoice(doc, method):
 
 def void_invoice_in_xero(doc_name, doc_type):
     """
-    Finds the corresponding Xero invoice and voids it.
-    This is done by updating the status to 'VOIDED'.
+    Finds the corresponding Xero invoice and voids or deletes it.
+    - DRAFT/SUBMITTED invoices can be DELETED
+    - AUTHORISED invoices can be VOIDED (if no payments applied)
     """
     try:
         doc = frappe.get_doc(doc_type, doc_name)
@@ -301,20 +434,55 @@ def void_invoice_in_xero(doc_name, doc_type):
             log_xero_error(f"Cannot void invoice {doc_name}: Xero Invoice ID not found.", status="Info")
             return
 
-        # Xero API voids invoices by updating their status
+        # First, get the current status from Xero
+        try:
+            xero_data = xero_request("GET", f"Invoices/{xero_invoice_id}")
+            if not xero_data or not xero_data.get("Invoices"):
+                log_xero_error(
+                    message=f"Could not fetch Xero invoice {xero_invoice_id} for void/delete",
+                    status="Warning",
+                    erpnext_doc_type=doc_type,
+                    erpnext_doc_name=doc_name,
+                    xero_entity_id=xero_invoice_id
+                )
+                return
+            
+            xero_invoice = xero_data["Invoices"][0]
+            xero_status = xero_invoice.get("Status")
+        except Exception as fetch_error:
+            log_xero_error(
+                message=f"Error fetching Xero invoice status: {str(fetch_error)}",
+                status="Warning",
+                erpnext_doc_type=doc_type,
+                erpnext_doc_name=doc_name,
+                xero_entity_id=xero_invoice_id
+            )
+            # Default to VOIDED if we can't fetch status
+            xero_status = "AUTHORISED"
+
+        # Determine the appropriate status change
+        # DRAFT or SUBMITTED → DELETED
+        # AUTHORISED → VOIDED
+        if xero_status in ["DRAFT", "SUBMITTED"]:
+            new_status = "DELETED"
+            action = "delete"
+        else:
+            new_status = "VOIDED"
+            action = "void"
+
         invoice_payload = {
             "InvoiceID": xero_invoice_id,
-            "Status": "VOIDED"
+            "Status": new_status
         }
 
-        # Note: Xero API for voiding is a POST to the Invoices endpoint
+        # Xero API for voiding/deleting is a POST to the Invoices endpoint
         response = xero_request("POST", "Invoices", data={"Invoices": [invoice_payload]})
 
         if response and response.get("Invoices"):
-            frappe.db.set_value(doc_type, doc_name, "xero_sync_status", "Voided in Xero", update_modified=False)
+            frappe.db.set_value(doc_type, doc_name, "xero_sync_status", f"{action.capitalize()}d in Xero", update_modified=False)
             frappe.db.commit()
             log_xero_error(
-                message=f"Successfully voided {doc_type} {doc_name} in Xero.",
+                message=f"Successfully {action}d {doc_type} {doc_name} in Xero (status: {new_status}).",
                 status="Success",
                 erpnext_doc_type=doc_type,
                 erpnext_doc_name=doc_name,
@@ -323,11 +491,11 @@ def void_invoice_in_xero(doc_name, doc_type):
                 direction="ERPNext to Xero"
             )
         else:
-            raise Exception("Invalid response received from Xero when voiding invoice.")
+            raise Exception("Invalid response received from Xero when voiding/deleting invoice.")
 
     except Exception as e:
         log_xero_error(
-            message=f"Failed to void {doc_type} {doc_name} in Xero.",
+            message=f"Failed to void/delete {doc_type} {doc_name} in Xero.",
             erpnext_doc_type=doc_type,
             erpnext_doc_name=doc_name,
             error_details=frappe.get_traceback()

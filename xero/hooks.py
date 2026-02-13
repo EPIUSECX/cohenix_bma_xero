@@ -171,6 +171,9 @@ doc_events = {
     },
     "Purchase Order": {
         "on_submit": "xero.api.xero_purchase_orders.enqueue_sync_purchase_order"
+    },
+    "Item": {
+        "on_update": "xero.api.xero_items.enqueue_sync_item"
     }
 }
 

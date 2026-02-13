@@ -106,6 +106,18 @@ def setup_custom_fields():
                 "insert_after": "xero_invoice_id"
             },
             {
+                "fieldname": "xero_data_hash",
+                "fieldtype": "Data",
+                "label": "Xero Data Hash",
+                "length": 32,
+                "no_copy": 1,
+                "read_only": 1,
+                "print_hide": 1,
+                "report_hide": 1,
+                "hidden": 1,
+                "insert_after": "xero_sync_status"
+            },
+            {
                 "fieldname": "xero_credit_note_id",
                 "fieldtype": "Data",
                 "label": "Xero Credit Note ID",
@@ -114,7 +126,7 @@ def setup_custom_fields():
                 "print_hide": 1,
                 "report_hide": 1,
                 "search_index": 1,
-                "insert_after": "xero_sync_status"
+                "insert_after": "xero_data_hash"
             }
         ],
         "Purchase Invoice": [
@@ -141,6 +153,18 @@ def setup_custom_fields():
                 "insert_after": "xero_invoice_id"
             },
             {
+                "fieldname": "xero_data_hash",
+                "fieldtype": "Data",
+                "label": "Xero Data Hash",
+                "length": 32,
+                "no_copy": 1,
+                "read_only": 1,
+                "print_hide": 1,
+                "report_hide": 1,
+                "hidden": 1,
+                "insert_after": "xero_sync_status"
+            },
+            {
                 "fieldname": "xero_credit_note_id",
                 "fieldtype": "Data",
                 "label": "Xero Credit Note ID",
@@ -149,7 +173,7 @@ def setup_custom_fields():
                 "print_hide": 1,
                 "report_hide": 1,
                 "search_index": 1,
-                "insert_after": "xero_sync_status"
+                "insert_after": "xero_data_hash"
             }
         ],
         "Payment Entry": [
@@ -364,13 +388,25 @@ def setup_custom_fields():
                 "insert_after": "xero_item_id"
             },
             {
+                "fieldname": "xero_data_hash",
+                "fieldtype": "Data",
+                "label": "Xero Data Hash",
+                "length": 32,
+                "no_copy": 1,
+                "read_only": 1,
+                "print_hide": 1,
+                "report_hide": 1,
+                "hidden": 1,
+                "insert_after": "xero_sync_status"
+            },
+            {
                 "fieldname": "xero_last_item_sync",
                 "fieldtype": "Datetime",
                 "label": "Xero Last Item Sync",
                 "no_copy": 1,
                 "read_only": 1,
                 "print_hide": 1,
-                "insert_after": "xero_sync_status"
+                "insert_after": "xero_data_hash"
             }
         ],
         "Account": [

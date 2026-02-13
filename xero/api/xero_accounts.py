@@ -8,6 +8,7 @@ import hashlib
 import re
 from ..utils.xero_client import xero_request, get_xero_settings
 from ..utils.logging import log_xero_error
+from ..utils.retry_handler import retry_with_exponential_backoff
 
 # Mapping from Xero Account Types to ERPNext Root Types / Account Types
 XERO_ACCOUNT_TYPE_MAP = {
@@ -227,6 +228,7 @@ def enqueue_sync_account(doc, method=None):
     )
 
 
+@retry_with_exponential_backoff(max_retries=3, base_delay=2)
 def sync_account_to_xero(account_name):
     """
     Sync a single ERPNext Account to Xero.
