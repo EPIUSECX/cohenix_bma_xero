@@ -153,17 +153,39 @@ def sync_bank_transaction_to_xero(doc_name, doc_type, **kwargs):
             raise Exception("Invalid response received from Xero BankTransactions API.")
 
     except Exception as e:
-        # Ensure status is updated even if doc object wasn't fetched initially
-        if doc_name and doc_type:
-            frappe.db.set_value(doc_type, doc_name, {"xero_sync_status": "Error"}, update_modified=False)
-            frappe.db.commit()
+        from ..utils.logging import is_already_exists_error
+        error_traceback = frappe.get_traceback()
+        
+        if is_already_exists_error(str(e), error_traceback):
+            if doc_name and doc_type:
+                frappe.db.set_value(doc_type, doc_name, {"xero_sync_status": "Synced"}, update_modified=False)
+                frappe.db.commit()
+            
+            log_xero_error(
+                message=f"{doc_type} {doc_name} already exists in Xero. No action needed.",
+                status="Info",
+                category="Duplicate Entity",
+                erpnext_doc_type=doc_type,
+                erpnext_doc_name=doc_name,
+                direction="ERPNext to Xero"
+            )
+        else:
+            from ..utils.logging import format_sync_error_message
+            if doc_name and doc_type:
+                frappe.db.set_value(doc_type, doc_name, {"xero_sync_status": "Error"}, update_modified=False)
+                frappe.db.commit()
 
-        log_xero_error(
-            message=f"Failed to sync {doc_type} {doc_name} to Xero.",
-            erpnext_doc_type=doc_type,
-            erpnext_doc_name=doc_name,
-            error_details=frappe.get_traceback()
-        )
+            user_message = format_sync_error_message(
+                doc_type, doc_name, doc_name, "ERPNext to Xero", e
+            )
+
+            log_xero_error(
+                message=user_message,
+                erpnext_doc_type=doc_type,
+                erpnext_doc_name=doc_name,
+                error_details=error_traceback,
+                direction="ERPNext to Xero"
+            )
 
 
 # --- Bank Transaction Sync (Xero to ERPNext) ---
@@ -322,20 +344,44 @@ def process_xero_bank_transaction(xero_transaction_data, settings):
         )
 
     except Exception as e:
-        sync_status = "Error"
-        if erpnext_doc_name:
-            frappe.db.set_value("Bank Transaction", erpnext_doc_name, "xero_sync_status", sync_status, update_modified=False)
-            frappe.db.commit()
+        from ..utils.logging import is_already_exists_error
+        error_traceback = frappe.get_traceback()
+        
+        if is_already_exists_error(str(e), error_traceback):
+            if erpnext_doc_name:
+                frappe.db.set_value("Bank Transaction", erpnext_doc_name, "xero_sync_status", "Synced", update_modified=False)
+                frappe.db.commit()
+            
+            log_xero_error(
+                message=f"Xero Bank Transaction {xero_transaction_id} already exists in ERPNext as {erpnext_doc_name or 'existing document'}. Skipping update.",
+                status="Info",
+                category="Duplicate Entity",
+                erpnext_doc_type="Bank Transaction",
+                erpnext_doc_name=erpnext_doc_name,
+                xero_entity_id=xero_transaction_id,
+                xero_entity_type="BankTransaction",
+                direction="Xero to ERPNext"
+            )
+        else:
+            from ..utils.logging import format_sync_error_message
+            sync_status = "Error"
+            if erpnext_doc_name:
+                frappe.db.set_value("Bank Transaction", erpnext_doc_name, "xero_sync_status", sync_status, update_modified=False)
+                frappe.db.commit()
 
-        log_xero_error(
-            message=f"Failed to sync Xero Bank Transaction {xero_transaction_id} to ERPNext",
-            erpnext_doc_type="Bank Transaction",
-            erpnext_doc_name=erpnext_doc_name,
-            xero_entity_id=xero_transaction_id,
-            xero_entity_type="BankTransaction",
-            direction="Xero to ERPNext",
-            error_details=frappe.get_traceback()
-        )
+            user_message = format_sync_error_message(
+                "Xero Bank Transaction", xero_transaction_id, xero_transaction_id, "Xero to ERPNext", e
+            )
+
+            log_xero_error(
+                message=user_message,
+                erpnext_doc_type="Bank Transaction",
+                erpnext_doc_name=erpnext_doc_name,
+                xero_entity_id=xero_transaction_id,
+                xero_entity_type="BankTransaction",
+                direction="Xero to ERPNext",
+                error_details=error_traceback
+            )
 
 
 @frappe.whitelist()

@@ -314,16 +314,34 @@ def sync_account_to_xero(account_name):
         )
         
     except Exception as e:
-        # API or other error - mark as error
-        doc.db_set("xero_sync_status", "Error")
-        log_xero_error(
-            message=f"Failed to sync Account {doc.name} to Xero: {str(e)}",
-            status="Error",
-            erpnext_doc_type="Account",
-            erpnext_doc_name=doc.name,
-            direction="ERPNext to Xero",
-            error_details=frappe.get_traceback()
-        )
+        from ..utils.logging import is_already_exists_error
+        error_traceback = frappe.get_traceback()
+        
+        if is_already_exists_error(str(e), error_traceback):
+            doc.db_set("xero_sync_status", "Synced")
+            log_xero_error(
+                message=f"Account {doc.name} already exists in Xero. No action needed.",
+                status="Info",
+                category="Duplicate Entity",
+                erpnext_doc_type="Account",
+                erpnext_doc_name=doc.name,
+                direction="ERPNext to Xero"
+            )
+        else:
+            from ..utils.logging import format_sync_error_message
+            # API or other error - mark as error
+            doc.db_set("xero_sync_status", "Error")
+            user_message = format_sync_error_message(
+                "Account", doc.name, doc.name, "ERPNext to Xero", e
+            )
+            log_xero_error(
+                message=user_message,
+                status="Error",
+                erpnext_doc_type="Account",
+                erpnext_doc_name=doc.name,
+                direction="ERPNext to Xero",
+                error_details=error_traceback
+            )
 
 
 def build_xero_account_payload(doc, settings):
@@ -689,15 +707,38 @@ def process_xero_account(xero_account_data, company):
         )
         
     except Exception as e:
-        log_xero_error(
-            message=f"Failed to sync Xero Account {xero_account_id} ({xero_name}) to ERPNext Account",
-            erpnext_doc_type="Account",
-            erpnext_doc_name=erpnext_doc_name,
-            xero_entity_id=xero_account_id,
-            xero_entity_type="Account",
-            direction="Xero to ERPNext",
-            error_details=frappe.get_traceback()
-        )
+        from ..utils.logging import is_already_exists_error
+        error_traceback = frappe.get_traceback()
+        
+        if is_already_exists_error(str(e), error_traceback):
+            if erpnext_doc_name:
+                frappe.db.set_value("Account", erpnext_doc_name, "xero_sync_status", "Synced", update_modified=False)
+                frappe.db.commit()
+            
+            log_xero_error(
+                message=f"Xero Account {xero_account_id} ({xero_name}) already exists in ERPNext. Skipping update.",
+                status="Info",
+                category="Duplicate Entity",
+                erpnext_doc_type="Account",
+                erpnext_doc_name=erpnext_doc_name,
+                xero_entity_id=xero_account_id,
+                xero_entity_type="Account",
+                direction="Xero to ERPNext"
+            )
+        else:
+            from ..utils.logging import format_sync_error_message
+            user_message = format_sync_error_message(
+                "Xero Account", xero_account_id, xero_name, "Xero to ERPNext", e
+            )
+            log_xero_error(
+                message=user_message,
+                erpnext_doc_type="Account",
+                erpnext_doc_name=erpnext_doc_name,
+                xero_entity_id=xero_account_id,
+                xero_entity_type="Account",
+                direction="Xero to ERPNext",
+                error_details=error_traceback
+            )
 
 
 # =============================================================================

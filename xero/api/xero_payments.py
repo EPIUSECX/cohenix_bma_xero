@@ -90,17 +90,41 @@ def sync_payment_to_xero(doc_name, doc_type="Payment Entry", **kwargs):
             sync_standalone_payment(doc, xero_contact_id, xero_bank_account_id, doc_type, doc_name)
 
     except Exception as e:
-        # Ensure status is updated even if doc object wasn't fetched initially
-        if doc_name and doc_type:
-            frappe.db.set_value(doc_type, doc_name, {"xero_sync_status": "Error"}, update_modified=False)
-            frappe.db.commit()
+        from ..utils.logging import is_already_exists_error
+        error_traceback = frappe.get_traceback()
+        
+        # Check if this is an "already exists" type error from Xero API
+        if is_already_exists_error(str(e), error_traceback):
+            if doc_name and doc_type:
+                frappe.db.set_value(doc_type, doc_name, {"xero_sync_status": "Synced"}, update_modified=False)
+                frappe.db.commit()
+            
+            log_xero_error(
+                message=f"{doc_type} {doc_name} already exists in Xero. No action needed.",
+                status="Info",
+                category="Duplicate Entity",
+                erpnext_doc_type=doc_type,
+                erpnext_doc_name=doc_name,
+                direction="ERPNext to Xero"
+            )
+        else:
+            from ..utils.logging import format_sync_error_message
+            # Genuine sync error
+            if doc_name and doc_type:
+                frappe.db.set_value(doc_type, doc_name, {"xero_sync_status": "Error"}, update_modified=False)
+                frappe.db.commit()
 
-        log_xero_error(
-            message=f"Failed to sync {doc_type} {doc_name} to Xero.",
-            erpnext_doc_type=doc_type,
-            erpnext_doc_name=doc_name,
-            error_details=frappe.get_traceback()
-        )
+            user_message = format_sync_error_message(
+                doc_type, doc_name, doc_name, "ERPNext to Xero", e
+            )
+
+            log_xero_error(
+                message=user_message,
+                erpnext_doc_type=doc_type,
+                erpnext_doc_name=doc_name,
+                error_details=error_traceback,
+                direction="ERPNext to Xero"
+            )
 
 
 def sync_invoice_payments(doc, xero_bank_account_id, doc_type, doc_name):
@@ -511,35 +535,54 @@ def process_xero_payment(xero_payment_data, settings):
         )
 
     except Exception as e:
-        sync_status = "Error"
-        if erpnext_doc_name:
-            frappe.db.set_value("Payment Entry", erpnext_doc_name, "xero_sync_status", sync_status, update_modified=False)
-            frappe.db.commit()
-
-        # Create user-friendly error message
-        error_str = str(e)
-        user_friendly_message = f"Failed to sync payment from Xero: {error_str}"
+        from ..utils.logging import is_already_exists_error
+        error_traceback = frappe.get_traceback()
         
-        # Provide specific guidance for common errors
-        if "paid_from" in error_str.lower() or "paid_to" in error_str.lower():
-            user_friendly_message = "Failed to sync payment from Xero: There's an issue with the bank account configuration. Please check that your bank accounts are properly mapped in Xero Settings."
-        elif "party" in error_str.lower() or "customer" in error_str.lower() or "supplier" in error_str.lower():
-            user_friendly_message = "Failed to sync payment from Xero: The customer or supplier linked to this payment may not be synced properly. Please sync contacts first."
-        elif "reference" in error_str.lower():
-            user_friendly_message = "Failed to sync payment from Xero: There's an issue with the payment reference information."
-        elif "outstanding" in error_str.lower():
-            user_friendly_message = "Failed to sync payment from Xero: The payment amount exceeds the outstanding amount on the invoice."
+        if is_already_exists_error(str(e), error_traceback):
+            if erpnext_doc_name:
+                frappe.db.set_value("Payment Entry", erpnext_doc_name, "xero_sync_status", "Synced", update_modified=False)
+                frappe.db.commit()
+            
+            log_xero_error(
+                message=f"Xero Payment {xero_payment_id} already exists in ERPNext as {erpnext_doc_name or 'submitted document'}. Skipping update.",
+                status="Info",
+                category="Duplicate Entity",
+                erpnext_doc_type="Payment Entry",
+                erpnext_doc_name=erpnext_doc_name,
+                xero_entity_id=xero_payment_id,
+                xero_entity_type="Payment",
+                direction="Xero to ERPNext"
+            )
+        else:
+            sync_status = "Error"
+            if erpnext_doc_name:
+                frappe.db.set_value("Payment Entry", erpnext_doc_name, "xero_sync_status", sync_status, update_modified=False)
+                frappe.db.commit()
 
-        log_xero_error(
-            message=user_friendly_message,
-            erpnext_doc_type="Payment Entry",
-            erpnext_doc_name=erpnext_doc_name,
-            xero_entity_id=xero_payment_id,
-            xero_entity_type="Payment",
-            direction="Xero to ERPNext",
-            error_details=frappe.get_traceback(),
-            category="Sync Error"
-        )
+            # Create user-friendly error message
+            error_str = str(e)
+            user_friendly_message = f"Failed to sync payment from Xero: {error_str}"
+            
+            # Provide specific guidance for common errors
+            if "paid_from" in error_str.lower() or "paid_to" in error_str.lower():
+                user_friendly_message = "Failed to sync payment from Xero: There's an issue with the bank account configuration. Please check that your bank accounts are properly mapped in Xero Settings."
+            elif "party" in error_str.lower() or "customer" in error_str.lower() or "supplier" in error_str.lower():
+                user_friendly_message = "Failed to sync payment from Xero: The customer or supplier linked to this payment may not be synced properly. Please sync contacts first."
+            elif "reference" in error_str.lower():
+                user_friendly_message = "Failed to sync payment from Xero: There's an issue with the payment reference information."
+            elif "outstanding" in error_str.lower():
+                user_friendly_message = "Failed to sync payment from Xero: The payment amount exceeds the outstanding amount on the invoice."
+
+            log_xero_error(
+                message=user_friendly_message,
+                erpnext_doc_type="Payment Entry",
+                erpnext_doc_name=erpnext_doc_name,
+                xero_entity_id=xero_payment_id,
+                xero_entity_type="Payment",
+                direction="Xero to ERPNext",
+                error_details=error_traceback,
+                category="Sync Error"
+            )
 
 
 @frappe.whitelist()

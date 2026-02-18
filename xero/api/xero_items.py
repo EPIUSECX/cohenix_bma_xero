@@ -547,17 +547,38 @@ def sync_item_to_xero(item_code, **kwargs):
         )
     
     except Exception as e:
-        # Update sync status on error
-        if item_code:
-            frappe.db.set_value("Item", item_code, "xero_sync_status", "Error", update_modified=False)
-            frappe.db.commit()
-        log_xero_error(
-            message=f"Failed to sync Item {item_code} to Xero: {str(e)}",
-            erpnext_doc_type="Item",
-            erpnext_doc_name=item_code,
-            error_details=frappe.get_traceback()
-        )
-        raise  # Re-raise for retry decorator
+        from ..utils.logging import is_already_exists_error
+        error_traceback = frappe.get_traceback()
+        
+        if is_already_exists_error(str(e), error_traceback):
+            if item_code:
+                frappe.db.set_value("Item", item_code, "xero_sync_status", "Synced", update_modified=False)
+                frappe.db.commit()
+            log_xero_error(
+                message=f"Item {item_code} already exists in Xero. No action needed.",
+                status="Info",
+                category="Duplicate Entity",
+                erpnext_doc_type="Item",
+                erpnext_doc_name=item_code,
+                direction="ERPNext to Xero"
+            )
+        else:
+            from ..utils.logging import format_sync_error_message
+            # Update sync status on error
+            if item_code:
+                frappe.db.set_value("Item", item_code, "xero_sync_status", "Error", update_modified=False)
+                frappe.db.commit()
+            user_message = format_sync_error_message(
+                "Item", item_code, item_code, "ERPNext to Xero", e
+            )
+            log_xero_error(
+                message=user_message,
+                erpnext_doc_type="Item",
+                erpnext_doc_name=item_code,
+                error_details=error_traceback,
+                direction="ERPNext to Xero"
+            )
+            raise  # Re-raise for retry decorator
 
 
 def build_xero_item_payload(doc, settings):
@@ -900,16 +921,40 @@ def process_xero_item(xero_item_data, settings):
         )
     
     except Exception as e:
-        if erpnext_doc_name:
-            frappe.db.set_value("Item", erpnext_doc_name, "xero_sync_status", "Error", update_modified=False)
-            frappe.db.commit()
+        from ..utils.logging import is_already_exists_error
+        error_traceback = frappe.get_traceback()
         
-        log_xero_error(
-            message=f"Failed to sync Xero Item {xero_item_id} to ERPNext: {str(e)}",
-            erpnext_doc_type="Item",
-            erpnext_doc_name=erpnext_doc_name,
-            xero_entity_id=xero_item_id,
-            xero_entity_type="Item",
-            direction="Xero to ERPNext",
-            error_details=frappe.get_traceback()
-        )
+        if is_already_exists_error(str(e), error_traceback):
+            if erpnext_doc_name:
+                frappe.db.set_value("Item", erpnext_doc_name, "xero_sync_status", "Synced", update_modified=False)
+                frappe.db.commit()
+            
+            log_xero_error(
+                message=f"Xero Item {xero_item_id} already exists in ERPNext as {erpnext_doc_name or 'existing item'}. Skipping update.",
+                status="Info",
+                category="Duplicate Entity",
+                erpnext_doc_type="Item",
+                erpnext_doc_name=erpnext_doc_name,
+                xero_entity_id=xero_item_id,
+                xero_entity_type="Item",
+                direction="Xero to ERPNext"
+            )
+        else:
+            from ..utils.logging import format_sync_error_message
+            if erpnext_doc_name:
+                frappe.db.set_value("Item", erpnext_doc_name, "xero_sync_status", "Error", update_modified=False)
+                frappe.db.commit()
+            
+            user_message = format_sync_error_message(
+                "Xero Item", xero_item_id, item_code, "Xero to ERPNext", e
+            )
+            
+            log_xero_error(
+                message=user_message,
+                erpnext_doc_type="Item",
+                erpnext_doc_name=erpnext_doc_name,
+                xero_entity_id=xero_item_id,
+                xero_entity_type="Item",
+                direction="Xero to ERPNext",
+                error_details=error_traceback
+            )

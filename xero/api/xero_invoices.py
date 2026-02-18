@@ -391,24 +391,53 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
             raise Exception("Invalid response received from Xero Invoices API.")
 
     except Exception as e:
-        # Ensure status is updated even if doc object wasn't fetched initially
-        if doc_name and doc_type:
-            frappe.db.set_value(doc_type, doc_name, {"xero_sync_status": "Error"}, update_modified=False)
-            frappe.db.commit()
+        from ..utils.logging import is_already_exists_error
+        error_traceback = frappe.get_traceback()
+        
+        # Check if this is an "already exists" type error from Xero API
+        # These are not real sync failures — the entity already exists in Xero
+        if is_already_exists_error(str(e), error_traceback):
+            if doc_name and doc_type:
+                frappe.db.set_value(doc_type, doc_name, {"xero_sync_status": "Synced"}, update_modified=False)
+                frappe.db.commit()
+            
+            log_xero_error(
+                message=f"{doc_type} {doc_name} already exists in Xero. No action needed.",
+                status="Info",
+                category="Duplicate Entity",
+                erpnext_doc_type=doc_type,
+                erpnext_doc_name=doc_name,
+                direction="ERPNext to Xero"
+            )
+        else:
+            from ..utils.logging import format_sync_error_message
+            # Genuine sync error
+            if doc_name and doc_type:
+                frappe.db.set_value(doc_type, doc_name, {"xero_sync_status": "Error"}, update_modified=False)
+                frappe.db.commit()
 
-        log_xero_error(
-            message=f"Failed to sync {doc_type} {doc_name} to Xero.",
-            erpnext_doc_type=doc_type,
-            erpnext_doc_name=doc_name,
-            error_details=frappe.get_traceback()
-        )
-        # Optionally re-raise
-        # raise e
+            user_message = format_sync_error_message(
+                doc_type, doc_name, doc_name, "ERPNext to Xero", e
+            )
+
+            log_xero_error(
+                message=user_message,
+                erpnext_doc_type=doc_type,
+                erpnext_doc_name=doc_name,
+                error_details=error_traceback,
+                direction="ERPNext to Xero"
+            )
 
 def enqueue_void_invoice(doc, method):
     """Enqueue background job to void a cancelled invoice in Xero."""
     settings = get_xero_settings()
     if not settings.enable_xero_sync or not settings.sync_invoices:
+        return
+    
+    # Route return documents to credit note void handler
+    if doc.get("is_return"):
+        from .xero_credit_notes import enqueue_void_credit_note
+        enqueue_void_credit_note(doc, method)
         return
 
     frappe.enqueue(
@@ -1112,20 +1141,47 @@ def process_xero_invoice(xero_invoice_data, settings):
         )
     
     except Exception as e:
-        sync_status = "Error"
-        if erpnext_doc_name:
-            frappe.db.set_value(erpnext_doctype, erpnext_doc_name, "xero_sync_status", sync_status, update_modified=False)
-            frappe.db.commit()
+        from ..utils.logging import is_already_exists_error
+        error_traceback = frappe.get_traceback()
         
-        log_xero_error(
-            message=f"Failed to sync Xero Invoice {xero_invoice_id} ({invoice_number}) to ERPNext",
-            erpnext_doc_type=erpnext_doctype if 'erpnext_doctype' in locals() else None,
-            erpnext_doc_name=erpnext_doc_name if 'erpnext_doc_name' in locals() else None,
-            xero_entity_id=xero_invoice_id,
-            xero_entity_type="Invoice",
-            direction="Xero to ERPNext",
-            error_details=frappe.get_traceback()
-        )
+        # Check if this is an "already exists" type error (e.g. DocstatusTransitionError)
+        # These are not real sync failures — the entity already exists and is synced
+        if is_already_exists_error(str(e), error_traceback):
+            # Don't mark as Error — the document already exists and is synced
+            if erpnext_doc_name:
+                frappe.db.set_value(erpnext_doctype, erpnext_doc_name, "xero_sync_status", "Synced", update_modified=False)
+                frappe.db.commit()
+            
+            log_xero_error(
+                message=f"Xero Invoice {xero_invoice_id} ({invoice_number}) already exists in ERPNext as {erpnext_doc_name or 'submitted document'}. Skipping update.",
+                status="Info",
+                category="Duplicate Entity",
+                erpnext_doc_type=erpnext_doctype if 'erpnext_doctype' in locals() else None,
+                erpnext_doc_name=erpnext_doc_name if 'erpnext_doc_name' in locals() else None,
+                xero_entity_id=xero_invoice_id,
+                xero_entity_type="Invoice",
+                direction="Xero to ERPNext"
+            )
+        else:
+            from ..utils.logging import format_sync_error_message
+            sync_status = "Error"
+            if erpnext_doc_name:
+                frappe.db.set_value(erpnext_doctype, erpnext_doc_name, "xero_sync_status", sync_status, update_modified=False)
+                frappe.db.commit()
+            
+            user_message = format_sync_error_message(
+                "Xero Invoice", xero_invoice_id, invoice_number, "Xero to ERPNext", e
+            )
+            
+            log_xero_error(
+                message=user_message,
+                erpnext_doc_type=erpnext_doctype if 'erpnext_doctype' in locals() else None,
+                erpnext_doc_name=erpnext_doc_name if 'erpnext_doc_name' in locals() else None,
+                xero_entity_id=xero_invoice_id,
+                xero_entity_type="Invoice",
+                direction="Xero to ERPNext",
+                error_details=error_traceback
+            )
 
 
 # TODO: Implement Journal Entry sync

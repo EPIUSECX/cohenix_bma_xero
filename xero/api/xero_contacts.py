@@ -353,16 +353,36 @@ def sync_contact_to_xero(doc_name, doc_type, **kwargs):
              raise Exception("Invalid response received from Xero Contacts API.")
 
     except Exception as e:
-        frappe.db.set_value(doc_type, doc_name, {"xero_sync_status": "Error"}, update_modified=False)
-        frappe.db.commit()
-        log_xero_error(
-            message=f"Failed to sync {doc_type} {doc_name} to Xero.",
-            erpnext_doc_type=doc_type,
-            erpnext_doc_name=doc_name,
-            error_details=frappe.get_traceback()
-        )
-        # Optionally re-raise the exception if needed elsewhere
-        # raise e
+        from ..utils.logging import is_already_exists_error
+        error_traceback = frappe.get_traceback()
+        
+        # Check if this is an "already exists" type error from Xero API
+        if is_already_exists_error(str(e), error_traceback):
+            frappe.db.set_value(doc_type, doc_name, {"xero_sync_status": "Synced"}, update_modified=False)
+            frappe.db.commit()
+            
+            log_xero_error(
+                message=f"{doc_type} {doc_name} already exists in Xero. No action needed.",
+                status="Info",
+                category="Duplicate Entity",
+                erpnext_doc_type=doc_type,
+                erpnext_doc_name=doc_name,
+                direction="ERPNext to Xero"
+            )
+        else:
+            from ..utils.logging import format_sync_error_message
+            frappe.db.set_value(doc_type, doc_name, {"xero_sync_status": "Error"}, update_modified=False)
+            frappe.db.commit()
+            user_message = format_sync_error_message(
+                doc_type, doc_name, doc_name, "ERPNext to Xero", e
+            )
+            log_xero_error(
+                message=user_message,
+                erpnext_doc_type=doc_type,
+                erpnext_doc_name=doc_name,
+                error_details=error_traceback,
+                direction="ERPNext to Xero"
+            )
 
 
 def sync_contacts_to_xero(filters=None, sync_type="full", **kwargs):

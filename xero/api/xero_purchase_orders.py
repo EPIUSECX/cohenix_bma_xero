@@ -104,14 +104,34 @@ def sync_purchase_order_to_xero(doc_name, doc_type):
             raise Exception("Invalid response from Xero PurchaseOrders API.")
 
     except Exception as e:
-        frappe.db.set_value(doc_type, doc_name, "xero_sync_status", "Error", update_modified=False)
-        frappe.db.commit()
-        log_xero_error(
-            message=f"Failed to sync {doc_type} {doc_name} to Xero.",
-            erpnext_doc_type=doc_type,
-            erpnext_doc_name=doc_name,
-            error_details=frappe.get_traceback()
-        )
+        from ..utils.logging import is_already_exists_error
+        error_traceback = frappe.get_traceback()
+        
+        if is_already_exists_error(str(e), error_traceback):
+            frappe.db.set_value(doc_type, doc_name, "xero_sync_status", "Synced", update_modified=False)
+            frappe.db.commit()
+            log_xero_error(
+                message=f"{doc_type} {doc_name} already exists in Xero. No action needed.",
+                status="Info",
+                category="Duplicate Entity",
+                erpnext_doc_type=doc_type,
+                erpnext_doc_name=doc_name,
+                direction="ERPNext to Xero"
+            )
+        else:
+            from ..utils.logging import format_sync_error_message
+            frappe.db.set_value(doc_type, doc_name, "xero_sync_status", "Error", update_modified=False)
+            frappe.db.commit()
+            user_message = format_sync_error_message(
+                doc_type, doc_name, doc_name, "ERPNext to Xero", e
+            )
+            log_xero_error(
+                message=user_message,
+                erpnext_doc_type=doc_type,
+                erpnext_doc_name=doc_name,
+                error_details=error_traceback,
+                direction="ERPNext to Xero"
+            )
 
 
 # --- Purchase Order Sync (Xero to ERPNext) ---
@@ -300,17 +320,41 @@ def process_xero_purchase_order(xero_order_data, settings):
         )
     
     except Exception as e:
-        sync_status = "Error"
-        if erpnext_doc_name:
-            frappe.db.set_value("Purchase Order", erpnext_doc_name, "xero_sync_status", sync_status, update_modified=False)
-            frappe.db.commit()
+        from ..utils.logging import is_already_exists_error
+        error_traceback = frappe.get_traceback()
         
-        log_xero_error(
-            message=f"Failed to sync Xero Purchase Order {xero_order_id} ({order_number}) to ERPNext",
-            erpnext_doc_type="Purchase Order",
-            erpnext_doc_name=erpnext_doc_name if 'erpnext_doc_name' in locals() else None,
-            xero_entity_id=xero_order_id,
-            xero_entity_type="PurchaseOrder",
-            direction="Xero to ERPNext",
-            error_details=frappe.get_traceback()
-        )
+        if is_already_exists_error(str(e), error_traceback):
+            if erpnext_doc_name:
+                frappe.db.set_value("Purchase Order", erpnext_doc_name, "xero_sync_status", "Synced", update_modified=False)
+                frappe.db.commit()
+            
+            log_xero_error(
+                message=f"Xero Purchase Order {xero_order_id} ({order_number}) already exists in ERPNext. Skipping update.",
+                status="Info",
+                category="Duplicate Entity",
+                erpnext_doc_type="Purchase Order",
+                erpnext_doc_name=erpnext_doc_name if 'erpnext_doc_name' in locals() else None,
+                xero_entity_id=xero_order_id,
+                xero_entity_type="PurchaseOrder",
+                direction="Xero to ERPNext"
+            )
+        else:
+            from ..utils.logging import format_sync_error_message
+            sync_status = "Error"
+            if erpnext_doc_name:
+                frappe.db.set_value("Purchase Order", erpnext_doc_name, "xero_sync_status", sync_status, update_modified=False)
+                frappe.db.commit()
+            
+            user_message = format_sync_error_message(
+                "Xero Purchase Order", xero_order_id, order_number, "Xero to ERPNext", e
+            )
+            
+            log_xero_error(
+                message=user_message,
+                erpnext_doc_type="Purchase Order",
+                erpnext_doc_name=erpnext_doc_name if 'erpnext_doc_name' in locals() else None,
+                xero_entity_id=xero_order_id,
+                xero_entity_type="PurchaseOrder",
+                direction="Xero to ERPNext",
+                error_details=error_traceback
+            )
