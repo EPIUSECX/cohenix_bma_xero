@@ -1,33 +1,35 @@
+/* xero_sync_dashboard.css — Cohenix HR Theme (secondary styles) */
+
 .xero-dashboard-container {
-    padding: 20px;
+    padding: 24px;
 }
 
-.dashboard-card {
-    border-radius: 8px;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    transition: all 0.3s ease-in-out;
+.dashboard-card, .xero-card {
+    border-radius: 12px;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+    transition: box-shadow 0.2s ease;
 }
 
-.dashboard-card:hover {
-    transform: translateY(-5px);
-    box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+.dashboard-card:hover, .xero-card:hover {
+    box-shadow: 0 4px 16px rgba(59, 91, 219, 0.12);
 }
 
 .frappe-card-title {
-    font-size: 1rem;
+    font-size: 11px;
     font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #868E96;
 }
 
 .frappe-card-value {
-    font-size: 2rem;
+    font-size: 28px;
     font-weight: 700;
-}
-
-.xero-dashboard-filters .form-control {
-    margin-bottom: 10px;
+    color: #1A1A2E;
 }
 
 .xero-dashboard-list .table {
-    border-radius: 8px;
+    border-radius: 10px;
     overflow: hidden;
+    margin-top: 0;
 }
