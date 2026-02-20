@@ -53,52 +53,72 @@ class XeroSyncDashboard {
     }
 
     render_layout() {
-        // Add Cohenix HR theme CSS
+        // Add Cohenix HR theme CSS — tokens extracted from ESS_Cohenix_HR reference app
         $(`<style>
             /* ============================================================
-               XERO SYNC DASHBOARD — Cohenix HR Theme
-               Injected by render_layout() in xero_sync_dashboard.js
+               XERO SYNC DASHBOARD — Cohenix HR Design System
+               Tokens sourced from index-DNPSLMMZ.css :root variables
+               Primary: hsl(221,78%,58%) | Font: Source Sans Pro
                ============================================================ */
 
             :root {
-                --ch-primary:          #3B5BDB;
-                --ch-primary-dark:     #2F4AC0;
-                --ch-primary-light:    #EDF2FF;
-                --ch-accent:           #4DABF7;
-                --ch-success:          #2F9E44;
-                --ch-success-bg:       #EBFBEE;
-                --ch-warning:          #E67700;
-                --ch-warning-bg:       #FFF9DB;
-                --ch-danger:           #C92A2A;
-                --ch-danger-bg:        #FFF5F5;
-                --ch-info:             #1971C2;
-                --ch-info-bg:          #E7F5FF;
-                --ch-bg:               #F8F9FA;
-                --ch-surface:          #FFFFFF;
-                --ch-border:           #E9ECEF;
-                --ch-text:             #1A1A2E;
-                --ch-text-muted:       #868E96;
-                --ch-shadow-sm:        0 1px 4px rgba(0,0,0,0.06);
-                --ch-shadow-md:        0 2px 8px rgba(0,0,0,0.08);
-                --ch-shadow-hover:     0 4px 16px rgba(59,91,219,0.12);
+                /* Primary — hsl(221,78%,58%) = #4A7FE5 */
+                --ch-primary:          #4A7FE5;
+                --ch-primary-dark:     #2563EB;   /* hover: hsl(221,83%,55%) */
+                --ch-primary-light:    #EFF4FE;   /* hsl(221,78%,58%)/8% tint */
+
+                /* Semantic colors — from --success, --warning, --destructive */
+                --ch-success:          #1A9E4A;   /* hsl(142,76%,36%) */
+                --ch-success-bg:       #ECFDF5;   /* success/10% */
+                --ch-success-border:   #A7F3D0;   /* success/20% */
+                --ch-warning:          #D97706;   /* hsl(38,92%,50%) amber */
+                --ch-warning-bg:       #FFFBEB;   /* warning/10% */
+                --ch-warning-border:   #FDE68A;   /* warning/20% */
+                --ch-danger:           #C97A45;   /* hsl(27,50%,58%) — reference destructive */
+                --ch-danger-alt:       #DC2626;   /* true red for error states */
+                --ch-danger-bg:        #FFF7ED;   /* destructive/10% */
+                --ch-danger-border:    #FED7AA;   /* destructive/20% */
+                --ch-info:             #4A7FE5;   /* same as primary */
+                --ch-info-bg:          #EFF4FE;
+
+                /* Surfaces — hsl(210,20%,98%) background, white cards */
+                --ch-bg:               #F7F9FB;   /* hsl(210,20%,98%) */
+                --ch-surface:          #FFFFFF;   /* hsl(0,0%,100%) */
+                --ch-border:           #ECEEF0;   /* hsl(215,5%,93%) */
+                --ch-border-strong:    #D1D5DB;
+
+                /* Typography — hsl(210,15%,12%) foreground */
+                --ch-text:             #1A1F26;   /* hsl(210,15%,12%) */
+                --ch-text-muted:       #7F8A96;   /* hsl(210,10%,55%) */
+                --ch-text-subtle:      #9CA3AF;
+
+                /* Shadows */
+                --ch-shadow-sm:        0 1px 2px 0 rgba(0,0,0,0.05);
+                --ch-shadow-md:        0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -2px rgba(0,0,0,0.1);
+                --ch-shadow-hover:     0 4px 14px 0 hsl(221 78% 58% / 0.35);
+
+                /* Radii — --radius: 0.625rem = 10px */
                 --ch-radius-sm:        6px;
-                --ch-radius-md:        10px;
+                --ch-radius-md:        10px;   /* = var(--radius) */
                 --ch-radius-lg:        12px;
-                --ch-radius-pill:      999px;
+                --ch-radius-pill:      9999px;
+
+                /* Font */
+                --ch-font:             'Source Sans Pro', 'Segoe UI', system-ui, sans-serif;
             }
 
-            /* Dark mode support */
+            /* Dark mode — from .dark in reference CSS */
             html[data-theme-mode="dark"] {
-                --ch-bg:               #1A1D23;
-                --ch-surface:          #242830;
-                --ch-border:           #2E3340;
-                --ch-text:             #E9ECEF;
-                --ch-text-muted:       #868E96;
-                --ch-primary-light:    #1E2A5E;
-                --ch-success-bg:       #1A2E20;
-                --ch-warning-bg:       #2E2000;
-                --ch-danger-bg:        #2E1A1A;
-                --ch-info-bg:          #1A2540;
+                --ch-bg:               #0D1117;   /* hsl(222,47%,7%) */
+                --ch-surface:          #161B22;   /* hsl(222,32%,12%) */
+                --ch-border:           #21262D;   /* hsl(217,30%,22%) */
+                --ch-text:             #F0F6FC;   /* hsl(210,5%,96%) */
+                --ch-text-muted:       #8B949E;   /* hsl(215,12%,70%) */
+                --ch-primary-light:    #1C2A4A;
+                --ch-success-bg:       #0D2818;
+                --ch-warning-bg:       #2D1F00;
+                --ch-danger-bg:        #2D1500;
+                --ch-info-bg:          #1C2A4A;
             }
 
             /* ─── Page Container ─── */
@@ -107,7 +127,10 @@ class XeroSyncDashboard {
                 background: var(--ch-bg);
                 min-height: calc(100vh - 150px);
                 color: var(--ch-text);
-                font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+                font-family: var(--ch-font);
+                font-size: 14px;
+                line-height: 1.5;
+                -webkit-font-smoothing: antialiased;
             }
 
             /* ─── Tab Navigation (pill style) ─── */
@@ -253,87 +276,103 @@ class XeroSyncDashboard {
                 color: var(--ch-text-muted);
             }
 
-            /* ─── Status Badges ─── */
+            /* ─── Status Badges — outlined pill style (matches reference "Submitted"/"Paid") ─── */
             .badge, span.badge {
                 display: inline-flex;
                 align-items: center;
-                padding: 3px 10px;
+                padding: 2px 9px;
                 border-radius: var(--ch-radius-pill);
                 font-size: 11px;
                 font-weight: 600;
-                letter-spacing: 0.03em;
-                text-transform: capitalize;
+                letter-spacing: 0.02em;
                 line-height: 1.6;
+                border: 1px solid currentColor;
             }
 
+            /* Success — outlined green like "Submitted"/"Paid" in reference */
             .badge-success, .badge.success, span.indicator-pill.green {
                 background: var(--ch-success-bg) !important;
                 color: var(--ch-success) !important;
+                border-color: var(--ch-success-border) !important;
             }
 
+            /* Danger — outlined red */
             .badge-danger, .badge.error, span.indicator-pill.red {
                 background: var(--ch-danger-bg) !important;
-                color: var(--ch-danger) !important;
+                color: var(--ch-danger-alt) !important;
+                border-color: var(--ch-danger-border) !important;
             }
 
+            /* Warning — outlined amber */
             .badge-warning, .badge.warning, span.indicator-pill.orange {
                 background: var(--ch-warning-bg) !important;
                 color: var(--ch-warning) !important;
+                border-color: var(--ch-warning-border) !important;
             }
 
+            /* Info — outlined blue */
             .badge-info, .badge.info, span.indicator-pill.blue {
                 background: var(--ch-info-bg) !important;
                 color: var(--ch-info) !important;
+                border-color: rgba(74,127,229,0.3) !important;
             }
 
+            /* Primary — solid blue pill (like "NET PAY" in reference) */
             .badge-primary {
-                background: var(--ch-primary-light) !important;
-                color: var(--ch-primary) !important;
+                background: var(--ch-primary) !important;
+                color: #fff !important;
+                border-color: var(--ch-primary) !important;
             }
 
             .badge-secondary {
-                background: var(--ch-border) !important;
+                background: transparent !important;
                 color: var(--ch-text-muted) !important;
+                border-color: var(--ch-border) !important;
             }
 
             .badge-light {
                 background: var(--ch-bg) !important;
                 color: var(--ch-text) !important;
+                border-color: var(--ch-border) !important;
             }
 
-            /* ─── Tables ─── */
+            /* ─── Tables — clean row dividers, no zebra (matches reference payslips list) ─── */
             .table {
                 color: var(--ch-text);
                 border-collapse: collapse;
                 width: 100%;
-                font-size: 13px;
+                font-size: 14px;
             }
 
             .table thead th {
-                background: var(--ch-bg);
+                background: transparent;
                 color: var(--ch-text-muted);
                 font-size: 11px;
                 font-weight: 600;
-                letter-spacing: 0.06em;
+                letter-spacing: 0.08em;
                 text-transform: uppercase;
                 border-bottom: 1px solid var(--ch-border);
                 border-top: none;
-                padding: 10px 12px;
+                padding: 10px 16px;
+                white-space: nowrap;
             }
 
             .table tbody td {
                 border-top: 1px solid var(--ch-border);
-                padding: 10px 12px;
+                padding: 12px 16px;
                 color: var(--ch-text);
                 vertical-align: middle;
+                background: transparent;
             }
 
+            /* No zebra — clean white rows, subtle hover */
             .table tbody tr:hover td {
-                background: var(--ch-primary-light);
+                background: hsl(221 78% 58% / 0.04);
             }
 
-            .table-danger td { background: var(--ch-danger-bg) !important; }
-            .table-success td { background: var(--ch-success-bg) !important; }
+            /* Row status tinting — very subtle */
+            .table-danger td { background: hsl(27 50% 58% / 0.06) !important; }
+            .table-success td { background: hsl(142 76% 36% / 0.06) !important; }
 
             /* Progress bars */
             .progress {
@@ -559,46 +598,50 @@ class XeroSyncDashboard {
                 gap: 12px;
             }
 
+            /* ─── Sync Buttons — Quick Action card style from reference Image 1 ─── */
             .xero-sync-button {
                 display: flex;
                 align-items: center;
-                gap: 14px;
+                gap: 12px;
                 padding: 14px 16px;
-                background: var(--ch-surface);
-                border: 1px solid var(--ch-border);
+                background: var(--ch-primary);
+                border: none;
                 border-radius: var(--ch-radius-md);
                 cursor: pointer;
-                transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+                transition: background 0.15s, box-shadow 0.15s, transform 0.1s;
                 text-decoration: none !important;
-                color: var(--ch-text) !important;
+                color: #fff !important;
+                box-shadow: var(--ch-shadow-sm);
             }
 
             .xero-sync-button:hover {
-                border-color: var(--ch-primary);
+                background: var(--ch-primary-dark);
                 box-shadow: var(--ch-shadow-hover);
-                background: var(--ch-primary-light);
+                text-decoration: none !important;
+                color: #fff !important;
             }
 
             .xero-sync-button:active {
-                transform: translateY(1px);
+                transform: scale(0.98);
             }
 
+            /* Icon circle — slightly lighter blue, like reference Quick Actions */
             .sync-button-icon {
-                width: 34px;
-                height: 34px;
-                border-radius: var(--ch-radius-sm);
+                width: 32px;
+                height: 32px;
+                border-radius: 50%;
                 display: flex;
                 align-items: center;
                 justify-content: center;
-                font-size: 16px;
+                font-size: 14px;
                 color: #fff !important;
                 flex-shrink: 0;
+                background: rgba(255,255,255,0.2);
             }
 
             .sync-button-icon i {
                 color: #fff !important;
-                font-size: 15px !important;
-                font-weight: 900 !important;
+                font-size: 13px !important;
             }
 
             .sync-button-text { flex: 1; }
@@ -606,7 +649,8 @@ class XeroSyncDashboard {
             .sync-button-title {
                 font-size: 13px;
                 font-weight: 600;
-                color: var(--ch-text);
+                color: #fff !important;
+                line-height: 1.3;
             }
 
             /* Icon color palette — entity-specific */
@@ -2065,31 +2109,36 @@ class XeroSyncDashboard {
 
     render_last_sync_attempts(data) {
         const last_sync_html = `
-            <!-- Summary Stats -->
-            <div class="overview-stats-grid" style="grid-template-columns: repeat(6,1fr);margin-bottom:24px;">
-                <div class="overview-stat-card">
-                    <div class="stat-value">${data.total_attempts || 0}</div>
-                    <div class="stat-label">Total</div>
-                </div>
-                <div class="overview-stat-card">
-                    <div class="stat-value" style="color:var(--ch-success);">${data.successful_attempts || 0}</div>
-                    <div class="stat-label">Successful</div>
-                </div>
-                <div class="overview-stat-card">
-                    <div class="stat-value" style="color:var(--ch-danger);">${data.failed_attempts || 0}</div>
-                    <div class="stat-label">Failed</div>
-                </div>
-                <div class="overview-stat-card">
-                    <div class="stat-value" style="color:var(--ch-warning);">${data.partial_success_attempts || 0}</div>
-                    <div class="stat-label">Partial</div>
-                </div>
-                <div class="overview-stat-card">
-                    <div class="stat-value" style="color:var(--ch-warning);">${data.warning_only_attempts || 0}</div>
-                    <div class="stat-label">Warnings Only</div>
-                </div>
-                <div class="overview-stat-card">
-                    <div class="stat-value" style="color:var(--ch-info);">${data.success_with_warnings_attempts || 0}</div>
-                    <div class="stat-label">With Warnings</div>
+            <!-- Summary Stats — inline bar pattern from reference payslips list -->
+            <div class="card" style="margin-bottom:20px;">
+                <div class="card-body" style="padding:16px 24px;">
+                    <div style="display:flex;align-items:center;gap:0;flex-wrap:wrap;">
+                        <div style="flex:1;min-width:100px;padding:8px 20px 8px 0;border-right:1px solid var(--ch-border);">
+                            <div style="font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:var(--ch-text-muted);margin-bottom:4px;">Total Attempts</div>
+                            <div style="font-size:22px;font-weight:700;color:var(--ch-text);">${data.total_attempts || 0}</div>
+                        </div>
+                        <div style="flex:1;min-width:100px;padding:8px 20px;border-right:1px solid var(--ch-border);">
+                            <div style="font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:var(--ch-text-muted);margin-bottom:4px;">Successful</div>
+                            <div style="font-size:22px;font-weight:700;color:var(--ch-success);">${data.successful_attempts || 0}</div>
+                        </div>
+                        <div style="flex:1;min-width:100px;padding:8px 20px;border-right:1px solid var(--ch-border);">
+                            <div style="font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:var(--ch-text-muted);margin-bottom:4px;">Failed</div>
+                            <div style="font-size:22px;font-weight:700;color:var(--ch-danger-alt);">${data.failed_attempts || 0}</div>
+                        </div>
+                        <div style="flex:1;min-width:100px;padding:8px 20px;border-right:1px solid var(--ch-border);">
+                            <div style="font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:var(--ch-text-muted);margin-bottom:4px;">Partial</div>
+                            <div style="font-size:22px;font-weight:700;color:var(--ch-warning);">${data.partial_success_attempts || 0}</div>
+                        </div>
+                        <div style="flex:1;min-width:100px;padding:8px 20px;border-right:1px solid var(--ch-border);">
+                            <div style="font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:var(--ch-text-muted);margin-bottom:4px;">Warnings Only</div>
+                            <div style="font-size:22px;font-weight:700;color:var(--ch-warning);">${data.warning_only_attempts || 0}</div>
+                        </div>
+                        <div style="flex:1;min-width:100px;padding:8px 0 8px 20px;">
+                            <div style="font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:var(--ch-text-muted);margin-bottom:4px;">With Warnings</div>
+                            <div style="font-size:22px;font-weight:700;color:var(--ch-primary);">${data.success_with_warnings_attempts || 0}</div>
+                        </div>
+                    </div>
+                    <div style="margin-top:8px;font-size:12px;color:var(--ch-text-muted);">Based on submitted payslips for the selected period.</div>
                 </div>
             </div>
 

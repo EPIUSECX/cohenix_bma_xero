@@ -1,35 +1,50 @@
-/* xero_sync_dashboard.css — Cohenix HR Theme (secondary styles) */
+/* xero_sync_dashboard.css — Cohenix HR Design System (secondary styles)
+   Tokens: --radius: 0.625rem (10px), font: Source Sans Pro
+   Primary: hsl(221,78%,58%) = #4A7FE5
+*/
 
 .xero-dashboard-container {
     padding: 24px;
+    font-family: 'Source Sans Pro', 'Segoe UI', system-ui, sans-serif;
 }
 
+/* Card base — white surface, 10px radius, subtle shadow */
 .dashboard-card, .xero-card {
-    border-radius: 12px;
-    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+    background: #FFFFFF;
+    border: 1px solid #ECEEF0;
+    border-radius: 10px;
+    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
     transition: box-shadow 0.2s ease;
 }
 
 .dashboard-card:hover, .xero-card:hover {
-    box-shadow: 0 4px 16px rgba(59, 91, 219, 0.12);
+    box-shadow: 0 4px 14px 0 hsl(221 78% 58% / 0.35);
 }
 
+/* Frappe card overrides */
 .frappe-card-title {
     font-size: 11px;
     font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: #868E96;
+    letter-spacing: 0.08em;
+    color: #7F8A96;
 }
 
 .frappe-card-value {
     font-size: 28px;
     font-weight: 700;
-    color: #1A1A2E;
+    color: #1A1F26;
+    line-height: 1.2;
 }
 
+/* Table wrapper */
 .xero-dashboard-list .table {
-    border-radius: 10px;
+    border-radius: 0;
     overflow: hidden;
     margin-top: 0;
+}
+
+/* Progress bar height override */
+.xero-dashboard-container .progress {
+    height: 5px;
 }
