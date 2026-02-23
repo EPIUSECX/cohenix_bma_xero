@@ -25,11 +25,36 @@ class XeroSyncDashboard {
     }
 
     init() {
-        this.setup_page_actions();
-        this.render_layout();
-        this.setup_tabs();
-        this.load_overview();
-        this.start_auto_refresh();
+        this.load_lucide().then(() => {
+            this.setup_page_actions();
+            this.render_layout();
+            this.setup_tabs();
+            this.load_overview();
+            this.start_auto_refresh();
+        });
+    }
+
+    load_lucide() {
+        return new Promise((resolve) => {
+            if (window.lucide) {
+                resolve();
+                return;
+            }
+            const script = document.createElement('script');
+            script.src = 'https://unpkg.com/lucide@0.344.0/dist/umd/lucide.min.js';
+            script.onload = () => resolve();
+            script.onerror = () => {
+                console.warn('Lucide CDN failed to load, falling back to Font Awesome');
+                resolve();
+            };
+            document.head.appendChild(script);
+        });
+    }
+
+    create_lucide_icons() {
+        if (window.lucide) {
+            try { lucide.createIcons(); } catch(e) { /* ignore */ }
+        }
     }
 
     setup_page_actions() {
@@ -62,24 +87,24 @@ class XeroSyncDashboard {
                ============================================================ */
 
             :root {
-                /* Primary — hsl(221,78%,58%) = #4A7FE5 */
-                --ch-primary:          #4A7FE5;
-                --ch-primary-dark:     #2563EB;   /* hover: hsl(221,83%,55%) */
-                --ch-primary-light:    #EFF4FE;   /* hsl(221,78%,58%)/8% tint */
+                /* Primary — dusty blue */
+                --ch-primary:          #5B8AC4;
+                --ch-primary-dark:     #4A78B0;   /* hover */
+                --ch-primary-light:    #F0F4FA;   /* tint */
 
-                /* Semantic colors — from --success, --warning, --destructive */
-                --ch-success:          #1A9E4A;   /* hsl(142,76%,36%) */
-                --ch-success-bg:       #ECFDF5;   /* success/10% */
-                --ch-success-border:   #A7F3D0;   /* success/20% */
-                --ch-warning:          #D97706;   /* hsl(38,92%,50%) amber */
-                --ch-warning-bg:       #FFFBEB;   /* warning/10% */
-                --ch-warning-border:   #FDE68A;   /* warning/20% */
-                --ch-danger:           #C97A45;   /* hsl(27,50%,58%) — reference destructive */
-                --ch-danger-alt:       #DC2626;   /* true red for error states */
-                --ch-danger-bg:        #FFF7ED;   /* destructive/10% */
-                --ch-danger-border:    #FED7AA;   /* destructive/20% */
-                --ch-info:             #4A7FE5;   /* same as primary */
-                --ch-info-bg:          #EFF4FE;
+                /* Semantic colors — muted/dusty tones */
+                --ch-success:          #5BA88A;   /* dusty green */
+                --ch-success-bg:       #F0F8F4;   /* success tint */
+                --ch-success-border:   #C2E0D2;   /* success border */
+                --ch-warning:          #C4923A;   /* dusty amber */
+                --ch-warning-bg:       #FBF7F0;   /* warning tint */
+                --ch-warning-border:   #EDDCB8;   /* warning border */
+                --ch-danger:           #B87D5A;   /* dusty terracotta */
+                --ch-danger-alt:       #C45B5B;   /* muted red for error states */
+                --ch-danger-bg:        #FBF3EF;   /* destructive tint */
+                --ch-danger-border:    #E8CCBB;   /* destructive border */
+                --ch-info:             #5B8AC4;   /* same as primary */
+                --ch-info-bg:          #F0F4FA;
 
                 /* Surfaces — hsl(210,20%,98%) background, white cards */
                 --ch-bg:               #F7F9FB;   /* hsl(210,20%,98%) */
@@ -152,29 +177,39 @@ class XeroSyncDashboard {
 
             .xero-dashboard-container .nav-tabs .nav-link {
                 color: var(--ch-text-muted);
-                background: var(--ch-surface);
-                border: 1px solid var(--ch-border);
+                background: transparent;
+                border: none;
                 border-radius: var(--ch-radius-pill);
                 padding: 7px 18px;
                 font-size: 13px;
                 font-weight: 500;
                 line-height: 1.4;
-                transition: border-color 0.15s, background 0.15s, color 0.15s;
+                transition: background 0.15s, color 0.15s;
                 white-space: nowrap;
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+            }
+
+            .xero-dashboard-container .nav-tabs .nav-link svg {
+                width: 15px;
+                height: 15px;
             }
 
             .xero-dashboard-container .nav-tabs .nav-link:hover:not(.active) {
                 background: var(--ch-primary-light);
-                border-color: var(--ch-primary);
                 color: var(--ch-primary);
                 text-decoration: none;
             }
 
             .xero-dashboard-container .nav-tabs .nav-link.active {
                 background: var(--ch-primary) !important;
-                border-color: var(--ch-primary) !important;
                 color: #fff !important;
                 box-shadow: var(--ch-shadow-md);
+            }
+
+            .xero-dashboard-container .nav-tabs .nav-link.active svg {
+                color: #fff;
             }
 
             /* ─── Content Wrapper ─── */
@@ -490,204 +525,315 @@ class XeroSyncDashboard {
                 font-size: 13px;
             }
 
-            /* ─── Manual Sync Operations Header Banner ─── */
-            .xero-sync-header {
-                background: var(--ch-primary);
-                color: #fff;
+            /* ─── Manual Sync Operations — Modern Minimalist ─── */
+            .xero-sync-header-modern {
+                background: var(--ch-surface);
+                border: 1px solid var(--ch-border);
+                border-radius: var(--ch-radius-lg);
                 padding: 20px 24px;
-                border-radius: var(--ch-radius-lg) var(--ch-radius-lg) 0 0;
+                margin-bottom: 20px;
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
             }
 
-            .xero-sync-title {
+            .xero-sync-header-modern .xero-sync-title {
                 font-size: 17px;
                 font-weight: 700;
                 margin: 0;
-                color: #fff !important;
-                display: flex;
-                align-items: center;
-                gap: 10px;
+                color: var(--ch-text);
+                display: block;
             }
 
-            .xero-sync-subtitle {
+            .xero-sync-header-modern .xero-sync-subtitle {
                 font-size: 13px;
-                color: rgba(255,255,255,0.85) !important;
-                margin: 6px 0 0 0;
+                color: var(--ch-text-muted);
+                margin: 4px 0 0 0;
             }
 
-            .xero-sync-status {
-                background: rgba(255,255,255,0.2);
-                border: 1px solid rgba(255,255,255,0.3);
-                color: #fff;
-                padding: 4px 12px;
+            .xero-sync-ready-badge {
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+                background: var(--ch-success-bg);
+                color: var(--ch-success);
+                border: 1px solid var(--ch-success-border);
                 border-radius: var(--ch-radius-pill);
+                padding: 5px 14px;
                 font-size: 12px;
-                font-weight: 500;
-                position: absolute;
-                top: 20px;
-                right: 24px;
+                font-weight: 600;
             }
 
-            .xero-sync-body {
+            .xero-sync-ready-badge svg,
+            .xero-sync-ready-badge i {
+                width: 14px;
+                height: 14px;
+            }
+
+            /* Direction sections */
+            .sync-direction-card {
                 background: var(--ch-surface);
-                padding: 28px 24px;
-                border-radius: 0 0 var(--ch-radius-lg) var(--ch-radius-lg);
                 border: 1px solid var(--ch-border);
-                border-top: none;
+                border-radius: var(--ch-radius-lg);
+                padding: 24px;
+                margin-bottom: 20px;
             }
 
-            .sync-direction-section {
-                margin-bottom: 40px;
-            }
-
-            .sync-direction-section.disabled-section {
+            .sync-direction-card.disabled-section {
                 opacity: 0.6;
                 pointer-events: none;
                 position: relative;
             }
 
-            .sync-direction-section.disabled-section::after {
+            .sync-direction-card.disabled-section::after {
                 content: '';
                 position: absolute;
                 top: 0; left: 0; right: 0; bottom: 0;
-                background: rgba(128,128,128,0.1);
-                border-radius: var(--ch-radius-md);
+                background: rgba(128,128,128,0.08);
+                border-radius: var(--ch-radius-lg);
                 z-index: 1;
             }
 
-            /* ─── Sync Button Grid ─── */
             .sync-direction-header {
                 display: flex;
                 align-items: center;
                 gap: 14px;
-                padding-bottom: 14px;
-                border-bottom: 1px solid var(--ch-border);
                 margin-bottom: 20px;
             }
 
             .sync-direction-icon {
                 width: 38px;
                 height: 38px;
-                border-radius: var(--ch-radius-md);
+                border-radius: 50%;
                 display: flex;
                 align-items: center;
                 justify-content: center;
-                font-size: 16px;
-                color: #fff;
                 flex-shrink: 0;
             }
 
-            .sync-direction-icon.to-xero   { background: var(--ch-primary); }
-            .sync-direction-icon.from-xero { background: var(--ch-success); }
+            .sync-direction-icon svg {
+                width: 18px;
+                height: 18px;
+                color: #fff;
+            }
+
+            .sync-direction-icon.to-xero   { background: #7BA3CC; }
+            .sync-direction-icon.from-xero { background: #7BB89E; }
 
             .sync-direction-info h3 {
                 margin: 0;
                 font-size: 15px;
-                font-weight: 600;
+                font-weight: 700;
                 color: var(--ch-text);
             }
 
             .sync-direction-info p {
                 margin: 3px 0 0 0;
-                font-size: 12px;
+                font-size: 13px;
                 color: var(--ch-text-muted);
             }
 
-            .sync-buttons-grid {
-                display: grid;
-                grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
-                gap: 12px;
+            /* Chip-style sync buttons */
+            .sync-chips-grid {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 10px;
             }
 
-            /* ─── Sync Buttons — Quick Action card style from reference Image 1 ─── */
-            .xero-sync-button {
-                display: flex;
+            .sync-chip-btn {
+                display: inline-flex;
                 align-items: center;
-                gap: 12px;
-                padding: 14px 16px;
-                background: var(--ch-primary);
-                border: none;
+                gap: 8px;
+                padding: 8px 16px;
+                background: var(--ch-surface);
+                border: 1px solid var(--ch-border);
                 border-radius: var(--ch-radius-md);
                 cursor: pointer;
-                transition: background 0.15s, box-shadow 0.15s, transform 0.1s;
+                transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
                 text-decoration: none !important;
-                color: #fff !important;
-                box-shadow: var(--ch-shadow-sm);
+                color: var(--ch-text) !important;
+                font-size: 13px;
+                font-weight: 500;
+                line-height: 1.4;
+                white-space: nowrap;
             }
 
-            .xero-sync-button:hover {
-                background: var(--ch-primary-dark);
-                box-shadow: var(--ch-shadow-hover);
+            .sync-chip-btn:hover {
+                border-color: var(--ch-primary);
+                box-shadow: 0 2px 8px rgba(74,127,229,0.12);
+                background: var(--ch-primary-light);
                 text-decoration: none !important;
-                color: #fff !important;
+                color: var(--ch-text) !important;
             }
 
-            .xero-sync-button:active {
-                transform: scale(0.98);
+            .sync-chip-btn:active {
+                transform: scale(0.97);
             }
 
-            /* Icon circle — slightly lighter blue, like reference Quick Actions */
-            .sync-button-icon {
-                width: 32px;
-                height: 32px;
-                border-radius: 50%;
+            .sync-chip-btn.disabled {
+                opacity: 0.5;
+                cursor: not-allowed;
+                pointer-events: none;
+            }
+
+            .sync-chip-btn svg,
+            .sync-chip-btn .chip-icon {
+                width: 16px;
+                height: 16px;
+                flex-shrink: 0;
+            }
+
+            /* Chip icon colors — dusty/muted palette */
+            .chip-icon-blue    { color: #5B7EC2; }
+            .chip-icon-indigo  { color: #5A8AB5; }
+            .chip-icon-green   { color: #5BA88A; }
+            .chip-icon-orange  { color: #C4923A; }
+            .chip-icon-purple  { color: #8B6FC0; }
+            .chip-icon-red     { color: #C07A50; }
+            .chip-icon-teal    { color: #4A9BA8; }
+            .chip-icon-violet  { color: #9B6EAD; }
+            .chip-icon-gray    { color: #7A8490; }
+            .chip-icon-crimson { color: #B85A5A; }
+
+            /* ─── Bulk Operations — Modern ─── */
+            .bulk-ops-card {
+                background: var(--ch-surface);
+                border: 1px solid var(--ch-border);
+                border-radius: var(--ch-radius-lg);
+                padding: 20px 24px;
+                margin-bottom: 20px;
+            }
+
+            .bulk-ops-header {
                 display: flex;
                 align-items: center;
-                justify-content: center;
-                font-size: 14px;
-                color: #fff !important;
-                flex-shrink: 0;
-                background: rgba(255,255,255,0.2);
+                gap: 10px;
+                margin-bottom: 16px;
+                font-size: 15px;
+                font-weight: 700;
+                color: var(--ch-text);
             }
 
-            .sync-button-icon i {
-                color: #fff !important;
-                font-size: 13px !important;
+            .bulk-ops-header svg {
+                width: 18px;
+                height: 18px;
+                color: var(--ch-text-muted);
             }
 
-            .sync-button-text { flex: 1; }
-
-            .sync-button-title {
-                font-size: 13px;
-                font-weight: 600;
-                color: #fff !important;
-                line-height: 1.3;
-            }
-
-            /* Icon color palette — entity-specific */
-            .icon-sales-invoice      { background: #3B5BDB; }
-            .icon-purchase-invoice   { background: #1971C2; }
-            .icon-payment-entry      { background: #2F9E44; }
-            .icon-journal-entry      { background: #E67700; }
-            .icon-customer           { background: #7048E8; }
-            .icon-supplier           { background: #D9480F; }
-            .icon-item               { background: #0C8599; }
-            .icon-quotation          { background: #9C36B5; }
-            .icon-bank-transaction   { background: #495057; }
-            .icon-sync-accounts      { background: #2F9E44; }
-            .icon-sync-contacts      { background: #1971C2; }
-            .icon-sync-items         { background: #0C8599; }
-            .icon-sync-invoices      { background: #3B5BDB; }
-            .icon-sync-credit-notes  { background: #C92A2A; }
-            .icon-sync-payments      { background: #2F9E44; }
-            .icon-sync-bank-transactions { background: #495057; }
-            .icon-sync-quotes        { background: #9C36B5; }
-            .icon-sync-purchase-orders   { background: #D9480F; }
-            .icon-sync-manual-journals   { background: #E67700; }
-
-            /* ─── Bulk Operations ─── */
-            .bulk-operations-row {
+            .bulk-ops-row {
                 display: flex;
                 gap: 12px;
                 flex-wrap: wrap;
             }
 
-            .bulk-operations-row .btn {
-                flex: 1;
-                min-width: 160px;
+            .bulk-btn {
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+                padding: 9px 18px;
                 border-radius: var(--ch-radius-md);
-                font-weight: 500;
-                padding: 10px 20px;
                 font-size: 13px;
+                font-weight: 500;
+                cursor: pointer;
+                transition: all 0.15s;
+                border: 1px solid transparent;
+                line-height: 1.4;
+            }
+
+            .bulk-btn svg {
+                width: 15px;
+                height: 15px;
+            }
+
+            .bulk-btn-danger {
+                background: transparent;
+                border-color: var(--ch-danger-alt);
+                color: var(--ch-danger-alt);
+            }
+
+            .bulk-btn-danger:hover {
+                background: rgba(220,38,38,0.06);
+            }
+
+            .bulk-btn-primary {
+                background: var(--ch-success);
+                border-color: var(--ch-success);
+                color: #fff;
+            }
+
+            .bulk-btn-primary:hover {
+                background: #4D9578;
+                box-shadow: 0 2px 8px rgba(91,168,138,0.3);
+            }
+
+            .bulk-btn-ghost {
+                background: transparent;
+                border-color: var(--ch-border);
+                color: var(--ch-text-muted);
+            }
+
+            .bulk-btn-ghost:hover {
+                border-color: var(--ch-text-muted);
+                color: var(--ch-text);
+            }
+
+            /* ─── Queue Status — Stat Cards ─── */
+            .queue-stats-grid {
+                display: grid;
+                grid-template-columns: repeat(4, 1fr);
+                gap: 16px;
+            }
+
+            .queue-stat-card {
+                background: var(--ch-surface);
+                border: 1px solid var(--ch-border);
+                border-radius: var(--ch-radius-lg);
+                padding: 20px;
+                text-align: center;
+            }
+
+            .queue-stat-card .queue-stat-icon {
+                margin-bottom: 8px;
+            }
+
+            .queue-stat-card .queue-stat-icon svg {
+                width: 20px;
+                height: 20px;
+                color: var(--ch-text-muted);
+            }
+
+            .queue-stat-card .queue-stat-icon.icon-queued svg    { color: var(--ch-text-muted); }
+            .queue-stat-card .queue-stat-icon.icon-processing svg { color: var(--ch-primary); }
+            .queue-stat-card .queue-stat-icon.icon-completed svg  { color: var(--ch-success); }
+            .queue-stat-card .queue-stat-icon.icon-failed svg     { color: var(--ch-danger-alt); }
+
+            .queue-stat-card .queue-stat-value {
+                font-size: 28px;
+                font-weight: 700;
+                color: var(--ch-text);
+                line-height: 1.2;
+            }
+
+            .queue-stat-card .queue-stat-label {
+                font-size: 12px;
+                color: var(--ch-text-muted);
+                margin-top: 4px;
+            }
+
+            .queue-section-header {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                margin-bottom: 16px;
+                font-size: 15px;
+                font-weight: 700;
+                color: var(--ch-text);
+            }
+
+            .queue-section-header svg {
+                width: 18px;
+                height: 18px;
+                color: var(--ch-text-muted);
             }
 
             /* ─── Entity Status Grid ─── */
@@ -787,15 +933,21 @@ class XeroSyncDashboard {
                 text-decoration: underline;
             }
 
-            /* ─── Last Sync Attempts ─── */
+            /* ─── Last Sync Attempts — Modern ─── */
             .sync-attempt-block {
                 background: var(--ch-surface);
                 border: 1px solid var(--ch-border);
                 border-radius: var(--ch-radius-lg);
                 margin-bottom: 16px;
                 overflow: hidden;
-                box-shadow: var(--ch-shadow-sm);
+                border-left: 3px solid var(--ch-border);
             }
+
+            .sync-attempt-block.attempt-success  { border-left-color: var(--ch-success); }
+            .sync-attempt-block.attempt-failed   { border-left-color: var(--ch-danger-alt); }
+            .sync-attempt-block.attempt-partial  { border-left-color: var(--ch-warning); }
+            .sync-attempt-block.attempt-warnings { border-left-color: var(--ch-warning); }
+            .sync-attempt-block.attempt-info     { border-left-color: var(--ch-info); }
 
             .sync-attempt-header {
                 display: flex;
@@ -805,14 +957,15 @@ class XeroSyncDashboard {
                 cursor: pointer;
                 font-weight: 600;
                 font-size: 13px;
-                color: #fff;
+                color: var(--ch-text);
+                background: var(--ch-surface);
+                border-bottom: 1px solid var(--ch-border);
             }
 
-            .sync-attempt-header.status-failed   { background: var(--ch-danger); }
-            .sync-attempt-header.status-success  { background: var(--ch-success); }
-            .sync-attempt-header.status-partial  { background: var(--ch-warning); }
-            .sync-attempt-header.status-warnings { background: #F59F00; }
-            .sync-attempt-header.status-info     { background: var(--ch-info); }
+            .sync-attempt-header svg {
+                width: 16px;
+                height: 16px;
+            }
 
             .sync-attempt-body { padding: 16px 20px; }
 
@@ -862,14 +1015,13 @@ class XeroSyncDashboard {
                 color: var(--ch-text);
             }
 
-            /* ─── Overview Connection Banner ─── */
+            /* ─── Overview Connection Banner — Modern ─── */
             .xero-connection-banner {
                 background: var(--ch-surface);
                 border: 1px solid var(--ch-border);
                 border-radius: var(--ch-radius-lg);
                 padding: 20px 24px;
                 margin-bottom: 20px;
-                box-shadow: var(--ch-shadow-sm);
                 display: flex;
                 align-items: center;
                 justify-content: space-between;
@@ -877,35 +1029,326 @@ class XeroSyncDashboard {
                 gap: 16px;
             }
 
+            .xero-connection-left {
+                display: flex;
+                align-items: center;
+                gap: 12px;
+            }
+
+            .xero-connection-icon {
+                width: 40px;
+                height: 40px;
+                border-radius: 50%;
+                background: #7BA3CC;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                flex-shrink: 0;
+            }
+
+            .xero-connection-icon svg {
+                width: 20px;
+                height: 20px;
+                color: #fff;
+            }
+
             .xero-connection-title {
-                font-size: 15px;
-                font-weight: 600;
+                font-size: 17px;
+                font-weight: 700;
                 color: var(--ch-text);
                 display: flex;
                 align-items: center;
-                gap: 8px;
+                gap: 10px;
             }
 
             .xero-connection-meta {
                 display: flex;
-                gap: 32px;
+                gap: 40px;
                 flex-wrap: wrap;
             }
 
+            .xero-connection-meta-item {
+                text-align: left;
+            }
+
             .xero-connection-meta-item label {
-                font-size: 11px;
+                font-size: 10px;
                 text-transform: uppercase;
-                letter-spacing: 0.06em;
+                letter-spacing: 0.08em;
                 color: var(--ch-text-muted);
                 display: block;
                 margin-bottom: 2px;
-                font-weight: 500;
+                font-weight: 600;
             }
 
             .xero-connection-meta-item span {
                 font-size: 13px;
                 font-weight: 600;
                 color: var(--ch-text);
+            }
+
+            /* Overview stat cards — modern layout */
+            .overview-stat-card {
+                display: flex;
+                align-items: flex-start;
+                justify-content: space-between;
+                text-align: left;
+                padding: 20px 24px;
+            }
+
+            .overview-stat-card .stat-text {
+                flex: 1;
+            }
+
+            .overview-stat-card .stat-label-top {
+                font-size: 12px;
+                color: var(--ch-text-muted);
+                margin-bottom: 4px;
+            }
+
+            .overview-stat-card .stat-value {
+                font-size: 32px;
+                font-weight: 700;
+                color: var(--ch-text);
+                line-height: 1.1;
+            }
+
+            .overview-stat-card .stat-icon-circle {
+                width: 40px;
+                height: 40px;
+                border-radius: 50%;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                flex-shrink: 0;
+            }
+
+            .overview-stat-card .stat-icon-circle svg {
+                width: 20px;
+                height: 20px;
+            }
+
+            .stat-icon-circle.icon-success { background: var(--ch-success-bg); }
+            .stat-icon-circle.icon-success svg { color: var(--ch-success); }
+            .stat-icon-circle.icon-danger { background: var(--ch-danger-bg); }
+            .stat-icon-circle.icon-danger svg { color: var(--ch-danger-alt); }
+            .stat-icon-circle.icon-info { background: var(--ch-info-bg); }
+            .stat-icon-circle.icon-info svg { color: var(--ch-info); }
+            .stat-icon-circle.icon-primary { background: var(--ch-primary-light); }
+            .stat-icon-circle.icon-primary svg { color: var(--ch-primary); }
+
+            /* Recent Errors — modern list */
+            .errors-card, .jobs-card {
+                background: var(--ch-surface);
+                border: 1px solid var(--ch-border);
+                border-radius: var(--ch-radius-lg);
+                margin-bottom: 20px;
+                overflow: hidden;
+            }
+
+            .section-card-header {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                padding: 16px 24px;
+                font-size: 15px;
+                font-weight: 700;
+                color: var(--ch-text);
+                border-bottom: 1px solid var(--ch-border);
+            }
+
+            .section-card-header svg {
+                width: 18px;
+                height: 18px;
+                color: var(--ch-text-muted);
+            }
+
+            .error-list-item {
+                padding: 16px 24px;
+                border-bottom: 1px solid var(--ch-border);
+                position: relative;
+            }
+
+            .error-list-item:last-child {
+                border-bottom: none;
+            }
+
+            .error-list-item .error-top-row {
+                display: flex;
+                align-items: baseline;
+                gap: 10px;
+                margin-bottom: 4px;
+            }
+
+            .error-list-item .error-doc-title {
+                font-size: 14px;
+                font-weight: 600;
+                color: var(--ch-text);
+            }
+
+            .error-list-item .error-time {
+                font-size: 12px;
+                color: var(--ch-text-muted);
+            }
+
+            .error-list-item .error-message {
+                font-size: 13px;
+                color: var(--ch-text-muted);
+                margin-bottom: 6px;
+                line-height: 1.4;
+            }
+
+            .error-list-item .error-dot {
+                position: absolute;
+                top: 20px;
+                right: 24px;
+                width: 8px;
+                height: 8px;
+                border-radius: 50%;
+                background: var(--ch-danger-alt);
+            }
+
+            .empty-state {
+                padding: 40px 24px;
+                text-align: center;
+                color: var(--ch-text-muted);
+            }
+
+            .empty-state svg {
+                width: 32px;
+                height: 32px;
+                color: var(--ch-border-strong);
+                margin-bottom: 10px;
+            }
+
+            .empty-state p {
+                margin: 0;
+                font-size: 13px;
+            }
+
+            /* ─── Sync Logs — Modern ─── */
+            .logs-header-card {
+                background: var(--ch-surface);
+                border: 1px solid var(--ch-border);
+                border-radius: var(--ch-radius-lg);
+                padding: 16px 24px;
+                margin-bottom: 20px;
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                font-size: 15px;
+                font-weight: 700;
+                color: var(--ch-text);
+            }
+
+            .logs-header-card svg {
+                width: 18px;
+                height: 18px;
+                color: var(--ch-text-muted);
+            }
+
+            .logs-filters-card {
+                background: var(--ch-surface);
+                border: 1px solid var(--ch-border);
+                border-radius: var(--ch-radius-lg);
+                padding: 16px 24px;
+                margin-bottom: 20px;
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                flex-wrap: wrap;
+            }
+
+            .logs-filters-card select,
+            .logs-filters-card input {
+                border: 1px solid var(--ch-border);
+                border-radius: var(--ch-radius-pill);
+                padding: 8px 16px;
+                font-size: 13px;
+                color: var(--ch-text);
+                background: var(--ch-surface);
+                outline: none;
+            }
+
+            .logs-filters-card select {
+                min-width: 130px;
+                appearance: auto;
+            }
+
+            .logs-filters-card input {
+                flex: 1;
+                min-width: 200px;
+            }
+
+            .logs-filters-card select:focus,
+            .logs-filters-card input:focus {
+                border-color: var(--ch-primary);
+                box-shadow: 0 0 0 3px var(--ch-primary-light);
+            }
+
+            .logs-filter-btn {
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+                padding: 8px 20px;
+                background: var(--ch-primary);
+                color: #fff;
+                border: none;
+                border-radius: var(--ch-radius-pill);
+                font-size: 13px;
+                font-weight: 500;
+                cursor: pointer;
+                transition: background 0.15s;
+                margin-left: auto;
+            }
+
+            .logs-filter-btn:hover {
+                background: var(--ch-primary-dark);
+            }
+
+            .logs-filter-btn svg {
+                width: 14px;
+                height: 14px;
+            }
+
+            .logs-table-card {
+                background: var(--ch-surface);
+                border: 1px solid var(--ch-border);
+                border-radius: var(--ch-radius-lg);
+                overflow: hidden;
+            }
+
+            .logs-table-card .table {
+                margin-bottom: 0;
+            }
+
+            .logs-action-link {
+                display: inline-flex;
+                align-items: center;
+                gap: 4px;
+                font-size: 13px;
+                font-weight: 600;
+                cursor: pointer;
+                text-decoration: none;
+                white-space: nowrap;
+            }
+
+            .logs-action-link svg {
+                width: 14px;
+                height: 14px;
+            }
+
+            .logs-action-link.retry-link {
+                color: var(--ch-text);
+                margin-right: 12px;
+            }
+
+            .logs-action-link.details-link {
+                color: var(--ch-primary);
+            }
+
+            .logs-action-link.details-link:hover {
+                color: var(--ch-primary-dark);
             }
 
             /* ─── Analytics ─── */
@@ -941,32 +1384,32 @@ class XeroSyncDashboard {
                     <ul class="nav nav-tabs" role="tablist">
                         <li class="nav-item">
                             <a class="nav-link active" data-tab="overview" href="#overview">
-                                <i class="fa fa-dashboard"></i> Overview
+                                <i data-lucide="layout-grid"></i> Overview
                             </a>
                         </li>
                         <li class="nav-item">
                             <a class="nav-link" data-tab="sync-ops" href="#sync-ops">
-                                <i class="fa fa-sync"></i> Manual Sync Operations
+                                <i data-lucide="globe"></i> Manual Sync Operations
                             </a>
                         </li>
                         <li class="nav-item">
                             <a class="nav-link" data-tab="last-sync" href="#last-sync">
-                                <i class="fa fa-history"></i> Last Sync Attempts
+                                <i data-lucide="clock"></i> Last Sync Attempts
                             </a>
                         </li>
                         <li class="nav-item">
                             <a class="nav-link" data-tab="logs" href="#logs">
-                                <i class="fa fa-list"></i> Sync Logs
+                                <i data-lucide="file-text"></i> Sync Logs
                             </a>
                         </li>
                         <li class="nav-item">
                             <a class="nav-link" data-tab="analytics" href="#analytics">
-                                <i class="fa fa-chart-line"></i> Analytics
+                                <i data-lucide="bar-chart-2"></i> Analytics
                             </a>
                         </li>
                         <li class="nav-item">
                             <a class="nav-link" data-tab="entities" href="#entities">
-                                <i class="fa fa-database"></i> Entity Status
+                                <i data-lucide="sliders-horizontal"></i> Entity Status
                             </a>
                         </li>
                     </ul>
@@ -991,6 +1434,7 @@ class XeroSyncDashboard {
                 </div>
             </div>
         `);
+        this.create_lucide_icons();
     }
 
     setup_tabs() {
@@ -1062,12 +1506,16 @@ class XeroSyncDashboard {
         const overview_html = `
             <!-- Connection Banner -->
             <div class="xero-connection-banner">
-                <div class="xero-connection-title">
-                    <img src="/assets/xero/Xero_software_logo.svg" alt="Xero" style="height:22px;width:auto;vertical-align:middle;">
-                    Xero Connection
-                    <span class="badge badge-${data.connection.connected ? 'success' : 'danger'}" style="margin-left:6px;">
-                        ${data.connection.connected ? 'Connected' : 'Disconnected'}
-                    </span>
+                <div class="xero-connection-left">
+                    <div class="xero-connection-icon">
+                        <i data-lucide="globe"></i>
+                    </div>
+                    <div class="xero-connection-title">
+                        Xero Connection
+                        <span class="badge badge-${data.connection.connected ? 'success' : 'danger'}">
+                            ${data.connection.connected ? '✓ Connected' : 'Disconnected'}
+                        </span>
+                    </div>
                 </div>
                 <div class="xero-connection-meta">
                     <div class="xero-connection-meta-item">
@@ -1076,7 +1524,7 @@ class XeroSyncDashboard {
                     </div>
                     <div class="xero-connection-meta-item">
                         <label>Sync Enabled</label>
-                        <span class="badge badge-${data.connection.sync_enabled ? 'success' : 'warning'}">
+                        <span style="color:${data.connection.sync_enabled ? 'var(--ch-success)' : 'var(--ch-warning)'};">
                             ${data.connection.sync_enabled ? 'Yes' : 'No'}
                         </span>
                     </div>
@@ -1094,79 +1542,93 @@ class XeroSyncDashboard {
             <!-- Key Metrics Grid -->
             <div class="overview-stats-grid">
                 <div class="overview-stat-card">
-                    <div class="stat-icon text-success"><i class="fa fa-check-circle"></i></div>
-                    <div class="stat-value">${data.sync_stats.overall.find(s => s.status === 'Success')?.count || 0}</div>
-                    <div class="stat-label">Successful Syncs (24h)</div>
+                    <div class="stat-text">
+                        <div class="stat-label-top">Successful Syncs (24h)</div>
+                        <div class="stat-value">${data.sync_stats.overall.find(s => s.status === 'Success')?.count || 0}</div>
+                    </div>
+                    <div class="stat-icon-circle icon-success">
+                        <i data-lucide="check-circle"></i>
+                    </div>
                 </div>
                 <div class="overview-stat-card">
-                    <div class="stat-icon text-danger"><i class="fa fa-exclamation-circle"></i></div>
-                    <div class="stat-value">${data.sync_stats.overall.find(s => s.status === 'Error')?.count || 0}</div>
-                    <div class="stat-label">Failed Syncs (24h)</div>
+                    <div class="stat-text">
+                        <div class="stat-label-top">Failed Syncs (24h)</div>
+                        <div class="stat-value">${data.sync_stats.overall.find(s => s.status === 'Error')?.count || 0}</div>
+                    </div>
+                    <div class="stat-icon-circle icon-danger">
+                        <i data-lucide="alert-circle"></i>
+                    </div>
                 </div>
                 <div class="overview-stat-card">
-                    <div class="stat-icon text-info"><i class="fa fa-clock"></i></div>
-                    <div class="stat-value">${data.active_jobs.length}</div>
-                    <div class="stat-label">Active Jobs</div>
+                    <div class="stat-text">
+                        <div class="stat-label-top">Active Jobs</div>
+                        <div class="stat-value">${data.active_jobs.length}</div>
+                    </div>
+                    <div class="stat-icon-circle icon-info">
+                        <i data-lucide="clock"></i>
+                    </div>
                 </div>
                 <div class="overview-stat-card">
-                    <div class="stat-icon text-primary"><i class="fa fa-database"></i></div>
-                    <div class="stat-value">${data.entity_status.reduce((sum, e) => sum + e.synced, 0)}</div>
-                    <div class="stat-label">Total Synced Entities</div>
+                    <div class="stat-text">
+                        <div class="stat-label-top">Total Synced Entities</div>
+                        <div class="stat-value">${data.entity_status.reduce((sum, e) => sum + e.synced, 0)}</div>
+                    </div>
+                    <div class="stat-icon-circle icon-primary">
+                        <i data-lucide="database"></i>
+                    </div>
                 </div>
             </div>
 
             <!-- Recent Errors & Active Jobs -->
             <div class="row">
-                <div class="col-md-6">
-                    <div class="card">
-                        <div class="card-header">
-                            <i class="fa fa-exclamation-triangle"></i> Recent Errors
+                <div class="col-md-7">
+                    <div class="errors-card">
+                        <div class="section-card-header">
+                            <i data-lucide="alert-triangle"></i> Recent Errors
                         </div>
-                        <div class="card-body">
-                            ${data.recent_errors.errors.length > 0 ?
-                                data.recent_errors.errors.slice(0, 5).map(error => `
-                                    <div class="error-item">
-                                        <div class="d-flex justify-content-between align-items-start">
-                                            <span class="error-title">${error.erpnext_doc_type} ${error.erpnext_doc_name}</span>
-                                            <small class="text-muted" style="white-space:nowrap;margin-left:8px;">${frappe.datetime.comment_when(error.timestamp)}</small>
-                                        </div>
-                                        <div class="error-meta">${error.message}</div>
-                                        <span class="badge badge-secondary" style="margin-top:4px;">${error.category}</span>
+                        ${data.recent_errors.errors.length > 0 ?
+                            data.recent_errors.errors.slice(0, 5).map(error => `
+                                <div class="error-list-item">
+                                    <div class="error-dot"></div>
+                                    <div class="error-top-row">
+                                        <span class="error-doc-title">${error.erpnext_doc_type} ${error.erpnext_doc_name}</span>
+                                        <span class="error-time">${frappe.datetime.comment_when(error.timestamp)}</span>
                                     </div>
-                                `).join('') :
-                                '<p class="text-muted" style="margin:0;">No recent errors</p>'
-                            }
-                        </div>
+                                    <div class="error-message">${error.message}</div>
+                                    <span class="badge badge-secondary">${error.category}</span>
+                                </div>
+                            `).join('') :
+                            '<div class="empty-state"><i data-lucide="check-circle"></i><p>No recent errors</p></div>'
+                        }
                     </div>
                 </div>
-                <div class="col-md-6">
-                    <div class="card">
-                        <div class="card-header">
-                            <i class="fa fa-tasks"></i> Active Jobs
+                <div class="col-md-5">
+                    <div class="jobs-card">
+                        <div class="section-card-header">
+                            <i data-lucide="list-filter"></i> Active Jobs
                         </div>
-                        <div class="card-body">
-                            ${data.active_jobs.length > 0 ?
-                                data.active_jobs.slice(0, 5).map(job => `
-                                    <div class="job-item">
-                                        <div class="d-flex justify-content-between align-items-center">
-                                            <strong style="font-size:13px;">${job.job_name}</strong>
-                                            <span class="badge badge-${this.get_job_status_color(job.status)}">${job.status}</span>
-                                        </div>
-                                        <div class="error-meta">
-                                            Started: ${frappe.datetime.comment_when(job.started_at || job.creation)}
-                                            ${job.duration ? `· ${Math.round(job.duration / 60)} min` : ''}
-                                        </div>
+                        ${data.active_jobs.length > 0 ?
+                            data.active_jobs.slice(0, 5).map(job => `
+                                <div class="error-list-item">
+                                    <div class="error-top-row">
+                                        <span class="error-doc-title">${job.job_name}</span>
+                                        <span class="badge badge-${this.get_job_status_color(job.status)}">${job.status}</span>
                                     </div>
-                                `).join('') :
-                                '<p class="text-muted" style="margin:0;">No active jobs</p>'
-                            }
-                        </div>
+                                    <div class="error-message">
+                                        Started: ${frappe.datetime.comment_when(job.started_at || job.creation)}
+                                        ${job.duration ? `· ${Math.round(job.duration / 60)} min` : ''}
+                                    </div>
+                                </div>
+                            `).join('') :
+                            '<div class="empty-state"><i data-lucide="list-filter"></i><p>No active jobs</p></div>'
+                        }
                     </div>
                 </div>
             </div>
         `;
 
         $(this.wrapper).find('#overview').html(overview_html);
+        this.create_lucide_icons();
     }
 
     load_sync_operations() {
@@ -1188,185 +1650,146 @@ class XeroSyncDashboard {
         const sync_from_xero_enabled = connection_status.sync_from_xero_enabled;
         
         const sync_ops_html = `
-            <div class="row">
-                <!-- Professional Manual Sync Operations -->
-                <div class="col-md-12 mb-4">
-                    <div class="card">
-                        <div class="xero-sync-header">
-                            <h2 class="xero-sync-title">
-                                <i class="fa fa-sync-alt"></i>
-                                Manual Sync Operations
-                            </h2>
-                            <p class="xero-sync-subtitle">
-                                Trigger synchronization between ERPNext and Xero for specific entity types
-                            </p>
-                            <div class="xero-sync-status">
-                                <i class="fa fa-circle text-success"></i> Ready
-                            </div>
-                        </div>
-                        <div class="xero-sync-body">
-                            <!-- ERPNext to Xero Section -->
-                            <div class="sync-direction-section ${!sync_to_xero_enabled ? 'disabled-section' : ''}">
-                                ${!sync_to_xero_enabled ? `
-                                    <div class="alert alert-warning mb-3">
-                                        <h5><i class="fa fa-exclamation-triangle"></i> Sync TO Xero is Disabled</h5>
-                                        <p class="mb-2">Outbound sync from ERPNext to Xero is currently disabled. No data will be written to Xero.</p>
-                                        <p class="mb-0">
-                                            <strong>To enable:</strong> Go to
-                                            <a href="/app/xero-settings" target="_blank">Xero Settings</a>
-                                            and check "Enable Sync TO Xero (ERPNext → Xero)"
-                                        </p>
-                                    </div>
-                                ` : ''}
-                                <div class="sync-direction-header">
-                                    <div class="sync-direction-icon to-xero">
-                                        <i class="fa fa-arrow-right"></i>
-                                    </div>
-                                    <div class="sync-direction-info">
-                                        <h3>ERPNext → Xero</h3>
-                                        <p>Push data from ERPNext to Xero</p>
-                                    </div>
-                                </div>
-                                <div class="sync-buttons-grid">
-                                    ${this.render_xero_sync_buttons([
-                                        { name: 'Sales Invoice', icon: 'fa-file-text', class: 'icon-sales-invoice' },
-                                        { name: 'Purchase Invoice', icon: 'fa-file', class: 'icon-purchase-invoice' },
-                                        { name: 'Payment Entry', icon: 'fa-credit-card', class: 'icon-payment-entry' },
-                                        { name: 'Journal Entry', icon: 'fa-book', class: 'icon-journal-entry' },
-                                        { name: 'Customer', icon: 'fa-user', class: 'icon-customer' },
-                                        { name: 'Supplier', icon: 'fa-truck', class: 'icon-supplier' },
-                                        { name: 'Item', icon: 'fa-cube', class: 'icon-item' },
-                                        { name: 'Quotation', icon: 'fa-quote-right', class: 'icon-quotation' },
-                                        { name: 'Bank Transaction', icon: 'fa-bank', class: 'icon-bank-transaction' }
-                                    ], sync_to_xero_enabled)}
-                                </div>
-                            </div>
+            <!-- Section Header Card -->
+            <div class="xero-sync-header-modern">
+                <div>
+                    <div class="xero-sync-title">Manual Sync Operations</div>
+                    <p class="xero-sync-subtitle">Trigger synchronization between ERPNext and Xero for specific entity types</p>
+                </div>
+                <div class="xero-sync-ready-badge">
+                    <i data-lucide="check-circle"></i> Ready
+                </div>
+            </div>
 
-                            <!-- Xero to ERPNext Section -->
-                            <div class="sync-direction-section ${!sync_from_xero_enabled ? 'disabled-section' : ''}">
-                                ${!sync_from_xero_enabled ? `
-                                    <div class="alert alert-warning mb-3">
-                                        <h5><i class="fa fa-exclamation-triangle"></i> Sync FROM Xero is Disabled</h5>
-                                        <p class="mb-2">Inbound sync from Xero to ERPNext is currently disabled. No data will be read from Xero.</p>
-                                        <p class="mb-0">
-                                            <strong>To enable:</strong> Go to
-                                            <a href="/app/xero-settings" target="_blank">Xero Settings</a>
-                                            and check "Enable Sync FROM Xero (Xero → ERPNext)"
-                                        </p>
-                                    </div>
-                                ` : ''}
-                                <div class="sync-direction-header">
-                                    <div class="sync-direction-icon from-xero">
-                                        <i class="fa fa-arrow-left"></i>
-                                    </div>
-                                    <div class="sync-direction-info">
-                                        <h3>Xero → ERPNext</h3>
-                                        <p>Pull data from Xero to ERPNext</p>
-                                    </div>
-                                </div>
-                                <div class="sync-buttons-grid">
-                                    ${this.render_xero_sync_buttons([
-                                        { name: 'Xero Contacts', icon: 'fa-users', class: 'icon-sync-contacts' },
-                                        { name: 'Xero Accounts', icon: 'fa-list', class: 'icon-sync-accounts' },
-                                        { name: 'Xero Items', icon: 'fa-cubes', class: 'icon-sync-items' },
-                                        { name: 'Xero Invoices', icon: 'fa-file-text', class: 'icon-sync-invoices' },
-                                        { name: 'Xero Credit Notes', icon: 'fa-file', class: 'icon-sync-credit-notes' },
-                                        { name: 'Xero Payments', icon: 'fa-credit-card', class: 'icon-sync-payments' },
-                                        { name: 'Xero Manual Journals', icon: 'fa-book', class: 'icon-sync-manual-journals' },
-                                        { name: 'Xero Quotes', icon: 'fa-quote-left', class: 'icon-sync-quotes' },
-                                        { name: 'Xero Bank Transactions', icon: 'fa-bank', class: 'icon-sync-bank-transactions' },
-                                        { name: 'Xero Purchase Orders', icon: 'fa-shopping-bag', class: 'icon-sync-purchase-orders' }
-                                    ], sync_from_xero_enabled)}
-                                </div>
-                            </div>
-                        </div>
+            <!-- ERPNext → Xero Section -->
+            <div class="sync-direction-card ${!sync_to_xero_enabled ? 'disabled-section' : ''}">
+                ${!sync_to_xero_enabled ? `
+                    <div class="alert alert-warning mb-3" style="border-radius:var(--ch-radius-md);">
+                        <strong><i data-lucide="alert-triangle" style="width:14px;height:14px;display:inline;"></i> Sync TO Xero is Disabled</strong>
+                        <p class="mb-0" style="margin-top:4px;font-size:13px;">
+                            Go to <a href="/app/xero-settings" target="_blank">Xero Settings</a> and enable "Sync TO Xero"
+                        </p>
+                    </div>
+                ` : ''}
+                <div class="sync-direction-header">
+                    <div class="sync-direction-icon to-xero">
+                        <i data-lucide="arrow-right"></i>
+                    </div>
+                    <div class="sync-direction-info">
+                        <h3>ERPNext → Xero</h3>
+                        <p>Push data from ERPNext to Xero</p>
                     </div>
                 </div>
+                <div class="sync-chips-grid">
+                    ${this.render_sync_chip_buttons([
+                        { name: 'Sales Invoice', lucide: 'file-text', color: 'blue' },
+                        { name: 'Purchase Invoice', lucide: 'file-minus', color: 'indigo' },
+                        { name: 'Payment Entry', lucide: 'credit-card', color: 'green' },
+                        { name: 'Journal Entry', lucide: 'book-open', color: 'orange' },
+                        { name: 'Customer', lucide: 'users', color: 'purple' },
+                        { name: 'Supplier', lucide: 'truck', color: 'red' },
+                        { name: 'Item', lucide: 'package', color: 'teal' },
+                        { name: 'Quotation', lucide: 'file-check', color: 'violet' },
+                        { name: 'Bank Transaction', lucide: 'landmark', color: 'gray' }
+                    ], sync_to_xero_enabled)}
+                </div>
+            </div>
 
-                <!-- Bulk Operations -->
-                <div class="col-md-12 mb-4">
-                    <div class="card">
-                        <div class="card-header">
-                            <i class="fa fa-tasks"></i> Bulk Operations
-                        </div>
-                        <div class="card-body">
-                            <div class="bulk-operations-row">
-                                <button class="btn btn-warning" onclick="dashboard.bulk_retry_failed()">
-                                    <i class="fa fa-redo"></i> Retry All Failed Jobs
-                                </button>
-                                <button class="btn btn-primary" onclick="dashboard.sync_all_entities()">
-                                    <i class="fa fa-sync-alt"></i> Sync All Entities
-                                </button>
-                                <button class="btn btn-secondary" onclick="dashboard.clear_old_logs()">
-                                    <i class="fa fa-trash"></i> Clear Old Logs
-                                </button>
-                            </div>
-                        </div>
+            <!-- Xero → ERPNext Section -->
+            <div class="sync-direction-card ${!sync_from_xero_enabled ? 'disabled-section' : ''}">
+                ${!sync_from_xero_enabled ? `
+                    <div class="alert alert-warning mb-3" style="border-radius:var(--ch-radius-md);">
+                        <strong><i data-lucide="alert-triangle" style="width:14px;height:14px;display:inline;"></i> Sync FROM Xero is Disabled</strong>
+                        <p class="mb-0" style="margin-top:4px;font-size:13px;">
+                            Go to <a href="/app/xero-settings" target="_blank">Xero Settings</a> and enable "Sync FROM Xero"
+                        </p>
+                    </div>
+                ` : ''}
+                <div class="sync-direction-header">
+                    <div class="sync-direction-icon from-xero">
+                        <i data-lucide="arrow-left"></i>
+                    </div>
+                    <div class="sync-direction-info">
+                        <h3>Xero → ERPNext</h3>
+                        <p>Pull data from Xero to ERPNext</p>
                     </div>
                 </div>
-
-                <!-- Sync Queue Status -->
-                <div class="col-md-12">
-                    <div class="card">
-                        <div class="card-header">
-                            <h5 class="mb-0"><i class="fa fa-list"></i> Sync Queue Status</h5>
-                        </div>
-                        <div class="card-body">
-                            <div id="queue-status">Loading queue status...</div>
-                        </div>
-                    </div>
+                <div class="sync-chips-grid">
+                    ${this.render_sync_chip_buttons([
+                        { name: 'Xero Contacts', lucide: 'contact', color: 'indigo' },
+                        { name: 'Xero Accounts', lucide: 'building-2', color: 'green' },
+                        { name: 'Xero Items', lucide: 'package', color: 'teal' },
+                        { name: 'Xero Invoices', lucide: 'file-text', color: 'blue' },
+                        { name: 'Xero Credit Notes', lucide: 'file-minus', color: 'crimson' },
+                        { name: 'Xero Payments', lucide: 'wallet', color: 'green' },
+                        { name: 'Xero Manual Journals', lucide: 'book-open', color: 'orange' },
+                        { name: 'Xero Quotes', lucide: 'file-check', color: 'violet' },
+                        { name: 'Xero Bank Transactions', lucide: 'landmark', color: 'gray' },
+                        { name: 'Xero Purchase Orders', lucide: 'shopping-cart', color: 'red' }
+                    ], sync_from_xero_enabled)}
                 </div>
+            </div>
+
+            <!-- Bulk Operations -->
+            <div class="bulk-ops-card">
+                <div class="bulk-ops-header">
+                    <i data-lucide="refresh-cw"></i> Bulk Operations
+                </div>
+                <div class="bulk-ops-row">
+                    <button class="bulk-btn bulk-btn-danger" onclick="dashboard.bulk_retry_failed()">
+                        <i data-lucide="alert-triangle"></i> Retry All Failed Jobs
+                    </button>
+                    <button class="bulk-btn bulk-btn-primary" onclick="dashboard.sync_all_entities()">
+                        <i data-lucide="refresh-cw"></i> Sync All Entities
+                    </button>
+                    <button class="bulk-btn bulk-btn-ghost" onclick="dashboard.clear_old_logs()">
+                        <i data-lucide="trash-2"></i> Clear Old Logs
+                    </button>
+                </div>
+            </div>
+
+            <!-- Sync Queue Status -->
+            <div class="bulk-ops-card">
+                <div class="queue-section-header">
+                    <i data-lucide="list-filter"></i> Sync Queue Status
+                </div>
+                <div id="queue-status">Loading queue status...</div>
             </div>
         `;
 
         $(this.wrapper).find('#sync-ops').html(sync_ops_html);
+        this.create_lucide_icons();
         this.load_queue_status();
+    }
+
+    render_sync_chip_buttons(entities, enabled = true) {
+        return entities.map(entity => `
+            <button class="sync-chip-btn ${!enabled ? 'disabled' : ''}"
+                    data-entity="${entity.name}"
+                    onclick="${enabled ? `dashboard.trigger_sync('${entity.name}')` : 'return false;'}"
+                    ${!enabled ? 'disabled' : ''}>
+                <i data-lucide="${entity.lucide}" class="chip-icon chip-icon-${entity.color}"></i>
+                <span class="sync-chip-label">${entity.name}</span>
+            </button>
+        `).join('');
     }
 
     render_sync_buttons(entities) {
         return entities.map(entity => `
             <button class="btn btn-outline-primary btn-sm mb-2 mr-2 sync-btn"
                     data-entity="${entity}" onclick="dashboard.trigger_sync('${entity}')">
-                <i class="fa fa-sync"></i> ${entity}
+                <i data-lucide="refresh-cw" style="width:12px;height:12px;display:inline;"></i> ${entity}
             </button>
         `).join('');
     }
 
     render_xero_sync_buttons(entities, enabled = true) {
-        return entities.map(entity => `
-            <button class="xero-sync-button ${!enabled ? 'disabled' : ''}"
-                    data-entity="${entity.name}"
-                    onclick="${enabled ? `dashboard.trigger_sync('${entity.name}')` : 'return false;'}"
-                    ${!enabled ? 'disabled style="opacity: 0.5; cursor: not-allowed;"' : ''}>
-                <div class="sync-button-icon ${entity.class}">
-                    <i class="fa ${entity.icon}"></i>
-                </div>
-                <div class="sync-button-text">
-                    <div class="sync-button-title">${entity.name}</div>
-                </div>
-            </button>
-        `).join('');
-    }
-
-    render_modern_sync_buttons(entities) {
-        return entities.map(entity => `
-            <div class="modern-sync-btn-wrapper">
-                <button class="btn btn-modern-sync btn-outline-${entity.color} mb-3"
-                        data-entity="${entity.name}" onclick="dashboard.trigger_sync('${entity.name}')">
-                    <div class="sync-btn-content">
-                        <div class="sync-btn-icon">
-                            <i class="fa ${entity.icon}"></i>
-                        </div>
-                        <div class="sync-btn-text">
-                            <span class="sync-btn-title">${entity.name}</span>
-                        </div>
-                    </div>
-                    <div class="sync-btn-overlay">
-                        <i class="fa fa-sync-alt"></i>
-                    </div>
-                </button>
-            </div>
-        `).join('');
+        // Legacy method kept for compatibility — delegates to chip buttons
+        return this.render_sync_chip_buttons(entities.map(e => ({
+            name: e.name,
+            lucide: 'circle',
+            color: 'blue'
+        })), enabled);
     }
 
     load_analytics() {
@@ -1385,69 +1808,92 @@ class XeroSyncDashboard {
     render_analytics(data) {
         const success_rate = this.calculate_success_rate(data.overall);
         const analytics_html = `
+            <!-- Section Header -->
+            <div class="logs-header-card">
+                <i data-lucide="bar-chart-2"></i> Analytics
+            </div>
+
             <!-- Performance Metrics -->
             <div class="overview-stats-grid" style="margin-bottom:24px;">
                 <div class="overview-stat-card">
-                    <div class="stat-value">${data.performance.total_operations || 0}</div>
-                    <div class="stat-label">Total Operations</div>
+                    <div class="stat-text">
+                        <div class="stat-label-top">Total Operations</div>
+                        <div class="stat-value">${data.performance.total_operations || 0}</div>
+                    </div>
+                    <div class="stat-icon-circle icon-primary">
+                        <i data-lucide="activity"></i>
+                    </div>
                 </div>
                 <div class="overview-stat-card">
-                    <div class="stat-value">${Math.round(data.performance.avg_processing_time || 0)}s</div>
-                    <div class="stat-label">Avg Processing Time</div>
+                    <div class="stat-text">
+                        <div class="stat-label-top">Avg Processing Time</div>
+                        <div class="stat-value">${Math.round(data.performance.avg_processing_time || 0)}s</div>
+                    </div>
+                    <div class="stat-icon-circle icon-info">
+                        <i data-lucide="timer"></i>
+                    </div>
                 </div>
                 <div class="overview-stat-card">
-                    <div class="stat-value">${data.performance.entity_types_synced || 0}</div>
-                    <div class="stat-label">Entity Types</div>
+                    <div class="stat-text">
+                        <div class="stat-label-top">Entity Types</div>
+                        <div class="stat-value">${data.performance.entity_types_synced || 0}</div>
+                    </div>
+                    <div class="stat-icon-circle icon-success">
+                        <i data-lucide="layers"></i>
+                    </div>
                 </div>
                 <div class="overview-stat-card">
-                    <div class="stat-value" style="color:${success_rate < 50 ? 'var(--ch-danger)' : 'var(--ch-text)'};">${success_rate}%</div>
-                    <div class="stat-label">Success Rate</div>
+                    <div class="stat-text">
+                        <div class="stat-label-top">Success Rate</div>
+                        <div class="stat-value" style="color:${success_rate < 50 ? 'var(--ch-danger-alt)' : 'var(--ch-text)'};">${success_rate}%</div>
+                    </div>
+                    <div class="stat-icon-circle ${success_rate < 50 ? 'icon-danger' : 'icon-success'}">
+                        <i data-lucide="percent"></i>
+                    </div>
                 </div>
             </div>
 
             <!-- Entity Performance -->
-            <div class="card">
-                <div class="card-header">
-                    <i class="fa fa-chart-bar"></i>
-                    <span class="analytics-section-title" style="margin:0;padding:0;border:none;">Entity Performance</span>
+            <div class="logs-table-card">
+                <div class="section-card-header">
+                    <i data-lucide="bar-chart-2"></i> Entity Performance
                 </div>
-                <div class="card-body" style="padding:0;">
-                    <div class="table-responsive">
-                        <table class="table">
-                            <thead>
+                <div class="table-responsive">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>Entity</th>
+                                <th>Total</th>
+                                <th>Success</th>
+                                <th>Errors</th>
+                                <th>Success Rate</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${data.by_entity.map(entity => `
                                 <tr>
-                                    <th>Entity</th>
-                                    <th>Total</th>
-                                    <th>Success</th>
-                                    <th>Errors</th>
-                                    <th>Success Rate</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                ${data.by_entity.map(entity => `
-                                    <tr>
-                                        <td>${entity.erpnext_doc_type}</td>
-                                        <td>${entity.total}</td>
-                                        <td class="text-success">${entity.success}</td>
-                                        <td class="text-danger">${entity.errors}</td>
-                                        <td style="min-width:120px;">
-                                            <div class="progress">
-                                                <div class="progress-bar bg-success"
-                                                     style="width: ${entity.success_rate}%">
-                                                </div>
+                                    <td>${entity.erpnext_doc_type}</td>
+                                    <td>${entity.total}</td>
+                                    <td class="text-success">${entity.success}</td>
+                                    <td class="text-danger">${entity.errors}</td>
+                                    <td style="min-width:120px;">
+                                        <div class="progress">
+                                            <div class="progress-bar bg-success"
+                                                 style="width: ${entity.success_rate}%">
                                             </div>
-                                            <small class="text-muted">${Math.round(entity.success_rate)}%</small>
-                                        </td>
-                                    </tr>
-                                `).join('')}
-                            </tbody>
-                        </table>
-                    </div>
+                                        </div>
+                                        <small class="text-muted">${Math.round(entity.success_rate)}%</small>
+                                    </td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
                 </div>
             </div>
         `;
 
         $(this.wrapper).find('#analytics').html(analytics_html);
+        this.create_lucide_icons();
     }
 
     load_entity_status() {
@@ -1465,6 +1911,11 @@ class XeroSyncDashboard {
 
     render_entity_status(entities) {
         const entity_html = `
+            <!-- Section Header -->
+            <div class="logs-header-card">
+                <i data-lucide="sliders-horizontal"></i> Entity Status
+            </div>
+
             <div class="entity-status-grid">
                 ${entities.map(entity => `
                     <div class="entity-card">
@@ -1492,7 +1943,7 @@ class XeroSyncDashboard {
                         <div class="entity-card-footer">
                             <span>Last sync: ${entity.last_sync ? frappe.datetime.comment_when(entity.last_sync) : 'Never'}</span>
                             <a class="entity-sync-now-btn" onclick="dashboard.trigger_sync('${entity.entity}')">
-                                <i class="fa fa-sync"></i> Sync Now
+                                <i data-lucide="refresh-cw" style="width:12px;height:12px;display:inline;"></i> Sync Now
                             </a>
                         </div>
                     </div>
@@ -1501,43 +1952,48 @@ class XeroSyncDashboard {
         `;
 
         $(this.wrapper).find('#entities').html(entity_html);
+        this.create_lucide_icons();
     }
 
     load_logs() {
         const logs_html = `
-            <div class="card">
-                <div class="card-header">
-                    <i class="fa fa-list"></i> Sync Logs
-                </div>
-                <div class="card-body">
-                    <div class="sync-logs-filters">
-                        <select id="status-filter">
-                            <option value="">All Statuses</option>
-                            <option value="Success">Success</option>
-                            <option value="Error">Error</option>
-                            <option value="Warning">Warning</option>
-                            <option value="Info">Info</option>
-                        </select>
-                        <select id="entity-filter">
-                            <option value="">All Entities</option>
-                            <option value="Sales Invoice">Sales Invoice</option>
-                            <option value="Purchase Invoice">Purchase Invoice</option>
-                            <option value="Payment Entry">Payment Entry</option>
-                            <option value="Customer">Customer</option>
-                            <option value="Supplier">Supplier</option>
-                            <option value="Item">Item</option>
-                        </select>
-                        <input type="text" id="message-filter" placeholder="Search message...">
-                        <button class="btn btn-primary btn-sm" onclick="dashboard.apply_log_filters()">
-                            <i class="fa fa-filter"></i> Filter
-                        </button>
-                    </div>
-                    <div id="logs-table">Loading logs...</div>
-                </div>
+            <!-- Section Header -->
+            <div class="logs-header-card">
+                <i data-lucide="file-text"></i> Sync Logs
+            </div>
+
+            <!-- Filters -->
+            <div class="logs-filters-card">
+                <select id="status-filter">
+                    <option value="">All Statuses</option>
+                    <option value="Success">Success</option>
+                    <option value="Error">Error</option>
+                    <option value="Warning">Warning</option>
+                    <option value="Info">Info</option>
+                </select>
+                <select id="entity-filter">
+                    <option value="">All Entities</option>
+                    <option value="Sales Invoice">Sales Invoice</option>
+                    <option value="Purchase Invoice">Purchase Invoice</option>
+                    <option value="Payment Entry">Payment Entry</option>
+                    <option value="Customer">Customer</option>
+                    <option value="Supplier">Supplier</option>
+                    <option value="Item">Item</option>
+                </select>
+                <input type="text" id="message-filter" placeholder="Search message...">
+                <button class="logs-filter-btn" onclick="dashboard.apply_log_filters()">
+                    <i data-lucide="filter"></i> Filter
+                </button>
+            </div>
+
+            <!-- Logs Table -->
+            <div class="logs-table-card">
+                <div id="logs-table">Loading logs...</div>
             </div>
         `;
 
         $(this.wrapper).find('#logs').html(logs_html);
+        this.create_lucide_icons();
         this.load_logs_data();
     }
 
@@ -1578,7 +2034,7 @@ class XeroSyncDashboard {
                                         ${log.status}
                                     </span>
                                 </td>
-                                <td class="text-truncate" style="max-width: 300px;" title="${log.message}">
+                                <td style="max-width: 400px;" title="${log.message}">
                                     ${log.message}
                                 </td>
                                 <td>
@@ -1589,16 +2045,16 @@ class XeroSyncDashboard {
                                         '<span class="text-muted">-</span>'
                                     }
                                 </td>
-                                <td>${frappe.datetime.comment_when(log.timestamp)}</td>
+                                <td style="white-space:nowrap;">${frappe.datetime.comment_when(log.timestamp)}</td>
                                 <td style="white-space:nowrap;">
                                     ${log.status === 'Error' ?
-                                        `<a class="text-warning" style="cursor:pointer;margin-right:10px;" data-log-name="${log.name}" onclick="dashboard.retry_job('${log.name}')">
-                                            <i class="fa fa-redo"></i> Retry
+                                        `<a class="logs-action-link retry-link" data-log-name="${log.name}" onclick="dashboard.retry_job('${log.name}')">
+                                            Retry
                                         </a>` :
                                         ''
                                     }
-                                    <a class="text-primary" style="cursor:pointer;" onclick="dashboard.view_log_details('${log.name}')">
-                                        <i class="fa fa-eye"></i> Details
+                                    <a class="logs-action-link details-link" onclick="dashboard.view_log_details('${log.name}')">
+                                        <i data-lucide="eye"></i> Details
                                     </a>
                                 </td>
                             </tr>
@@ -1608,7 +2064,7 @@ class XeroSyncDashboard {
             </div>
 
             ${data.has_more ?
-                `<div class="text-center mt-3">
+                `<div style="text-align:center;padding:16px;">
                     <button class="btn btn-outline-primary btn-sm" onclick="dashboard.load_more_logs()">
                         Load More
                     </button>
@@ -1618,6 +2074,7 @@ class XeroSyncDashboard {
         `;
 
         $(this.wrapper).find('#logs-table').html(table_html);
+        this.create_lucide_icons();
     }
 
 
@@ -1664,7 +2121,7 @@ class XeroSyncDashboard {
                 const btn = $(this.wrapper).find(`[data-entity="${entity}"]`);
                 const original_html = btn.html();
                 btn.prop('disabled', true).css('opacity', '0.7');
-                btn.find('.sync-button-title').text(`Syncing ${entity}...`);
+                btn.find('.sync-chip-label, .sync-button-title').text(`Syncing ${entity}...`);
                 
                 frappe.call({
                     method: 'xero.xero.page.xero_sync_dashboard.xero_sync_dashboard.trigger_manual_sync',
@@ -1673,6 +2130,7 @@ class XeroSyncDashboard {
                         // Restore button
                         btn.prop('disabled', false).css('opacity', '1');
                         btn.html(original_html);
+                        this.create_lucide_icons();
                         
                         if (r.message && r.message.success) {
                             const batch_id = r.message.sync_batch_id;
@@ -1819,38 +2277,49 @@ class XeroSyncDashboard {
     }
 
     render_queue_status(data) {
+        // Calculate totals across all queues
+        const totals = data.queues.reduce((acc, q) => ({
+            pending: acc.pending + (q.pending || 0),
+            running: acc.running + (q.running || 0),
+            completed: acc.completed + (q.completed || 0),
+            failed: acc.failed + (q.failed || 0)
+        }), { pending: 0, running: 0, completed: 0, failed: 0 });
+
         const queue_html = `
-            <div class="table-responsive">
-                <table class="table table-sm">
-                    <thead>
-                        <tr>
-                            <th>Queue</th>
-                            <th>Pending</th>
-                            <th>Running</th>
-                            <th>Failed</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${data.queues.map(queue => `
-                            <tr>
-                                <td>${queue.name}</td>
-                                <td><span class="badge badge-warning">${queue.pending}</span></td>
-                                <td><span class="badge badge-info">${queue.running}</span></td>
-                                <td><span class="badge badge-danger">${queue.failed}</span></td>
-                                <td>
-                                    <button class="btn btn-xs btn-outline-primary" onclick="dashboard.view_queue('${queue.name}')">
-                                        <i class="fa fa-eye"></i> View
-                                    </button>
-                                </td>
-                            </tr>
-                        `).join('')}
-                    </tbody>
-                </table>
+            <div class="queue-stats-grid">
+                <div class="queue-stat-card">
+                    <div class="queue-stat-icon icon-queued">
+                        <i data-lucide="clock"></i>
+                    </div>
+                    <div class="queue-stat-value">${totals.pending}</div>
+                    <div class="queue-stat-label">Queued</div>
+                </div>
+                <div class="queue-stat-card">
+                    <div class="queue-stat-icon icon-processing">
+                        <i data-lucide="refresh-cw"></i>
+                    </div>
+                    <div class="queue-stat-value">${totals.running}</div>
+                    <div class="queue-stat-label">Processing</div>
+                </div>
+                <div class="queue-stat-card">
+                    <div class="queue-stat-icon icon-completed">
+                        <i data-lucide="check-circle"></i>
+                    </div>
+                    <div class="queue-stat-value">${totals.completed}</div>
+                    <div class="queue-stat-label">Completed</div>
+                </div>
+                <div class="queue-stat-card">
+                    <div class="queue-stat-icon icon-failed">
+                        <i data-lucide="x-circle"></i>
+                    </div>
+                    <div class="queue-stat-value">${totals.failed}</div>
+                    <div class="queue-stat-label">Failed</div>
+                </div>
             </div>
         `;
 
         $(this.wrapper).find('#queue-status').html(queue_html);
+        this.create_lucide_icons();
     }
 
     apply_log_filters() {
@@ -2109,36 +2578,48 @@ class XeroSyncDashboard {
 
     render_last_sync_attempts(data) {
         const last_sync_html = `
-            <!-- Summary Stats — inline bar pattern from reference payslips list -->
-            <div class="card" style="margin-bottom:20px;">
-                <div class="card-body" style="padding:16px 24px;">
-                    <div style="display:flex;align-items:center;gap:0;flex-wrap:wrap;">
-                        <div style="flex:1;min-width:100px;padding:8px 20px 8px 0;border-right:1px solid var(--ch-border);">
-                            <div style="font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:var(--ch-text-muted);margin-bottom:4px;">Total Attempts</div>
-                            <div style="font-size:22px;font-weight:700;color:var(--ch-text);">${data.total_attempts || 0}</div>
-                        </div>
-                        <div style="flex:1;min-width:100px;padding:8px 20px;border-right:1px solid var(--ch-border);">
-                            <div style="font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:var(--ch-text-muted);margin-bottom:4px;">Successful</div>
-                            <div style="font-size:22px;font-weight:700;color:var(--ch-success);">${data.successful_attempts || 0}</div>
-                        </div>
-                        <div style="flex:1;min-width:100px;padding:8px 20px;border-right:1px solid var(--ch-border);">
-                            <div style="font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:var(--ch-text-muted);margin-bottom:4px;">Failed</div>
-                            <div style="font-size:22px;font-weight:700;color:var(--ch-danger-alt);">${data.failed_attempts || 0}</div>
-                        </div>
-                        <div style="flex:1;min-width:100px;padding:8px 20px;border-right:1px solid var(--ch-border);">
-                            <div style="font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:var(--ch-text-muted);margin-bottom:4px;">Partial</div>
-                            <div style="font-size:22px;font-weight:700;color:var(--ch-warning);">${data.partial_success_attempts || 0}</div>
-                        </div>
-                        <div style="flex:1;min-width:100px;padding:8px 20px;border-right:1px solid var(--ch-border);">
-                            <div style="font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:var(--ch-text-muted);margin-bottom:4px;">Warnings Only</div>
-                            <div style="font-size:22px;font-weight:700;color:var(--ch-warning);">${data.warning_only_attempts || 0}</div>
-                        </div>
-                        <div style="flex:1;min-width:100px;padding:8px 0 8px 20px;">
-                            <div style="font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:var(--ch-text-muted);margin-bottom:4px;">With Warnings</div>
-                            <div style="font-size:22px;font-weight:700;color:var(--ch-primary);">${data.success_with_warnings_attempts || 0}</div>
-                        </div>
+            <!-- Section Header -->
+            <div class="logs-header-card">
+                <i data-lucide="clock"></i> Last Sync Attempts
+            </div>
+
+            <!-- Summary Stats -->
+            <div class="overview-stats-grid" style="grid-template-columns: repeat(6, 1fr); margin-bottom: 20px;">
+                <div class="overview-stat-card">
+                    <div class="stat-text">
+                        <div class="stat-label-top">Total</div>
+                        <div class="stat-value" style="font-size:24px;">${data.total_attempts || 0}</div>
                     </div>
-                    <div style="margin-top:8px;font-size:12px;color:var(--ch-text-muted);">Based on submitted payslips for the selected period.</div>
+                </div>
+                <div class="overview-stat-card">
+                    <div class="stat-text">
+                        <div class="stat-label-top">Successful</div>
+                        <div class="stat-value" style="font-size:24px;color:var(--ch-success);">${data.successful_attempts || 0}</div>
+                    </div>
+                </div>
+                <div class="overview-stat-card">
+                    <div class="stat-text">
+                        <div class="stat-label-top">Failed</div>
+                        <div class="stat-value" style="font-size:24px;color:var(--ch-danger-alt);">${data.failed_attempts || 0}</div>
+                    </div>
+                </div>
+                <div class="overview-stat-card">
+                    <div class="stat-text">
+                        <div class="stat-label-top">Partial</div>
+                        <div class="stat-value" style="font-size:24px;color:var(--ch-warning);">${data.partial_success_attempts || 0}</div>
+                    </div>
+                </div>
+                <div class="overview-stat-card">
+                    <div class="stat-text">
+                        <div class="stat-label-top">Warnings</div>
+                        <div class="stat-value" style="font-size:24px;color:var(--ch-warning);">${data.warning_only_attempts || 0}</div>
+                    </div>
+                </div>
+                <div class="overview-stat-card">
+                    <div class="stat-text">
+                        <div class="stat-label-top">With Warnings</div>
+                        <div class="stat-value" style="font-size:24px;color:var(--ch-primary);">${data.success_with_warnings_attempts || 0}</div>
+                    </div>
                 </div>
             </div>
 
@@ -2146,199 +2627,185 @@ class XeroSyncDashboard {
             <div>
                 ${data.sync_attempts && data.sync_attempts.length > 0 ?
                     data.sync_attempts.map(attempt => `
-                        <div class="sync-attempt-block">
-                            <div class="sync-attempt-header status-${this.get_sync_attempt_status_class(attempt.overall_status)}">
+                        <div class="sync-attempt-block attempt-${this.get_sync_attempt_status_class(attempt.overall_status)}">
+                            <div class="sync-attempt-header">
                                 <div style="display:flex;align-items:center;gap:10px;">
-                                    <i class="fa fa-${this.get_sync_direction_icon(attempt.sync_direction)}"></i>
+                                    <i data-lucide="${this.get_sync_direction_lucide(attempt.sync_direction)}"></i>
                                     <div>
-                                        <div>${attempt.sync_label ? attempt.sync_label : attempt.sync_direction}</div>
-                                        ${attempt.sync_label ? `<div style="font-size:11px;opacity:0.85;font-weight:400;">${attempt.sync_direction}</div>` : ''}
+                                        <div style="font-weight:600;">${attempt.sync_label ? attempt.sync_label : attempt.sync_direction}</div>
+                                        ${attempt.sync_label ? `<div style="font-size:11px;color:var(--ch-text-muted);font-weight:400;">${attempt.sync_direction}</div>` : ''}
                                     </div>
                                 </div>
                                 <div style="display:flex;align-items:center;gap:12px;">
-                                    <span style="font-size:12px;font-weight:400;">${frappe.datetime.str_to_user(attempt.sync_time)}</span>
-                                    <span class="badge badge-light">${attempt.overall_status}</span>
+                                    <span style="font-size:12px;color:var(--ch-text-muted);">${frappe.datetime.str_to_user(attempt.sync_time)}</span>
+                                    <span class="badge badge-${this.get_sync_attempt_color(attempt.overall_status)}">${attempt.overall_status}</span>
                                 </div>
                             </div>
                             <div class="sync-attempt-body">
-                                            <div class="row mb-3">
-                                                <div class="col-md-12">
-                                                    <strong>Entities Synced:</strong>
-                                                    <div class="mt-2">
-                                                        ${attempt.entities_synced.map(entity => `
-                                                            <span class="badge badge-info mr-1 mb-1">${entity}</span>
-                                                        `).join('')}
-                                                    </div>
-                                                </div>
-                                            </div>
-                                            
-                                            <!-- Sync Issues Summary -->
-                                            ${attempt.failure_summary && attempt.failure_summary.length > 0 ? `
-                                                <div class="row mb-3">
-                                                    <div class="col-md-12">
-                                                        <div class="alert alert-warning mb-0">
-                                                            <h6 class="mb-2"><i class="fa fa-exclamation-triangle"></i> Sync Issues Detected</h6>
-                                                            <div class="table-responsive">
-                                                                <table class="table table-sm table-bordered mb-0">
-                                                                    <thead class="thead-light">
-                                                                        <tr>
-                                                                            <th>Issue Type</th>
-                                                                            <th>Count</th>
-                                                                            <th>Affected Documents</th>
-                                                                            <th>Example Message</th>
-                                                                        </tr>
-                                                                    </thead>
-                                                                    <tbody>
-                                                                        ${attempt.failure_summary.map(failure => `
-                                                                            <tr>
-                                                                                <td><strong>${failure.failure_category}</strong></td>
-                                                                                <td><span class="badge badge-warning">${failure.count}</span></td>
-                                                                                <td class="text-truncate" style="max-width: 200px;" title="${failure.affected_docs || ''}">
-                                                                                    <small>${failure.affected_docs || '-'}</small>
-                                                                                </td>
-                                                                                <td class="text-truncate" style="max-width: 300px;" title="${failure.example_message || ''}">
-                                                                                    <small>${failure.example_message || '-'}</small>
-                                                                                </td>
-                                                                            </tr>
-                                                                        `).join('')}
-                                                                    </tbody>
-                                                                </table>
-                                                            </div>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            ` : ''}
-                                            
-                                            <!-- Actionable Recommendations -->
-                                            ${attempt.actionable_recommendations && attempt.actionable_recommendations.length > 0 ? `
-                                                <div class="row mb-3">
-                                                    <div class="col-md-12">
-                                                        <h6 class="mb-2"><i class="fa fa-lightbulb"></i> Recommended Actions</h6>
-                                                        ${attempt.actionable_recommendations.map(rec => `
-                                                            <div class="alert alert-${rec.severity === 'high' ? 'danger' : rec.severity === 'medium' ? 'warning' : 'info'} mb-2">
-                                                                <div class="d-flex align-items-start">
-                                                                    <div class="mr-3">
-                                                                        <i class="fa ${rec.icon} fa-2x"></i>
-                                                                    </div>
-                                                                    <div class="flex-grow-1">
-                                                                        <h6 class="mb-1">${rec.title}</h6>
-                                                                        <p class="mb-1">${rec.message}</p>
-                                                                        <p class="mb-2"><strong>Action:</strong> ${rec.action}</p>
-                                                                        <div class="btn-group" role="group">
-                                                                            ${rec.type === 'account_mapping' ? `
-                                                                                <button class="btn btn-sm btn-primary"
-                                                                                        onclick="dashboard.open_quick_mapping_dialog()">
-                                                                                    <i class="fa fa-magic"></i> Map Now
-                                                                                </button>
-                                                                            ` : ''}
-                                                                            ${rec.action_button ? `
-                                                                                <button class="btn btn-sm btn-outline-${rec.severity === 'high' ? 'danger' : 'warning'}"
-                                                                                        onclick="${rec.action_button.route ? `frappe.set_route('${rec.action_button.route}')` : `dashboard.trigger_sync('${rec.action_button.entity}')`}">
-                                                                                    ${rec.action_button.label}
-                                                                                </button>
-                                                                            ` : ''}
-                                                                            ${rec.secondary_button ? `
-                                                                                <button class="btn btn-sm btn-outline-info"
-                                                                                        onclick="dashboard.view_filtered_logs(${JSON.stringify(rec.secondary_button.filter).replace(/"/g, '&quot;')})">
-                                                                                    <i class="fa fa-list"></i> ${rec.secondary_button.label}
-                                                                                </button>
-                                                                            ` : ''}
-                                                                        </div>
-                                                                    </div>
-                                                                </div>
-                                                            </div>
-                                                        `).join('')}
-                                                    </div>
-                                                </div>
-                                            ` : ''}
-                                            
-                                            <!-- Detailed Item Status -->
-                                            <div class="table-responsive">
-                                                <table class="table table-sm table-bordered">
-                                                    <thead class="thead-light">
-                                                        <tr>
-                                                            <th>Entity Type</th>
-                                                            <th>Document Name</th>
-                                                            <th>Status</th>
-                                                            <th>Error Message</th>
-                                                            <th>Timestamp</th>
-                                                            <th>Actions</th>
-                                                        </tr>
-                                                    </thead>
-                                                    <tbody>
-                                                        ${attempt.items && attempt.items.length > 0 ?
-                                                            attempt.items.map(item => `
-                                                                <tr class="${item.status === 'Error' ? 'table-danger' : item.status === 'Success' ? 'table-success' : ''}">
-                                                                    <td>${item.erpnext_doc_type || '-'}</td>
-                                                                    <td>
-                                                                        ${item.erpnext_doc_name ?
-                                                                            `<a href="/app/${(item.erpnext_doc_type || '').toLowerCase().replace(/ /g, '-')}/${item.erpnext_doc_name}" target="_blank">
-                                                                                ${item.erpnext_doc_name}
-                                                                            </a>` :
-                                                                            '-'
-                                                                        }
+                                <div class="row mb-3">
+                                    <div class="col-md-12">
+                                        <strong style="font-size:12px;color:var(--ch-text-muted);text-transform:uppercase;letter-spacing:0.06em;">Entities Synced:</strong>
+                                        <div class="mt-2">
+                                            ${attempt.entities_synced.map(entity => `
+                                                <span class="badge badge-info mr-1 mb-1">${entity}</span>
+                                            `).join('')}
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <!-- Sync Issues Summary -->
+                                ${attempt.failure_summary && attempt.failure_summary.length > 0 ? `
+                                    <div class="row mb-3">
+                                        <div class="col-md-12">
+                                            <div style="background:var(--ch-danger-bg);border:1px solid var(--ch-danger-border);border-radius:var(--ch-radius-md);padding:14px 16px;">
+                                                <h6 style="margin:0 0 10px 0;font-size:13px;display:flex;align-items:center;gap:6px;color:var(--ch-danger-alt);">
+                                                    <i data-lucide="alert-triangle" style="width:14px;height:14px;"></i> Sync Issues Detected
+                                                </h6>
+                                                <div class="table-responsive">
+                                                    <table class="table table-sm mb-0">
+                                                        <thead>
+                                                            <tr>
+                                                                <th>Issue Type</th>
+                                                                <th>Count</th>
+                                                                <th>Affected Documents</th>
+                                                                <th>Example Message</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody>
+                                                            ${attempt.failure_summary.map(failure => `
+                                                                <tr>
+                                                                    <td><strong>${failure.failure_category}</strong></td>
+                                                                    <td><span class="badge badge-danger">${failure.count}</span></td>
+                                                                    <td style="max-width:200px;" title="${failure.affected_docs || ''}">
+                                                                        <small>${failure.affected_docs || '-'}</small>
                                                                     </td>
-                                                                    <td>
-                                                                        <span class="badge badge-${this.get_status_color(item.status)}">
-                                                                            ${item.status}
-                                                                        </span>
-                                                                    </td>
-                                                                    <td class="text-truncate" style="max-width: 300px;" title="${item.message || ''}">
-                                                                        ${item.status === 'Error' ? (item.message || 'No error message') : '-'}
-                                                                    </td>
-                                                                    <td>
-                                                                        <small>${frappe.datetime.comment_when(item.timestamp)}</small>
-                                                                    </td>
-                                                                    <td>
-                                                                        ${item.status === 'Error' && item.log_name ?
-                                                                            `<button class="btn btn-xs btn-outline-warning" onclick="dashboard.retry_job('${item.log_name}')">
-                                                                                <i class="fa fa-redo"></i> Retry
-                                                                            </button>` :
-                                                                            ''
-                                                                        }
-                                                                        ${item.log_name ?
-                                                                            `<button class="btn btn-xs btn-outline-info ml-1" onclick="dashboard.view_log_details('${item.log_name}')">
-                                                                                <i class="fa fa-eye"></i>
-                                                                            </button>` :
-                                                                            ''
-                                                                        }
+                                                                    <td style="max-width:300px;" title="${failure.example_message || ''}">
+                                                                        <small>${failure.example_message || '-'}</small>
                                                                     </td>
                                                                 </tr>
-                                                            `).join('') :
-                                                            '<tr><td colspan="6" class="text-center text-muted">No items in this sync attempt</td></tr>'
-                                                        }
-                                                    </tbody>
-                                                </table>
+                                                            `).join('')}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
                                             </div>
-                                            
-                                            <!-- Summary Stats for this attempt -->
-                                            <div class="row mt-3">
-                                                <div class="col-md-12">
-                                                    <div class="d-flex justify-content-between align-items-center">
-                                                        <div>
-                                                        <strong>Summary:</strong>
-                                                        <span class="badge badge-success ml-2">${attempt.success_count || 0} Success</span>
-                                                        <span class="badge badge-danger ml-2">${attempt.error_count || 0} Failed</span>
-                                                        <span class="badge badge-warning ml-2">${attempt.warning_count || 0} Warnings</span>
-                                                        ${attempt.skipped_count > 0 ? `<span class="badge badge-secondary ml-2">${attempt.skipped_count} Skipped</span>` : ''}
-                                                        </div>
-                                                        <div>
-                                                            <small class="text-muted">
-                                                                Duration: ${attempt.duration ? `${attempt.duration}s` : 'N/A'}
-                                                            </small>
-                                                         </div>
-                                                     </div>
-                                                 </div>
-                                             </div>
+                                        </div>
+                                    </div>
+                                ` : ''}
+                                
+                                <!-- Actionable Recommendations -->
+                                ${attempt.actionable_recommendations && attempt.actionable_recommendations.length > 0 ? `
+                                    <div class="row mb-3">
+                                        <div class="col-md-12">
+                                            <h6 style="font-size:12px;color:var(--ch-text-muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:10px;display:flex;align-items:center;gap:6px;">
+                                                <i data-lucide="lightbulb" style="width:14px;height:14px;"></i> Recommended Actions
+                                            </h6>
+                                            ${attempt.actionable_recommendations.map(rec => `
+                                                <div style="background:${rec.severity === 'high' ? 'var(--ch-danger-bg)' : rec.severity === 'medium' ? 'var(--ch-warning-bg)' : 'var(--ch-info-bg)'};border:1px solid ${rec.severity === 'high' ? 'var(--ch-danger-border)' : rec.severity === 'medium' ? 'var(--ch-warning-border)' : 'rgba(91,138,196,0.2)'};border-radius:var(--ch-radius-md);padding:14px 16px;margin-bottom:10px;">
+                                                    <h6 style="margin:0 0 4px 0;font-size:13px;font-weight:600;">${rec.title}</h6>
+                                                    <p style="margin:0 0 4px 0;font-size:13px;color:var(--ch-text-muted);">${rec.message}</p>
+                                                    <p style="margin:0 0 10px 0;font-size:13px;"><strong>Action:</strong> ${rec.action}</p>
+                                                    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                                                        ${rec.type === 'account_mapping' ? `
+                                                            <button class="btn btn-sm btn-primary" onclick="dashboard.open_quick_mapping_dialog()">
+                                                                Map Now
+                                                            </button>
+                                                        ` : ''}
+                                                        ${rec.action_button ? `
+                                                            <button class="btn btn-sm btn-outline-${rec.severity === 'high' ? 'danger' : 'warning'}"
+                                                                    onclick="${rec.action_button.route ? `frappe.set_route('${rec.action_button.route}')` : `dashboard.trigger_sync('${rec.action_button.entity}')`}">
+                                                                ${rec.action_button.label}
+                                                            </button>
+                                                        ` : ''}
+                                                        ${rec.secondary_button ? `
+                                                            <button class="btn btn-sm btn-outline-primary"
+                                                                    onclick="dashboard.view_filtered_logs(${JSON.stringify(rec.secondary_button.filter).replace(/"/g, '&quot;')})">
+                                                                View Logs
+                                                            </button>
+                                                        ` : ''}
+                                                    </div>
+                                                </div>
+                                            `).join('')}
+                                        </div>
+                                    </div>
+                                ` : ''}
+                                
+                                <!-- Detailed Item Status -->
+                                <div class="table-responsive">
+                                    <table class="table table-sm">
+                                        <thead>
+                                            <tr>
+                                                <th>Entity Type</th>
+                                                <th>Document Name</th>
+                                                <th>Status</th>
+                                                <th>Error Message</th>
+                                                <th>Timestamp</th>
+                                                <th>Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            ${attempt.items && attempt.items.length > 0 ?
+                                                attempt.items.map(item => `
+                                                    <tr>
+                                                        <td>${item.erpnext_doc_type || '-'}</td>
+                                                        <td>
+                                                            ${item.erpnext_doc_name ?
+                                                                `<a href="/app/${(item.erpnext_doc_type || '').toLowerCase().replace(/ /g, '-')}/${item.erpnext_doc_name}" target="_blank">
+                                                                    ${item.erpnext_doc_name}
+                                                                </a>` :
+                                                                '-'
+                                                            }
+                                                        </td>
+                                                        <td>
+                                                            <span class="badge badge-${this.get_status_color(item.status)}">
+                                                                ${item.status}
+                                                            </span>
+                                                        </td>
+                                                        <td style="max-width:300px;" title="${item.message || ''}">
+                                                            ${item.status === 'Error' ? (item.message || 'No error message') : '-'}
+                                                        </td>
+                                                        <td style="white-space:nowrap;">
+                                                            <small>${frappe.datetime.comment_when(item.timestamp)}</small>
+                                                        </td>
+                                                        <td style="white-space:nowrap;">
+                                                            ${item.status === 'Error' && item.log_name ?
+                                                                `<a class="logs-action-link retry-link" onclick="dashboard.retry_job('${item.log_name}')">Retry</a>` :
+                                                                ''
+                                                            }
+                                                            ${item.log_name ?
+                                                                `<a class="logs-action-link details-link" onclick="dashboard.view_log_details('${item.log_name}')">
+                                                                    <i data-lucide="eye"></i> Details
+                                                                </a>` :
+                                                                ''
+                                                            }
+                                                        </td>
+                                                    </tr>
+                                                `).join('') :
+                                                '<tr><td colspan="6" class="text-center text-muted">No items in this sync attempt</td></tr>'
+                                            }
+                                        </tbody>
+                                    </table>
+                                </div>
+                                
+                                <!-- Summary Stats for this attempt -->
+                                <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;padding-top:12px;border-top:1px solid var(--ch-border);">
+                                    <div>
+                                        <span class="badge badge-success" style="margin-right:4px;">${attempt.success_count || 0} Success</span>
+                                        <span class="badge badge-danger" style="margin-right:4px;">${attempt.error_count || 0} Failed</span>
+                                        <span class="badge badge-warning" style="margin-right:4px;">${attempt.warning_count || 0} Warnings</span>
+                                        ${attempt.skipped_count > 0 ? `<span class="badge badge-secondary">${attempt.skipped_count} Skipped</span>` : ''}
+                                    </div>
+                                    <small class="text-muted">Duration: ${attempt.duration ? `${attempt.duration}s` : 'N/A'}</small>
+                                </div>
                             </div>
                         </div>
                     `).join('') :
-                    '<div class="card" style="padding:20px;text-align:center;color:var(--ch-text-muted);">No sync attempts found in the last 7 days.</div>'
+                    '<div class="empty-state" style="background:var(--ch-surface);border:1px solid var(--ch-border);border-radius:var(--ch-radius-lg);padding:40px;"><i data-lucide="clock"></i><p>No sync attempts found in the last 7 days.</p></div>'
                 }
             </div>
         `;
 
         $(this.wrapper).find('#last-sync').html(last_sync_html);
+        this.create_lucide_icons();
     }
 
     get_sync_attempt_status_class(status) {
@@ -2370,6 +2837,15 @@ class XeroSyncDashboard {
             if (direction.includes('Both')) return 'exchange-alt';
         }
         return 'sync';
+    }
+
+    get_sync_direction_lucide(direction) {
+        if (direction && direction.includes('→')) {
+            if (direction.includes('ERPNext → Xero')) return 'arrow-right';
+            if (direction.includes('Xero → ERPNext')) return 'arrow-left';
+            if (direction.includes('Both')) return 'arrow-left-right';
+        }
+        return 'refresh-cw';
     }
 
     // Performance Metrics Tab
@@ -2431,7 +2907,7 @@ class XeroSyncDashboard {
                     <div class="col-md-12 mb-4">
                         <div class="card">
                             <div class="card-header">
-                                <h5 class="mb-0"><i class="fa fa-clock"></i> Average Sync Latency by Entity (Last 24h)</h5>
+                                <h5 class="mb-0"><i data-lucide="clock" style="width:16px;height:16px;display:inline;"></i> Average Sync Latency by Entity (Last 24h)</h5>
                             </div>
                             <div class="card-body">
                                 <div class="table-responsive">
@@ -2472,7 +2948,7 @@ class XeroSyncDashboard {
                     <div class="col-md-6 mb-4">
                         <div class="card">
                             <div class="card-header">
-                                <h5 class="mb-0"><i class="fa fa-hourglass-end"></i> Slowest Operations (Last 24h)</h5>
+                                <h5 class="mb-0"><i data-lucide="hourglass" style="width:16px;height:16px;display:inline;"></i> Slowest Operations (Last 24h)</h5>
                             </div>
                             <div class="card-body">
                                 <div class="table-responsive">
@@ -2511,7 +2987,7 @@ class XeroSyncDashboard {
                     <div class="col-md-6 mb-4">
                         <div class="card">
                             <div class="card-header">
-                                <h5 class="mb-0"><i class="fa fa-tasks"></i> Queue Depth by Entity</h5>
+                                <h5 class="mb-0"><i data-lucide="layers" style="width:16px;height:16px;display:inline;"></i> Queue Depth by Entity</h5>
                             </div>
                             <div class="card-body">
                                 <div class="table-responsive">
@@ -2622,14 +3098,17 @@ class XeroSyncDashboard {
 
     show_error(title, message) {
         $(this.wrapper).find('.tab-content.active').html(`
-            <div class="alert alert-danger">
-                <h5>${title}</h5>
-                <p>${message || 'An unexpected error occurred.'}</p>
-                <button class="btn btn-outline-danger" onclick="dashboard.refresh_current_tab()">
-                    <i class="fa fa-refresh"></i> Retry
+            <div style="background:var(--ch-danger-bg);border:1px solid var(--ch-danger-border);border-radius:var(--ch-radius-lg);padding:24px;">
+                <h5 style="color:var(--ch-danger-alt);margin:0 0 8px 0;display:flex;align-items:center;gap:8px;">
+                    <i data-lucide="alert-circle" style="width:18px;height:18px;"></i> ${title}
+                </h5>
+                <p style="color:var(--ch-text-muted);margin:0 0 16px 0;">${message || 'An unexpected error occurred.'}</p>
+                <button class="bulk-btn bulk-btn-danger" onclick="dashboard.refresh_current_tab()">
+                    <i data-lucide="refresh-cw"></i> Retry
                 </button>
             </div>
         `);
+        this.create_lucide_icons();
     }
 
     // Cleanup on page unload
