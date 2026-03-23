@@ -40,7 +40,7 @@ frappe.ui.form.on('Xero Settings', {
             // Show connect button if sync is enabled but not connected
             frm.add_custom_button(__('Connect to Xero'), function() {
 				frappe.call({
-					method: "xero.utils.xero_client.get_auth_url", // This method still exists in xero_client.py
+					method: "xero.utils.xero_client.get_auth_url",
                     callback: function(r) {
                         if (r.message) {
                             window.location.href = r.message;
@@ -144,35 +144,59 @@ frappe.ui.form.on('Xero Settings', {
                 d.show();
             }, __("Mappings"));
         }
-
-        // No need for initialization since we're using Link fields now
 	},
 
     enable_xero_sync: function(frm) {
         frm.trigger("toggle_fields");
-        // Automatically save when master switch is toggled? Or prompt user?
-        // frm.save();
+    },
+
+    enable_sync_to_xero: function(frm) {
+        frm.trigger("toggle_fields");
+    },
+
+    enable_sync_from_xero: function(frm) {
+        frm.trigger("toggle_fields");
     },
 
     toggle_fields: function(frm) {
-        const enable = frm.doc.enable_xero_sync;
-        // List of fields to toggle based on the master switch
-        const fields_to_toggle = [
+        const enabled = frm.doc.enable_xero_sync;
+
+        // Core settings fields — toggle based on master switch
+        const core_fields = [
             "connection_status", "client_id", "client_secret", "tenant_id", "access_token",
-            "refresh_token", "token_expiry", "enable_auto_sync", "sync_frequency",
-            "sync_chart_of_accounts", "sync_contacts", "sync_invoices", "sync_payments",
-            "enable_webhooks", "webhook_secret", "create_payment_entry_on_sync",
+            "refresh_token", "token_expiry", "create_payment_entry_on_sync",
             "default_bank_account", "account_mapping", "tax_mapping"
         ];
-        fields_to_toggle.forEach(field => {
-            frm.toggle_enable(field, enable);
-            // Also make fields read-only if disabled
-            frm.set_df_property(field, 'read_only', !enable);
+        core_fields.forEach(field => {
+            frm.toggle_enable(field, enabled);
+            frm.set_df_property(field, 'read_only', !enabled);
+        });
+
+        // Directional master switches — toggle based on master switch
+        frm.toggle_enable("enable_sync_to_xero", enabled);
+        frm.toggle_enable("enable_sync_from_xero", enabled);
+
+        // Per-entity outbound sub-toggles — require both master AND outbound direction
+        const outbound_entities = [
+            "sync_contacts_to_xero", "sync_items_to_xero", "sync_invoices_to_xero",
+            "sync_bills_to_xero", "sync_credit_notes_to_xero", "sync_payments_to_xero"
+        ];
+        const outbound_enabled = enabled && frm.doc.enable_sync_to_xero;
+        outbound_entities.forEach(field => {
+            frm.toggle_enable(field, outbound_enabled);
+        });
+
+        // Per-entity inbound sub-toggles — require both master AND inbound direction
+        const inbound_entities = [
+            "sync_contacts_from_xero", "sync_items_from_xero", "sync_invoices_from_xero",
+            "sync_bills_from_xero", "sync_credit_notes_from_xero", "sync_payments_from_xero"
+        ];
+        const inbound_enabled = enabled && frm.doc.enable_sync_from_xero;
+        inbound_entities.forEach(field => {
+            frm.toggle_enable(field, inbound_enabled);
         });
 
         // Refresh dependent fields
-        frm.refresh_field("sync_frequency");
-        frm.refresh_field("webhook_secret");
         frm.refresh_field("default_bank_account");
         frm.refresh_field("account_mapping");
         frm.refresh_field("tax_mapping");
@@ -335,5 +359,3 @@ function sync_xero_tax_rates(frm) {
         }
     });
 }
-
-// No need for manual population functions since Link fields with fetch_from handle this automatically
