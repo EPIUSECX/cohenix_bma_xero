@@ -7,7 +7,7 @@ from frappe.utils import get_fullname
 import hashlib
 import re
 from ..utils.xero_client import xero_request, get_xero_settings
-from ..utils.logging import log_xero_error # We'll create this logging utility next
+from ..utils.logging import log_xero_error  # We'll create this logging utility next
 from ..utils.retry_handler import retry_with_exponential_backoff
 
 
@@ -23,41 +23,48 @@ XERO_MAX_CONTACT_PERSONS = 5  # Xero allows max 5 ContactPersons per contact
 # HELPER FUNCTIONS
 # =============================================================================
 
+
 def validate_and_sanitize_name(name, doc_type, doc_name):
     """Validate and sanitize contact name for Xero API.
-    
+
     Xero requirements:
     - Max 255 characters
     - No angle brackets
     - No leading/trailing whitespace
     - No repeating spaces
-    
+
     Returns: tuple (sanitized_name, error_message or None)
     """
     if not name or not str(name).strip():
         return None, f"Contact name is required for {doc_type} {doc_name}"
-    
+
     name = str(name).strip()
-    
+
     # Check for angle brackets and remove them
-    if '<' in name or '>' in name:
-        name = name.replace('<', '').replace('>', '').strip()
+    if "<" in name or ">" in name:
+        name = name.replace("<", "").replace(">", "").strip()
         if not name:
-            return None, f"Contact name for {doc_type} {doc_name} contains only invalid characters (< >)"
-    
+            return (
+                None,
+                f"Contact name for {doc_type} {doc_name} contains only invalid characters (< >)",
+            )
+
     # Collapse multiple spaces into single space
-    name = re.sub(r'\s+', ' ', name)
-    
+    name = re.sub(r"\s+", " ", name)
+
     # Check length
     if len(name) > 255:
-        return None, f"Contact name for {doc_type} {doc_name} exceeds 255 characters (current: {len(name)})"
-    
+        return (
+            None,
+            f"Contact name for {doc_type} {doc_name} exceeds 255 characters (current: {len(name)})",
+        )
+
     return name, None
 
 
 def compute_data_hash(doc):
     """Compute hash of relevant fields to detect changes.
-    
+
     This is used to prevent unnecessary re-syncs when data hasn't changed.
     """
     name_field = "customer_name" if doc.doctype == "Customer" else "supplier_name"
@@ -67,27 +74,29 @@ def compute_data_hash(doc):
 
 def parse_erpnext_reference(contact_number):
     """Parse ERPNext reference from Xero ContactNumber.
-    
+
     Format: "ERP:{type_code}:{doc_name}"
     Example: "ERP:C:CUST-001" for Customer, "ERP:S:SUPP-001" for Supplier
-    
+
     Returns: tuple (doc_type, doc_name) or (None, None) if not found
     """
     if not contact_number or not str(contact_number).startswith("ERP:"):
         return None, None
-    
+
     parts = str(contact_number).split(":")
     if len(parts) != 3:
         return None, None
-    
+
     type_code, doc_name = parts[1], parts[2]
-    doc_type = "Customer" if type_code == "C" else "Supplier" if type_code == "S" else None
+    doc_type = (
+        "Customer" if type_code == "C" else "Supplier" if type_code == "S" else None
+    )
     return doc_type, doc_name
 
 
 def build_contact_number(doc_type, doc_name):
     """Build ContactNumber for Xero contact.
-    
+
     Format: "ERP:{type_code}:{doc_name}"
     """
     type_code = "C" if doc_type == "Customer" else "S"
@@ -97,6 +106,7 @@ def build_contact_number(doc_type, doc_name):
 # =============================================================================
 # SYNC FUNCTIONS
 # =============================================================================
+
 
 @frappe.whitelist()
 def enqueue_sync_contact(doc_name, doc_type=None):
@@ -110,12 +120,16 @@ def enqueue_sync_contact(doc_name, doc_type=None):
         doc_type = doc.doctype
     elif not doc_type or doc_type in ("on_update", "manual_trigger"):
         # Second arg was method name; doc_name might be a string identifier
-        frappe.throw(_("enqueue_sync_contact requires (doc_name, doc_type) or a document as first argument."))
+        frappe.throw(
+            _(
+                "enqueue_sync_contact requires (doc_name, doc_type) or a document as first argument."
+            )
+        )
 
     # Improved guard against double-trigger from on_update hook
     # Check if sync should be skipped based on status and data changes
     sync_status = frappe.db.get_value(doc_type, doc_name, "xero_sync_status")
-    
+
     # Allow re-sync if status is Error or Pending
     if sync_status in ("Error", "Pending"):
         pass  # Continue to sync
@@ -124,7 +138,7 @@ def enqueue_sync_contact(doc_name, doc_type=None):
         doc = frappe.get_doc(doc_type, doc_name)
         current_hash = compute_data_hash(doc)
         stored_hash = frappe.db.get_value(doc_type, doc_name, "xero_data_hash") or ""
-        
+
         if current_hash == stored_hash:
             # No changes since last sync, skip
             return
@@ -135,38 +149,36 @@ def enqueue_sync_contact(doc_name, doc_type=None):
         timeout=600,
         retry=1,
         doc_name=doc_name,
-        doc_type=doc_type
+        doc_type=doc_type,
     )
     frappe.msgprint(_("Contact sync to Xero queued."))
+
 
 @retry_with_exponential_backoff(max_retries=3, base_delay=1)
 def sync_contact_to_xero(doc_name, doc_type, **kwargs):
     """
     Syncs an ERPNext Customer or Supplier to Xero Contacts.
-    
+
     CRITICAL: Uses POST for updates (when ContactID is known) and PUT for creates.
     This is because PUT errors if ContactName matches an existing contact.
-    
+
     NOTE: IsCustomer/IsSupplier are NOT sent - they are read-only fields in Xero API.
     Xero sets these automatically when invoices are created against the contact.
     """
     settings = get_xero_settings()
     if not settings.enable_xero_sync:
-        return # Master switch disabled
-    
-    # Check directional toggle for outbound sync
-    if not settings.enable_sync_to_xero:
+        return  # Master switch disabled
+
+    # Check per-entity directional toggle for outbound sync
+    if not settings.get("sync_contacts_to_xero"):
         log_xero_error(
-            message=f"Sync to Xero is disabled. Skipping {doc_type} {doc_name} outbound sync.",
+            message=f"Contact outbound sync is disabled. Skipping {doc_type} {doc_name}.",
             status="Info",
             erpnext_doc_type=doc_type,
             erpnext_doc_name=doc_name,
-            category="System Monitoring"
+            category="System Monitoring",
         )
         return
-    
-    if not settings.sync_contacts:
-        return # Contact sync specifically disabled
 
     try:
         doc = frappe.get_doc(doc_type, doc_name)
@@ -175,16 +187,18 @@ def sync_contact_to_xero(doc_name, doc_type, **kwargs):
         # --- Validate and Sanitize Name (required by Xero) ---
         raw_name = doc.get("customer_name") or doc.get("supplier_name")
         name, error = validate_and_sanitize_name(raw_name, doc_type, doc_name)
-        
+
         if error:
             log_xero_error(
                 message=error,
                 status="Warning",
                 erpnext_doc_type=doc_type,
                 erpnext_doc_name=doc_name,
-                category="Validation"
+                category="Validation",
             )
-            frappe.db.set_value(doc_type, doc_name, {"xero_sync_status": "Error"}, update_modified=False)
+            frappe.db.set_value(
+                doc_type, doc_name, {"xero_sync_status": "Error"}, update_modified=False
+            )
             frappe.db.commit()
             return
 
@@ -213,31 +227,56 @@ def sync_contact_to_xero(doc_name, doc_type, **kwargs):
             words = name.split()
             if words:
                 contact_payload["FirstName"] = words[0]
-        
+
         # Add EmailAddress if available from contact details
-        if primary_contact_details.get("email_id") and str(primary_contact_details.get("email_id")).strip():
-            contact_payload["EmailAddress"] = str(primary_contact_details.get("email_id")).strip()
-        
+        if (
+            primary_contact_details.get("email_id")
+            and str(primary_contact_details.get("email_id")).strip()
+        ):
+            contact_payload["EmailAddress"] = str(
+                primary_contact_details.get("email_id")
+            ).strip()
+
         # Add Phones - include all phones that have values
         phones = []
-        if primary_contact_details.get("phone") and str(primary_contact_details.get("phone")).strip():
-            phones.append({"PhoneType": "DEFAULT", "PhoneNumber": str(primary_contact_details.get("phone")).strip()})
-        if primary_contact_details.get("mobile_no") and str(primary_contact_details.get("mobile_no")).strip():
-            phones.append({"PhoneType": "MOBILE", "PhoneNumber": str(primary_contact_details.get("mobile_no")).strip()})
+        if (
+            primary_contact_details.get("phone")
+            and str(primary_contact_details.get("phone")).strip()
+        ):
+            phones.append(
+                {
+                    "PhoneType": "DEFAULT",
+                    "PhoneNumber": str(primary_contact_details.get("phone")).strip(),
+                }
+            )
+        if (
+            primary_contact_details.get("mobile_no")
+            and str(primary_contact_details.get("mobile_no")).strip()
+        ):
+            phones.append(
+                {
+                    "PhoneType": "MOBILE",
+                    "PhoneNumber": str(
+                        primary_contact_details.get("mobile_no")
+                    ).strip(),
+                }
+            )
         if phones:
             contact_payload["Phones"] = phones
-        
+
         # Add TaxNumber if available
         if doc.get("tax_id") and str(doc.get("tax_id")).strip():
             contact_payload["TaxNumber"] = str(doc.get("tax_id")).strip()
-        
+
         # Add Website if available
         if doc.get("website") and str(doc.get("website")).strip():
             contact_payload["Website"] = str(doc.get("website")).strip()
 
         # Add primary address only when it has at least AddressLine1 or Country (Xero dependency)
         primary_address = get_primary_address(doc_type, doc_name)
-        if primary_address and (primary_address.get("AddressLine1") or primary_address.get("Country")):
+        if primary_address and (
+            primary_address.get("AddressLine1") or primary_address.get("Country")
+        ):
             contact_payload["Addresses"] = [primary_address]
 
         # Add primary contact person if available
@@ -248,30 +287,34 @@ def sync_contact_to_xero(doc_name, doc_type, **kwargs):
             # Check if we have an email anywhere (main contact or contact person)
             has_main_email = bool(contact_payload.get("EmailAddress"))
             has_contact_person_email = bool(primary_contact_person.get("EmailAddress"))
-            
+
             if has_main_email or has_contact_person_email:
                 # Xero requires EmailAddress when IncludeInEmails is True; ensure we never send invalid combination
-                if primary_contact_person.get("IncludeInEmails") and not primary_contact_person.get("EmailAddress"):
+                if primary_contact_person.get(
+                    "IncludeInEmails"
+                ) and not primary_contact_person.get("EmailAddress"):
                     primary_contact_person.pop("IncludeInEmails", None)
                 contact_payload["ContactPersons"] = [primary_contact_person]
 
                 # If main contact has no email but ContactPerson has email, use it as main EmailAddress
                 if not has_main_email and has_contact_person_email:
-                    contact_payload["EmailAddress"] = primary_contact_person.get("EmailAddress")
+                    contact_payload["EmailAddress"] = primary_contact_person.get(
+                        "EmailAddress"
+                    )
             else:
                 # No email available - skip ContactPersons to avoid Xero validation error
                 # Log a warning so users know contact person data was not synced
                 frappe.log_error(
                     message=f"Skipping ContactPerson data for {doc_type} '{doc_name}' - no email address available. "
-                            f"Contact person ({primary_contact_person.get('FirstName', '')} {primary_contact_person.get('LastName', '')}) "
-                            f"will not be synced to Xero. Add an email to the contact to include this data.",
-                    title="Xero Sync: ContactPerson Skipped"
+                    f"Contact person ({primary_contact_person.get('FirstName', '')} {primary_contact_person.get('LastName', '')}) "
+                    f"will not be synced to Xero. Add an email to the contact to include this data.",
+                    title="Xero Sync: ContactPerson Skipped",
                 )
 
         # If updating an existing contact, include the ID
         if xero_contact_id:
             contact_payload["ContactID"] = xero_contact_id
-        
+
         # Final cleanup: Remove any None, empty string, or empty array values
         # This ensures we never send empty/null data to Xero
         # Only include fields with actual values
@@ -286,7 +329,7 @@ def sync_contact_to_xero(doc_name, doc_type, **kwargs):
             if isinstance(v, dict):
                 return len(v) == 0
             return False
-        
+
         def clean_dict(d):
             """Recursively clean a dictionary, removing empty values"""
             cleaned = {}
@@ -309,7 +352,7 @@ def sync_contact_to_xero(doc_name, doc_type, **kwargs):
                 elif not is_empty_value(v):
                     cleaned[k] = v
             return cleaned
-        
+
         contact_payload = clean_dict(contact_payload)
         # Ensure Name and ContactNumber are always present (Xero requirement); never let clean_dict remove them.
         contact_payload["Name"] = name
@@ -321,7 +364,9 @@ def sync_contact_to_xero(doc_name, doc_type, **kwargs):
         # CRITICAL: Use POST for updates (when ContactID is known), PUT for creates only.
         # PUT errors if ContactName matches an existing contact, POST creates or updates.
         method = "POST" if xero_contact_id else "PUT"
-        response = xero_request(method, "Contacts", data={"Contacts": [contact_payload]})
+        response = xero_request(
+            method, "Contacts", data={"Contacts": [contact_payload]}
+        )
 
         if response and response.get("Contacts"):
             updated_contact = response["Contacts"][0]
@@ -331,12 +376,17 @@ def sync_contact_to_xero(doc_name, doc_type, **kwargs):
             if new_xero_contact_id:
                 # Compute and store data hash for change detection
                 data_hash = compute_data_hash(doc)
-                frappe.db.set_value(doc_type, doc_name, {
-                    "xero_contact_id": new_xero_contact_id,
-                    "xero_sync_status": "Synced",
-                    "xero_data_hash": data_hash
-                }, update_modified=False)
-                frappe.db.commit() # Commit changes immediately
+                frappe.db.set_value(
+                    doc_type,
+                    doc_name,
+                    {
+                        "xero_contact_id": new_xero_contact_id,
+                        "xero_sync_status": "Synced",
+                        "xero_data_hash": data_hash,
+                    },
+                    update_modified=False,
+                )
+                frappe.db.commit()  # Commit changes immediately
 
                 log_xero_error(
                     message=f"Successfully synced {doc_type} {doc_name} to Xero.",
@@ -344,34 +394,43 @@ def sync_contact_to_xero(doc_name, doc_type, **kwargs):
                     erpnext_doc_type=doc_type,
                     erpnext_doc_name=doc_name,
                     xero_entity_id=new_xero_contact_id,
-                    xero_entity_type="Contact"
+                    xero_entity_type="Contact",
                 )
             else:
                 raise Exception("Xero API response did not contain a ContactID.")
 
         else:
-             raise Exception("Invalid response received from Xero Contacts API.")
+            raise Exception("Invalid response received from Xero Contacts API.")
 
     except Exception as e:
         from ..utils.logging import is_already_exists_error
+
         error_traceback = frappe.get_traceback()
-        
+
         # Check if this is an "already exists" type error from Xero API
         if is_already_exists_error(str(e), error_traceback):
-            frappe.db.set_value(doc_type, doc_name, {"xero_sync_status": "Synced"}, update_modified=False)
+            frappe.db.set_value(
+                doc_type,
+                doc_name,
+                {"xero_sync_status": "Synced"},
+                update_modified=False,
+            )
             frappe.db.commit()
-            
+
             log_xero_error(
                 message=f"{doc_type} {doc_name} already exists in Xero. No action needed.",
                 status="Info",
                 category="Duplicate Entity",
                 erpnext_doc_type=doc_type,
                 erpnext_doc_name=doc_name,
-                direction="ERPNext to Xero"
+                direction="ERPNext to Xero",
             )
         else:
             from ..utils.logging import format_sync_error_message
-            frappe.db.set_value(doc_type, doc_name, {"xero_sync_status": "Error"}, update_modified=False)
+
+            frappe.db.set_value(
+                doc_type, doc_name, {"xero_sync_status": "Error"}, update_modified=False
+            )
             frappe.db.commit()
             user_message = format_sync_error_message(
                 doc_type, doc_name, doc_name, "ERPNext to Xero", e
@@ -381,7 +440,7 @@ def sync_contact_to_xero(doc_name, doc_type, **kwargs):
                 erpnext_doc_type=doc_type,
                 erpnext_doc_name=doc_name,
                 error_details=error_traceback,
-                direction="ERPNext to Xero"
+                direction="ERPNext to Xero",
             )
 
 
@@ -393,7 +452,11 @@ def sync_contacts_to_xero(filters=None, sync_type="full", **kwargs):
     sync_type: "full" or optional; when "pending" only syncs docs with xero_sync_status in ("Pending", "Error") if filters allow.
     """
     settings = get_xero_settings()
-    if not settings.enable_xero_sync or not settings.enable_sync_to_xero or not settings.sync_contacts:
+    if (
+        not settings.enable_xero_sync
+        or not settings.enable_sync_to_xero
+        or not settings.sync_contacts
+    ):
         return
 
     filters = filters or {}
@@ -405,16 +468,44 @@ def sync_contacts_to_xero(filters=None, sync_type="full", **kwargs):
         if sync_type == "pending":
             doc_filters_customer = dict(doc_filters)
             doc_filters_customer["xero_sync_status"] = ["in", ["Pending", "Error"]]
-            to_sync.extend([("Customer", n) for n in frappe.get_all("Customer", filters=doc_filters_customer, pluck="name")])
+            to_sync.extend(
+                [
+                    ("Customer", n)
+                    for n in frappe.get_all(
+                        "Customer", filters=doc_filters_customer, pluck="name"
+                    )
+                ]
+            )
         else:
-            to_sync.extend([("Customer", n) for n in frappe.get_all("Customer", filters=doc_filters, pluck="name")])
+            to_sync.extend(
+                [
+                    ("Customer", n)
+                    for n in frappe.get_all(
+                        "Customer", filters=doc_filters, pluck="name"
+                    )
+                ]
+            )
     if not entity_type or entity_type == "Supplier":
         if sync_type == "pending":
             doc_filters_supplier = dict(doc_filters)
             doc_filters_supplier["xero_sync_status"] = ["in", ["Pending", "Error"]]
-            to_sync.extend([("Supplier", n) for n in frappe.get_all("Supplier", filters=doc_filters_supplier, pluck="name")])
+            to_sync.extend(
+                [
+                    ("Supplier", n)
+                    for n in frappe.get_all(
+                        "Supplier", filters=doc_filters_supplier, pluck="name"
+                    )
+                ]
+            )
         else:
-            to_sync.extend([("Supplier", n) for n in frappe.get_all("Supplier", filters=doc_filters, pluck="name")])
+            to_sync.extend(
+                [
+                    ("Supplier", n)
+                    for n in frappe.get_all(
+                        "Supplier", filters=doc_filters, pluck="name"
+                    )
+                ]
+            )
 
     for doc_type, doc_name in to_sync:
         try:
@@ -425,7 +516,7 @@ def sync_contacts_to_xero(filters=None, sync_type="full", **kwargs):
                 status="Error",
                 erpnext_doc_type=doc_type,
                 erpnext_doc_name=doc_name,
-                error_details=frappe.get_traceback()
+                error_details=frappe.get_traceback(),
             )
 
 
@@ -434,7 +525,8 @@ def get_primary_address(parent_doctype, parent_name):
     # Find the primary address linked to the Customer/Supplier
     # Query using Dynamic Link child table properly
     # Prioritize by address_type (Billing), then Shipping, then any Primary
-    address_result = frappe.db.sql("""
+    address_result = frappe.db.sql(
+        """
         SELECT a.name
         FROM `tabAddress` a
         INNER JOIN `tabDynamic Link` dl ON dl.parent = a.name AND dl.parenttype = 'Address'
@@ -442,21 +534,28 @@ def get_primary_address(parent_doctype, parent_name):
         AND (a.address_type = 'Billing' OR a.is_primary_address = 1)
         ORDER BY CASE WHEN a.address_type = 'Billing' THEN 1 WHEN a.is_primary_address = 1 THEN 2 ELSE 3 END
         LIMIT 1
-    """, (parent_doctype, parent_name), as_dict=True)
-    
+    """,
+        (parent_doctype, parent_name),
+        as_dict=True,
+    )
+
     if not address_result:
         # Fallback: get any address linked to this customer
-        address_result = frappe.db.sql("""
+        address_result = frappe.db.sql(
+            """
             SELECT a.name
             FROM `tabAddress` a
             INNER JOIN `tabDynamic Link` dl ON dl.parent = a.name AND dl.parenttype = 'Address'
             WHERE dl.link_doctype = %s AND dl.link_name = %s
             LIMIT 1
-        """, (parent_doctype, parent_name), as_dict=True)
+        """,
+            (parent_doctype, parent_name),
+            as_dict=True,
+        )
 
     if not address_result:
         return None
-    
+
     address_name = address_result[0].name
 
     address_doc = frappe.get_doc("Address", address_name)
@@ -470,32 +569,38 @@ def get_primary_address(parent_doctype, parent_name):
         "City": address_doc.city,
         "Region": address_doc.state,
         "PostalCode": address_doc.pincode,
-        "Country": address_doc.country # Ensure country name/code matches Xero's expectations if needed
+        "Country": address_doc.country,  # Ensure country name/code matches Xero's expectations if needed
     }
     # Remove None and empty string values, but keep all fields that have data
     # This allows syncing sparse addresses (e.g., just City, or just PostalCode)
-    xero_address = {k: v for k, v in xero_address.items() 
-                    if v is not None and str(v).strip() != ""}
-    
+    xero_address = {
+        k: v for k, v in xero_address.items() if v is not None and str(v).strip() != ""
+    }
+
     # Return address if it has ANY meaningful data (any field with a value)
     # This syncs all available address data while preventing completely empty objects
     if not xero_address:
         return None
-    
+
     return xero_address
+
 
 def get_primary_contact_details(parent_doctype, parent_name):
     """Helper to get primary contact person details (email, phone)."""
     # Find the primary Contact linked to the Customer/Supplier
     # Query using Dynamic Link child table properly
-    contact_result = frappe.db.sql("""
+    contact_result = frappe.db.sql(
+        """
         SELECT c.name
         FROM `tabContact` c
         INNER JOIN `tabDynamic Link` dl ON dl.parent = c.name AND dl.parenttype = 'Contact'
         WHERE dl.link_doctype = %s AND dl.link_name = %s AND c.is_primary_contact = 1
         LIMIT 1
-    """, (parent_doctype, parent_name), as_dict=True)
-    
+    """,
+        (parent_doctype, parent_name),
+        as_dict=True,
+    )
+
     if not contact_result:
         return {}
 
@@ -505,9 +610,10 @@ def get_primary_contact_details(parent_doctype, parent_name):
         "last_name": contact_doc.last_name,
         "email_id": contact_doc.email_id,
         "phone": contact_doc.phone,
-        "mobile_no": contact_doc.mobile_no
+        "mobile_no": contact_doc.mobile_no,
     }
-    return {k: v for k, v in details.items() if v} # Return dict with non-empty values
+    return {k: v for k, v in details.items() if v}  # Return dict with non-empty values
+
 
 def get_primary_contact(parent_doctype, parent_name):
     """Helper to get primary contact person details formatted for Xero ContactPersons."""
@@ -521,23 +627,28 @@ def get_primary_contact(parent_doctype, parent_name):
         "FirstName": details.get("first_name"),
         "LastName": details.get("last_name"),
         "EmailAddress": details.get("email_id"),
-        "IncludeInEmails": True # Default? Or based on ERPNext setting?
+        "IncludeInEmails": True,  # Default? Or based on ERPNext setting?
     }
     # Remove None and empty string values, but keep all fields that have data
     # This allows syncing sparse contact person data (e.g., just email, or just name)
-    xero_contact_person = {k: v for k, v in xero_contact_person.items() 
-                          if v is not None and str(v).strip() != ""}
-    
+    xero_contact_person = {
+        k: v
+        for k, v in xero_contact_person.items()
+        if v is not None and str(v).strip() != ""
+    }
+
     # Return contact person if it has ANY meaningful data (FirstName, LastName, or EmailAddress)
     # This syncs all available contact person data while preventing completely empty objects
     if not xero_contact_person:
         return None
-    
+
     # If IncludeInEmails is True but no EmailAddress, remove IncludeInEmails
     # Xero requires EmailAddress when IncludeInEmails is True
-    if xero_contact_person.get("IncludeInEmails") and not xero_contact_person.get("EmailAddress"):
+    if xero_contact_person.get("IncludeInEmails") and not xero_contact_person.get(
+        "EmailAddress"
+    ):
         xero_contact_person.pop("IncludeInEmails", None)
-    
+
     return xero_contact_person
 
 
@@ -548,18 +659,17 @@ def sync_contacts_from_xero():
     (Consider potential for duplicates and mapping challenges)
     """
     settings = get_xero_settings()
-    if not settings.enable_xero_sync: return # Master switch disabled
-    
-    # Check directional toggle for inbound sync
-    if not settings.enable_sync_from_xero:
+    if not settings.enable_xero_sync:
+        return  # Master switch disabled
+
+    # Check per-entity directional toggle for inbound sync
+    if not settings.get("sync_contacts_from_xero"):
         log_xero_error(
-            message="Sync from Xero is disabled. Skipping contacts inbound sync.",
+            message="Contact inbound sync is disabled. Skipping contacts from Xero.",
             status="Info",
-            category="System Monitoring"
+            category="System Monitoring",
         )
         return
-    
-    if not settings.sync_contacts: return # Contact sync specifically disabled
 
     try:
         page = 1
@@ -568,21 +678,21 @@ def sync_contacts_from_xero():
             response = xero_request("GET", "Contacts", params={"page": page})
 
             if not response or not response.get("Contacts"):
-                break # No more contacts or error
+                break  # No more contacts or error
 
             contacts = response["Contacts"]
             if not contacts:
-                break # Empty page, end of contacts
+                break  # Empty page, end of contacts
 
             for contact in contacts:
                 try:
                     process_xero_contact(contact)
                 except Exception as e:
-                     log_xero_error(
+                    log_xero_error(
                         message=f"Failed to process Xero Contact ID {contact.get('ContactID')}",
-                        xero_entity_id=contact.get('ContactID'),
+                        xero_entity_id=contact.get("ContactID"),
                         xero_entity_type="Contact",
-                        error_details=frappe.get_traceback()
+                        error_details=frappe.get_traceback(),
                     )
 
             # Check if it was the last page (Xero doesn't explicitly tell you,
@@ -598,12 +708,13 @@ def sync_contacts_from_xero():
     except Exception as e:
         log_xero_error(
             message="Error during sync_contacts_from_xero",
-            error_details=frappe.get_traceback()
+            error_details=frappe.get_traceback(),
         )
+
 
 def process_xero_contact(xero_contact_data):
     """Creates or updates an ERPNext Customer/Supplier from Xero contact data.
-    
+
     Priority for determining DocType:
     1. ContactNumber field (if it contains ERP: prefix)
     2. IsCustomer/IsSupplier flags (only set after invoices are created)
@@ -614,7 +725,10 @@ def process_xero_contact(xero_contact_data):
     contact_number = xero_contact_data.get("ContactNumber")
 
     if not xero_contact_id or not contact_name:
-        log_xero_error(message=f"Skipping Xero contact due to missing ID or Name: {xero_contact_data}", status="Info")
+        log_xero_error(
+            message=f"Skipping Xero contact due to missing ID or Name: {xero_contact_data}",
+            status="Info",
+        )
         return
 
     # Priority 1: Check ContactNumber for ERPNext reference
@@ -626,7 +740,7 @@ def process_xero_contact(xero_contact_data):
             message=f"Xero Contact {contact_name} ({xero_contact_id}) has ContactNumber '{contact_number}' - syncing as {doc_type}",
             status="Info",
             xero_entity_id=xero_contact_id,
-            xero_entity_type="Contact"
+            xero_entity_type="Contact",
         )
         sync_xero_contact_to_erpnext(xero_contact_data, doc_type)
         return
@@ -646,18 +760,18 @@ def process_xero_contact(xero_contact_data):
         # Contact has no type information - this happens for:
         # - New contacts created via API that haven't been used on invoices
         # - Contacts created manually in Xero without transactions
-        # 
+        #
         # We skip these contacts with a warning instead of defaulting to Customer
         # to prevent incorrect type assignment on round-trip syncs
         log_xero_error(
             message=f"Xero Contact {contact_name} ({xero_contact_id}) has no type information. "
-                    f"IsCustomer={is_customer}, IsSupplier={is_supplier}, ContactNumber={contact_number}. "
-                    f"Skipping - cannot determine if Customer or Supplier. "
-                    f"This contact will be synced when it's used on an invoice.",
+            f"IsCustomer={is_customer}, IsSupplier={is_supplier}, ContactNumber={contact_number}. "
+            f"Skipping - cannot determine if Customer or Supplier. "
+            f"This contact will be synced when it's used on an invoice.",
             status="Warning",
             xero_entity_id=xero_contact_id,
             xero_entity_type="Contact",
-            category="Sync Skipped"
+            category="Sync Skipped",
         )
 
 
@@ -666,18 +780,30 @@ def sync_xero_contact_to_erpnext(xero_contact_data, target_doctype):
     xero_contact_id = xero_contact_data.get("ContactID")
     contact_name = xero_contact_data.get("Name")
     erpnext_doc_name = None
-    sync_status = "Synced" # Assume success unless error occurs
+    sync_status = "Synced"  # Assume success unless error occurs
 
     # 1. Check if ERPNext doc already exists linked by xero_contact_id
-    erpnext_doc_name = frappe.db.get_value(target_doctype, {"xero_contact_id": xero_contact_id}, "name")
+    erpnext_doc_name = frappe.db.get_value(
+        target_doctype, {"xero_contact_id": xero_contact_id}, "name"
+    )
 
     # 2. If not found by ID, check by name (potential for duplicates!)
     if not erpnext_doc_name:
-        field_name = "customer_name" if target_doctype == "Customer" else "supplier_name"
-        erpnext_doc_name = frappe.db.get_value(target_doctype, {field_name: contact_name}, "name")
+        field_name = (
+            "customer_name" if target_doctype == "Customer" else "supplier_name"
+        )
+        erpnext_doc_name = frappe.db.get_value(
+            target_doctype, {field_name: contact_name}, "name"
+        )
         # If found by name, update its xero_contact_id
         if erpnext_doc_name:
-            frappe.db.set_value(target_doctype, erpnext_doc_name, "xero_contact_id", xero_contact_id, update_modified=False)
+            frappe.db.set_value(
+                target_doctype,
+                erpnext_doc_name,
+                "xero_contact_id",
+                xero_contact_id,
+                update_modified=False,
+            )
 
     # --- Map Xero Data to ERPNext Fields ---
     erpnext_data = {
@@ -686,24 +812,30 @@ def sync_xero_contact_to_erpnext(xero_contact_data, target_doctype):
         "tax_id": xero_contact_data.get("TaxNumber"),
         "website": xero_contact_data.get("Website"),
     }
-    
+
     # Map ContactStatus to disabled field
     # ACTIVE → disabled=0, ARCHIVED/GDPRREQUEST → disabled=1
     contact_status = xero_contact_data.get("ContactStatus", "ACTIVE")
     erpnext_data["disabled"] = 0 if contact_status == "ACTIVE" else 1
-    
+
     # Map DefaultCurrency if available
     default_currency = xero_contact_data.get("DefaultCurrency")
     if default_currency:
         erpnext_data["default_currency"] = default_currency
-    
+
     if target_doctype == "Customer":
         erpnext_data["customer_name"] = contact_name
-        erpnext_data["customer_group"] = frappe.db.get_default("customer_group") or "All Customer Groups" # Default group
-        erpnext_data["territory"] = frappe.db.get_default("territory") or "All Territories" # Default territory
-    else: # Supplier
+        erpnext_data["customer_group"] = (
+            frappe.db.get_default("customer_group") or "All Customer Groups"
+        )  # Default group
+        erpnext_data["territory"] = (
+            frappe.db.get_default("territory") or "All Territories"
+        )  # Default territory
+    else:  # Supplier
         erpnext_data["supplier_name"] = contact_name
-        erpnext_data["supplier_group"] = frappe.db.get_default("supplier_group") or "All Supplier Groups" # Default group
+        erpnext_data["supplier_group"] = (
+            frappe.db.get_default("supplier_group") or "All Supplier Groups"
+        )  # Default group
 
     # --- Create or Update ERPNext Document ---
     try:
@@ -712,14 +844,14 @@ def sync_xero_contact_to_erpnext(xero_contact_data, target_doctype):
             doc = frappe.get_doc(target_doctype, erpnext_doc_name)
             doc.update(erpnext_data)
             # TODO: Update addresses and contact persons if needed
-            doc.save(ignore_permissions=True) # Use ignore_permissions carefully
+            doc.save(ignore_permissions=True)  # Use ignore_permissions carefully
             log_message = f"Updated {target_doctype} {erpnext_doc_name} from Xero Contact {xero_contact_id}"
         else:
             # Create new document
             doc = frappe.new_doc(target_doctype)
             doc.update(erpnext_data)
             # TODO: Create addresses and contact persons if needed
-            doc.insert(ignore_permissions=True) # Use ignore_permissions carefully
+            doc.insert(ignore_permissions=True)  # Use ignore_permissions carefully
             erpnext_doc_name = doc.name
             log_message = f"Created {target_doctype} {erpnext_doc_name} from Xero Contact {xero_contact_id}"
 
@@ -731,18 +863,18 @@ def sync_xero_contact_to_erpnext(xero_contact_data, target_doctype):
             erpnext_doc_name=erpnext_doc_name,
             xero_entity_id=xero_contact_id,
             xero_entity_type="Contact",
-            direction="Xero to ERPNext"
+            direction="Xero to ERPNext",
         )
-        
+
         # --- Sync Contact Persons (NEW IMPLEMENTATION) ---
         # After successfully creating/updating the Customer/Supplier, sync contact persons
-        
+
         # First, sync the primary contact (FirstName, EmailAddress, Phones on the Contact itself)
         # Xero stores primary contact info directly on the Contact object
         primary_first_name = xero_contact_data.get("FirstName")
         primary_email = xero_contact_data.get("EmailAddress")
         primary_phones = xero_contact_data.get("Phones", [])
-        
+
         if primary_first_name or primary_email:
             # Create a pseudo ContactPerson dict from primary contact fields
             primary_person_data = {}
@@ -752,85 +884,107 @@ def sync_xero_contact_to_erpnext(xero_contact_data, target_doctype):
                 primary_person_data["EmailAddress"] = primary_email
             if primary_phones:
                 primary_person_data["Phones"] = primary_phones
-            primary_person_data["IncludeInEmails"] = True  # Primary contact should be included
-            
+            primary_person_data["IncludeInEmails"] = (
+                True  # Primary contact should be included
+            )
+
             try:
-                sync_contact_person_to_erpnext(primary_person_data, target_doctype, erpnext_doc_name, xero_contact_id)
+                sync_contact_person_to_erpnext(
+                    primary_person_data,
+                    target_doctype,
+                    erpnext_doc_name,
+                    xero_contact_id,
+                )
             except Exception as person_error:
                 # Log error but continue
                 log_xero_error(
                     message=f"Failed to sync primary contact for {target_doctype} {erpnext_doc_name}",
                     erpnext_doc_type="Contact",
                     xero_entity_id=xero_contact_id,
-                    error_details=str(person_error)
+                    error_details=str(person_error),
                 )
-        
+
         # Then, sync additional contact persons from ContactPersons array
         # NOTE: Xero allows max 5 ContactPersons per contact
         contact_persons = xero_contact_data.get("ContactPersons", [])
         if contact_persons:
             # Limit to XERO_MAX_CONTACT_PERSONS to avoid API errors
             contact_persons = contact_persons[:XERO_MAX_CONTACT_PERSONS]
-            if len(xero_contact_data.get("ContactPersons", [])) > XERO_MAX_CONTACT_PERSONS:
+            if (
+                len(xero_contact_data.get("ContactPersons", []))
+                > XERO_MAX_CONTACT_PERSONS
+            ):
                 log_xero_error(
                     message=f"Xero Contact {contact_name} has {len(xero_contact_data.get('ContactPersons', []))} ContactPersons. "
-                            f"Only syncing first {XERO_MAX_CONTACT_PERSONS}.",
+                    f"Only syncing first {XERO_MAX_CONTACT_PERSONS}.",
                     status="Warning",
                     xero_entity_id=xero_contact_id,
-                    xero_entity_type="Contact"
+                    xero_entity_type="Contact",
                 )
-            
+
             for person in contact_persons:
                 try:
-                    sync_contact_person_to_erpnext(person, target_doctype, erpnext_doc_name, xero_contact_id)
+                    sync_contact_person_to_erpnext(
+                        person, target_doctype, erpnext_doc_name, xero_contact_id
+                    )
                 except Exception as person_error:
                     # Log error but continue with other contact persons
                     log_xero_error(
                         message=f"Failed to sync ContactPerson for {target_doctype} {erpnext_doc_name}",
                         erpnext_doc_type="Contact",
                         xero_entity_id=xero_contact_id,
-                        error_details=str(person_error)
+                        error_details=str(person_error),
                     )
-        
+
         # --- Sync Addresses (NEW IMPLEMENTATION) ---
         # Sync addresses from Xero to ERPNext Address DocType
         addresses = xero_contact_data.get("Addresses", [])
         if addresses:
             for address_data in addresses:
                 try:
-                    sync_xero_address_to_erpnext(address_data, target_doctype, erpnext_doc_name, xero_contact_id)
+                    sync_xero_address_to_erpnext(
+                        address_data, target_doctype, erpnext_doc_name, xero_contact_id
+                    )
                 except Exception as address_error:
                     # Log error but continue with other addresses
                     log_xero_error(
                         message=f"Failed to sync Address for {target_doctype} {erpnext_doc_name}",
                         erpnext_doc_type="Address",
                         xero_entity_id=xero_contact_id,
-                        error_details=str(address_error)
+                        error_details=str(address_error),
                     )
 
     except Exception as e:
         # Log error, but don't stop processing other contacts
         sync_status = "Error"
-        if erpnext_doc_name: # If update failed after finding doc
-             frappe.db.set_value(target_doctype, erpnext_doc_name, "xero_sync_status", sync_status, update_modified=False)
-             frappe.db.commit()
+        if erpnext_doc_name:  # If update failed after finding doc
+            frappe.db.set_value(
+                target_doctype,
+                erpnext_doc_name,
+                "xero_sync_status",
+                sync_status,
+                update_modified=False,
+            )
+            frappe.db.commit()
 
         log_xero_error(
             message=f"Failed to sync Xero Contact {xero_contact_id} to ERPNext {target_doctype}",
             erpnext_doc_type=target_doctype,
-            erpnext_doc_name=erpnext_doc_name, # Might be None if creation failed early
+            erpnext_doc_name=erpnext_doc_name,  # Might be None if creation failed early
             xero_entity_id=xero_contact_id,
             xero_entity_type="Contact",
             direction="Xero to ERPNext",
-            error_details=frappe.get_traceback()
+            error_details=frappe.get_traceback(),
         )
 
 
-def sync_contact_person_to_erpnext(person_data, parent_doctype, parent_name, xero_contact_id):
+def sync_contact_person_to_erpnext(
+    person_data, parent_doctype, parent_name, xero_contact_id
+):
     """
     Creates or updates an ERPNext Contact from Xero ContactPerson data or primary contact fields.
     Links the contact to the parent Customer/Supplier via Dynamic Link.
-    
+
     Args:
         person_data: Dictionary containing Xero ContactPerson data (or primary contact fields)
         parent_doctype: "Customer" or "Supplier"
@@ -840,50 +994,54 @@ def sync_contact_person_to_erpnext(person_data, parent_doctype, parent_name, xer
     first_name = person_data.get("FirstName")
     last_name = person_data.get("LastName")
     email = person_data.get("EmailAddress")
-    
+
     # Extract phone numbers if available (from Xero Phones array)
     phones = person_data.get("Phones", [])
-    
+
     # Skip if no meaningful data
     if not first_name and not last_name and not email:
         return
-    
+
     # Try to find existing contact
     contact_name = None
-    
+
     # Strategy 1: Find by email if available (most reliable unique identifier)
     if email:
         contact_name = frappe.db.get_value("Contact", {"email_id": email}, "name")
-    
+
     # Strategy 2: Find by name linked to this specific customer/supplier
     if not contact_name and first_name and last_name:
-        contact_result = frappe.db.sql("""
+        contact_result = frappe.db.sql(
+            """
             SELECT c.name
             FROM `tabContact` c
             INNER JOIN `tabDynamic Link` dl ON dl.parent = c.name AND dl.parenttype = 'Contact'
             WHERE c.first_name = %s AND c.last_name = %s
             AND dl.link_doctype = %s AND dl.link_name = %s
             LIMIT 1
-        """, (first_name, last_name, parent_doctype, parent_name), as_dict=True)
+        """,
+            (first_name, last_name, parent_doctype, parent_name),
+            as_dict=True,
+        )
         if contact_result:
             contact_name = contact_result[0].name
-    
+
     # Prepare contact data - only include fields with values
     contact_data = {}
     if first_name:
         contact_data["first_name"] = first_name
     if last_name:
         contact_data["last_name"] = last_name
-    
+
     # Set primary contact flag based on IncludeInEmails
     contact_data["is_primary_contact"] = 1 if person_data.get("IncludeInEmails") else 0
-    
+
     try:
         if contact_name:
             # Update existing contact
             contact = frappe.get_doc("Contact", contact_name)
             contact.update(contact_data)
-            
+
             # Update email in child table if provided
             if email:
                 # Check if email already exists in email_ids child table
@@ -893,14 +1051,11 @@ def sync_contact_person_to_erpnext(person_data, parent_doctype, parent_name, xer
                         email_exists = True
                         email_row.is_primary = 1
                         break
-                
+
                 if not email_exists:
                     # Add new email to child table
-                    contact.append("email_ids", {
-                        "email_id": email,
-                        "is_primary": 1
-                    })
-            
+                    contact.append("email_ids", {"email_id": email, "is_primary": 1})
+
             # Update phone numbers in child table if provided
             if phones:
                 for phone_data in phones:
@@ -910,52 +1065,59 @@ def sync_contact_person_to_erpnext(person_data, parent_doctype, parent_name, xer
                         # Validate phone number format before adding
                         try:
                             from frappe.utils import validate_phone_number
+
                             validate_phone_number(phone_number, throw=True)
-                            
+
                             # Check if phone already exists
                             phone_exists = False
                             for phone_row in contact.phone_nos:
                                 if phone_row.phone == phone_number:
                                     phone_exists = True
                                     break
-                            
+
                             if not phone_exists:
-                                contact.append("phone_nos", {
-                                    "phone": phone_number,
-                                    "is_primary_phone": 1 if phone_type == "DEFAULT" else 0,
-                                    "is_primary_mobile_no": 1 if phone_type == "MOBILE" else 0
-                                })
+                                contact.append(
+                                    "phone_nos",
+                                    {
+                                        "phone": phone_number,
+                                        "is_primary_phone": 1
+                                        if phone_type == "DEFAULT"
+                                        else 0,
+                                        "is_primary_mobile_no": 1
+                                        if phone_type == "MOBILE"
+                                        else 0,
+                                    },
+                                )
                         except:
                             # Skip invalid phone numbers silently
                             pass
-            
+
             # Ensure link to parent exists
             link_exists = False
             for link in contact.links:
-                if link.link_doctype == parent_doctype and link.link_name == parent_name:
+                if (
+                    link.link_doctype == parent_doctype
+                    and link.link_name == parent_name
+                ):
                     link_exists = True
                     break
-            
+
             if not link_exists:
-                contact.append("links", {
-                    "link_doctype": parent_doctype,
-                    "link_name": parent_name
-                })
-            
+                contact.append(
+                    "links", {"link_doctype": parent_doctype, "link_name": parent_name}
+                )
+
             contact.save(ignore_permissions=True)
             action = "Updated"
         else:
             # Create new contact
             contact = frappe.new_doc("Contact")
             contact.update(contact_data)
-            
+
             # Add email to child table if provided
             if email:
-                contact.append("email_ids", {
-                    "email_id": email,
-                    "is_primary": 1
-                })
-            
+                contact.append("email_ids", {"email_id": email, "is_primary": 1})
+
             # Add phone numbers to child table if provided
             if phones:
                 for phone_data in phones:
@@ -965,29 +1127,38 @@ def sync_contact_person_to_erpnext(person_data, parent_doctype, parent_name, xer
                         # Validate phone number format before adding
                         try:
                             from frappe.utils import validate_phone_number
+
                             validate_phone_number(phone_number, throw=True)
-                            contact.append("phone_nos", {
-                                "phone": phone_number,
-                                "is_primary_phone": 1 if phone_type == "DEFAULT" else 0,
-                                "is_primary_mobile_no": 1 if phone_type == "MOBILE" else 0
-                            })
+                            contact.append(
+                                "phone_nos",
+                                {
+                                    "phone": phone_number,
+                                    "is_primary_phone": 1
+                                    if phone_type == "DEFAULT"
+                                    else 0,
+                                    "is_primary_mobile_no": 1
+                                    if phone_type == "MOBILE"
+                                    else 0,
+                                },
+                            )
                         except:
                             # Skip invalid phone numbers
                             pass
-            
+
             # Link to parent Customer/Supplier
-            contact.append("links", {
-                "link_doctype": parent_doctype,
-                "link_name": parent_name
-            })
-            
+            contact.append(
+                "links", {"link_doctype": parent_doctype, "link_name": parent_name}
+            )
+
             contact.insert(ignore_permissions=True)
             action = "Created"
-        
+
         frappe.db.commit()
-        
+
         # Log success
-        full_name = f"{first_name or ''} {last_name or ''}".strip() or email or "Unknown"
+        full_name = (
+            f"{first_name or ''} {last_name or ''}".strip() or email or "Unknown"
+        )
         log_xero_error(
             message=f"{action} Contact Person '{full_name}' for {parent_doctype} {parent_name} from Xero",
             status="Success",
@@ -995,28 +1166,32 @@ def sync_contact_person_to_erpnext(person_data, parent_doctype, parent_name, xer
             erpnext_doc_name=contact.name,
             xero_entity_id=xero_contact_id,
             xero_entity_type="Contact",
-            direction="Xero to ERPNext"
+            direction="Xero to ERPNext",
         )
-        
+
     except Exception as e:
         # Log error for this specific contact person
-        full_name = f"{first_name or ''} {last_name or ''}".strip() or email or "Unknown"
+        full_name = (
+            f"{first_name or ''} {last_name or ''}".strip() or email or "Unknown"
+        )
         log_xero_error(
             message=f"Failed to sync Contact Person '{full_name}' for {parent_doctype} {parent_name}",
             erpnext_doc_type="Contact",
             xero_entity_id=xero_contact_id,
             xero_entity_type="Contact",
             direction="Xero to ERPNext",
-            error_details=frappe.get_traceback()
+            error_details=frappe.get_traceback(),
         )
         # Don't re-raise - allow other contact persons to be processed
 
 
-def sync_xero_address_to_erpnext(address_data, parent_doctype, parent_name, xero_contact_id):
+def sync_xero_address_to_erpnext(
+    address_data, parent_doctype, parent_name, xero_contact_id
+):
     """
     Creates or updates an ERPNext Address from Xero Address data.
     Links the address to the parent Customer/Supplier via Dynamic Link.
-    
+
     Args:
         address_data: Dictionary containing Xero Address data
         parent_doctype: "Customer" or "Supplier"
@@ -1030,35 +1205,39 @@ def sync_xero_address_to_erpnext(address_data, parent_doctype, parent_name, xero
     region = address_data.get("Region")
     postal_code = address_data.get("PostalCode")
     country = address_data.get("Country")
-    
+
     # Skip if no meaningful address data
     if not address_line1 and not city and not postal_code:
         return
-    
+
     # Map Xero AddressType to ERPNext address_type
     # STREET → Billing, POBOX → Postal
     erpnext_address_type = "Billing" if address_type == "STREET" else "Postal"
-    
+
     # Try to find existing address
     # Strategy: Find by address_line1 + city linked to this customer/supplier
     address_name = None
     if address_line1 and city:
-        address_result = frappe.db.sql("""
+        address_result = frappe.db.sql(
+            """
             SELECT a.name
             FROM `tabAddress` a
             INNER JOIN `tabDynamic Link` dl ON dl.parent = a.name AND dl.parenttype = 'Address'
             WHERE a.address_line1 = %s AND a.city = %s
             AND dl.link_doctype = %s AND dl.link_name = %s
             LIMIT 1
-        """, (address_line1, city, parent_doctype, parent_name), as_dict=True)
+        """,
+            (address_line1, city, parent_doctype, parent_name),
+            as_dict=True,
+        )
         if address_result:
             address_name = address_result[0].name
-    
+
     # Prepare address data - only include fields with values
     address_data_dict = {
         "address_type": erpnext_address_type,
     }
-    
+
     if address_line1:
         address_data_dict["address_line1"] = address_line1
     if address_line2:
@@ -1071,51 +1250,52 @@ def sync_xero_address_to_erpnext(address_data, parent_doctype, parent_name, xero
         address_data_dict["pincode"] = postal_code
     if country:
         address_data_dict["country"] = country
-    
+
     # Set as primary address if it's a STREET/Billing address
     if address_type == "STREET":
         address_data_dict["is_primary_address"] = 1
-    
+
     try:
         if address_name:
             # Update existing address
             address = frappe.get_doc("Address", address_name)
             address.update(address_data_dict)
-            
+
             # Ensure link to parent exists
             link_exists = False
             for link in address.links:
-                if link.link_doctype == parent_doctype and link.link_name == parent_name:
+                if (
+                    link.link_doctype == parent_doctype
+                    and link.link_name == parent_name
+                ):
                     link_exists = True
                     break
-            
+
             if not link_exists:
-                address.append("links", {
-                    "link_doctype": parent_doctype,
-                    "link_name": parent_name
-                })
-            
+                address.append(
+                    "links", {"link_doctype": parent_doctype, "link_name": parent_name}
+                )
+
             address.save(ignore_permissions=True)
             action = "Updated"
         else:
             # Create new address
             address = frappe.new_doc("Address")
-            
+
             # Set address title
             address.address_title = f"{parent_name} - {erpnext_address_type}"
             address.update(address_data_dict)
-            
+
             # Link to parent Customer/Supplier
-            address.append("links", {
-                "link_doctype": parent_doctype,
-                "link_name": parent_name
-            })
-            
+            address.append(
+                "links", {"link_doctype": parent_doctype, "link_name": parent_name}
+            )
+
             address.insert(ignore_permissions=True)
             action = "Created"
-        
+
         frappe.db.commit()
-        
+
         # Log success
         address_summary = f"{address_line1 or ''}, {city or ''}".strip(", ")
         log_xero_error(
@@ -1125,9 +1305,9 @@ def sync_xero_address_to_erpnext(address_data, parent_doctype, parent_name, xero
             erpnext_doc_name=address.name,
             xero_entity_id=xero_contact_id,
             xero_entity_type="Contact",
-            direction="Xero to ERPNext"
+            direction="Xero to ERPNext",
         )
-        
+
     except Exception as e:
         # Log error for this specific address
         address_summary = f"{address_line1 or ''}, {city or ''}".strip(", ")
@@ -1137,6 +1317,6 @@ def sync_xero_address_to_erpnext(address_data, parent_doctype, parent_name, xero
             xero_entity_id=xero_contact_id,
             xero_entity_type="Contact",
             direction="Xero to ERPNext",
-            error_details=frappe.get_traceback()
+            error_details=frappe.get_traceback(),
         )
         # Don't re-raise - allow other addresses to be processed
