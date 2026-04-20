@@ -30,7 +30,7 @@ xero/
 │   ├── xero_journals.py        # Journal Entry
 │   ├── xero_accounts.py        # Chart of Accounts
 │   ├── xero_items.py           # Item/Product
-│   ├── xero_quotes.py          # Quotation
+│   ├── xero_quotes.py          # Quotations
 │   ├── xero_bank_transactions.py
 │   ├── xero_credit_notes.py
 │   ├── xero_purchase_orders.py
