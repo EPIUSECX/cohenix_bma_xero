@@ -73,6 +73,48 @@ def validate_invoice_reference(reference):
     return reference or None
 
 
+def find_xero_invoice_by_number(invoice_number, xero_invoice_type):
+    """
+    Self-healing lookup: query Xero for an existing invoice with the given
+    InvoiceNumber. Returns the Xero InvoiceID if a SINGLE unambiguous match
+    is found, otherwise None.
+
+    Per Xero API spec (Invoices.md):
+      - ACCREC (Sales) — InvoiceNumber is UNIQUE within an organisation.
+      - ACCPAY (Bills) — InvoiceNumber is NOT unique. Auto-matching is
+        therefore unsafe and disabled for bills.
+
+    Used to recover from the duplicate-invoice scenario: if ERPNext lost
+    its xero_invoice_id (e.g. a previous outbound POST succeeded on Xero
+    but the local DB write crashed before the ID was committed), a naive
+    re-sync would create a SECOND Xero invoice with the same InvoiceNumber.
+    This helper detects the existing invoice and returns its ID so the
+    caller can switch from CREATE to UPDATE semantics.
+    """
+    if not invoice_number or xero_invoice_type != "ACCREC":
+        return None
+
+    try:
+        # GET /Invoices/{InvoiceNumber} — Xero supports both InvoiceID and
+        # InvoiceNumber as path identifiers (per Invoices API doc).
+        response = xero_request(
+            "GET", f"Invoices/{invoice_number}"
+        )
+    except Exception:
+        # Network / 404 / parse error — treat as "not found" and let the
+        # normal create path proceed. Xero will reject genuine duplicates
+        # via its own validation, which is safer than blocking sync on a
+        # transient lookup failure.
+        return None
+
+    invoices = (response or {}).get("Invoices") or []
+    if len(invoices) == 1:
+        return invoices[0].get("InvoiceID")
+    # Either 0 (not found) or >1 (ambiguous — should not happen for
+    # ACCREC but be defensive). In both cases return None.
+    return None
+
+
 # --- Hash Functions for Change Detection ---
 
 
@@ -351,7 +393,46 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
         if reference:
             invoice_payload["Reference"] = reference
 
-        # If updating, include the Xero Invoice ID
+        # --- Self-healing lookup: recover lost xero_invoice_id ---
+        # If we have no stored xero_invoice_id, ask Xero whether an invoice
+        # with this InvoiceNumber already exists. If it does, attach the ID
+        # so this becomes an UPDATE rather than a CREATE — preventing
+        # duplicate Xero invoices when a previous outbound attempt
+        # succeeded on Xero's side but failed to commit the ID locally.
+        # Only safe for ACCREC (Sales) — ACCPAY InvoiceNumbers are not
+        # unique in Xero, so auto-matching could attach to the wrong bill.
+        if not xero_invoice_id and xero_invoice_type == "ACCREC":
+            recovered_id = find_xero_invoice_by_number(
+                invoice_payload["InvoiceNumber"], xero_invoice_type
+            )
+            if recovered_id:
+                xero_invoice_id = recovered_id
+                # Persist immediately so any subsequent retry sees it.
+                frappe.db.set_value(
+                    doc_type,
+                    doc_name,
+                    {"xero_invoice_id": recovered_id},
+                    update_modified=False,
+                )
+                frappe.db.commit()
+                log_xero_error(
+                    message=(
+                        f"Recovered Xero InvoiceID {recovered_id} for "
+                        f"{doc_type} {doc_name} via InvoiceNumber lookup. "
+                        f"Switching from CREATE to UPDATE to avoid "
+                        f"duplicating the invoice in Xero."
+                    ),
+                    status="Info",
+                    erpnext_doc_type=doc_type,
+                    erpnext_doc_name=doc_name,
+                    xero_entity_id=recovered_id,
+                    xero_entity_type="Invoice",
+                    direction="ERPNext to Xero",
+                    category="Duplicate Entity",
+                )
+
+        # If updating (either originally synced, or just recovered above),
+        # include the Xero Invoice ID so Xero performs UPDATE not CREATE.
         if xero_invoice_id:
             invoice_payload["InvoiceID"] = xero_invoice_id
 

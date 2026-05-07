@@ -160,9 +160,124 @@ def sync_payment_to_xero(doc_name, doc_type="Payment Entry", **kwargs):
             )
 
 
+def _load_payment_idempotency_map(doc_type, doc_name):
+    """
+    Read xero_payment_data and decode it into a dict
+    {invoice_id: payment_id} for fast idempotency lookups.
+
+    Tolerates legacy storage formats:
+      - new format: JSON object {"<invoice_id>": "<payment_id>", ...}
+      - legacy v2:  JSON list   [{"invoice_id": "...", "payment_id": "..."}]
+      - legacy v1:  raw string  "<single_payment_id>" (no invoice mapping)
+
+    Legacy formats produce a best-effort map. The legacy v1 string cannot be
+    mapped back to an invoice, so it is preserved on xero_payment_id but not
+    used to short-circuit re-sync.
+    """
+    raw = frappe.db.get_value(doc_type, doc_name, "xero_payment_data")
+    if not raw:
+        return {}
+    try:
+        import json
+
+        decoded = json.loads(raw)
+    except (ValueError, TypeError):
+        # legacy v1: bare string PaymentID, no invoice mapping
+        return {}
+
+    if isinstance(decoded, dict):
+        return {str(k): str(v) for k, v in decoded.items() if k and v}
+    if isinstance(decoded, list):
+        # legacy v2: list of {invoice_id, payment_id, amount}
+        out = {}
+        for entry in decoded:
+            if isinstance(entry, dict):
+                inv = entry.get("invoice_id")
+                pay = entry.get("payment_id")
+                if inv and pay:
+                    out[str(inv)] = str(pay)
+        return out
+    return {}
+
+
+def _save_payment_idempotency_map(doc_type, doc_name, idemp_map):
+    """
+    Persist the {invoice_id: payment_id} map to xero_payment_data and mirror
+    the first payment_id onto xero_payment_id for backward-compatible
+    dashboard display. Commits immediately so a retry sees the map.
+    """
+    import json
+
+    primary_payment_id = next(iter(idemp_map.values())) if idemp_map else None
+    frappe.db.set_value(
+        doc_type,
+        doc_name,
+        {
+            "xero_payment_id": primary_payment_id,
+            "xero_payment_data": json.dumps(idemp_map) if idemp_map else None,
+            "xero_sync_status": "Synced" if idemp_map else "Pending",
+            "xero_last_sync": now(),
+        },
+        update_modified=False,
+    )
+    frappe.db.commit()
+
+
+def _xero_payment_exists_for_invoice(xero_invoice_id):
+    """
+    Defensive check: query Xero directly to see if there is already an
+    AUTHORISED payment against this invoice. Used as a backstop when our
+    local idempotency map is empty (e.g. the map was never written because
+    a previous attempt crashed between the Xero-side success and the local
+    DB commit).
+
+    Returns the existing PaymentID string if found, else None.
+
+    Per Xero API spec, payments can be filtered with
+    where=Invoice.InvoiceID=guid("...") AND Status="AUTHORISED".
+    """
+    if not xero_invoice_id:
+        return None
+    try:
+        params = {
+            "where": (
+                f'Invoice.InvoiceID=guid("{xero_invoice_id}") '
+                'AND Status="AUTHORISED"'
+            )
+        }
+        response = xero_request("GET", "Payments", params=params)
+        payments = (response or {}).get("Payments") or []
+        if payments:
+            # Return first AUTHORISED payment ID; multi-payment cases are
+            # rare and an existing payment is sufficient evidence of dedup.
+            return payments[0].get("PaymentID")
+    except Exception:
+        # Best-effort: if the lookup fails, we fall through and let the
+        # caller proceed with normal PUT. Xero will reject genuine
+        # duplicates with an outstanding-amount error, which is safer
+        # than blocking sync on a transient lookup failure.
+        return None
+    return None
+
+
 def sync_invoice_payments(doc, xero_bank_account_id, doc_type, doc_name):
-    """Handle payments against specific invoices."""
-    synced_payments = []
+    """
+    Handle payments against specific invoices, idempotently.
+
+    Strategy:
+      1. Load the {xero_invoice_id: xero_payment_id} idempotency map from
+         xero_payment_data. Any reference whose invoice already has a
+         payment ID in this map is skipped (no second PUT).
+      2. For references not in the map, defensively query Xero
+         (GET /Payments?where=Invoice.InvoiceID=...) before creating, so a
+         crash between Xero-side success and local DB commit on a previous
+         attempt does not produce a duplicate Xero payment.
+      3. Persist the map after EACH successful PUT, before processing the
+         next reference. This means a partial failure mid-loop leaves a
+         consistent map; the retry only re-attempts unsynced references.
+    """
+    idemp_map = _load_payment_idempotency_map(doc_type, doc_name)
+    initial_map_size = len(idemp_map)
 
     for reference in doc.references:
         if reference.allocated_amount <= 0:
@@ -171,21 +286,16 @@ def sync_invoice_payments(doc, xero_bank_account_id, doc_type, doc_name):
         invoice_doctype = reference.reference_doctype
         invoice_name = reference.reference_name
 
-        # Get Xero Invoice ID
-        if invoice_doctype == "Sales Invoice":
-            xero_invoice_id = frappe.db.get_value(
-                "Sales Invoice", invoice_name, "xero_invoice_id"
-            )
-        elif invoice_doctype == "Purchase Invoice":
-            xero_invoice_id = frappe.db.get_value(
-                "Purchase Invoice", invoice_name, "xero_invoice_id"
-            )
-        else:
+        if invoice_doctype not in ("Sales Invoice", "Purchase Invoice"):
             log_xero_error(
                 f"Unsupported invoice type for payment sync: {invoice_doctype}",
                 status="Info",
             )
             continue
+
+        xero_invoice_id = frappe.db.get_value(
+            invoice_doctype, invoice_name, "xero_invoice_id"
+        )
 
         if not xero_invoice_id:
             log_xero_error(
@@ -194,7 +304,48 @@ def sync_invoice_payments(doc, xero_bank_account_id, doc_type, doc_name):
             )
             continue
 
-        # Create payment payload
+        # --- Idempotency check (local map) ---
+        if xero_invoice_id in idemp_map:
+            log_xero_error(
+                message=(
+                    f"Payment for {invoice_doctype} {invoice_name} already "
+                    f"synced to Xero (PaymentID={idemp_map[xero_invoice_id]}). "
+                    f"Skipping duplicate PUT."
+                ),
+                status="Info",
+                erpnext_doc_type=doc_type,
+                erpnext_doc_name=doc_name,
+                xero_entity_id=idemp_map[xero_invoice_id],
+                xero_entity_type="Payment",
+                direction="ERPNext to Xero",
+                category="Duplicate Entity",
+            )
+            continue
+
+        # --- Idempotency check (Xero-side defensive lookup) ---
+        existing_payment_id = _xero_payment_exists_for_invoice(xero_invoice_id)
+        if existing_payment_id:
+            idemp_map[xero_invoice_id] = existing_payment_id
+            log_xero_error(
+                message=(
+                    f"Payment for {invoice_doctype} {invoice_name} already "
+                    f"exists in Xero (PaymentID={existing_payment_id}); "
+                    f"reattaching to ERPNext map without creating duplicate."
+                ),
+                status="Info",
+                erpnext_doc_type=doc_type,
+                erpnext_doc_name=doc_name,
+                xero_entity_id=existing_payment_id,
+                xero_entity_type="Payment",
+                direction="ERPNext to Xero",
+                category="Duplicate Entity",
+            )
+            # Persist immediately so any subsequent failure does not lose
+            # the discovered link.
+            _save_payment_idempotency_map(doc_type, doc_name, idemp_map)
+            continue
+
+        # --- Build payload & create payment ---
         payment_payload = {
             "Invoice": {"InvoiceID": xero_invoice_id},
             "Account": {"AccountID": xero_bank_account_id},
@@ -203,73 +354,60 @@ def sync_invoice_payments(doc, xero_bank_account_id, doc_type, doc_name):
             "Reference": f"{doc.reference_no or doc.name} - {invoice_name}",
         }
 
-        # Make API call
         response = xero_request("PUT", "Payments", data={"Payments": [payment_payload]})
 
-        if response and response.get("Payments"):
-            updated_payment = response["Payments"][0]
-            new_xero_payment_id = updated_payment.get("PaymentID")
-
-            if new_xero_payment_id:
-                synced_payments.append(
-                    {
-                        "payment_id": new_xero_payment_id,
-                        "invoice_id": xero_invoice_id,
-                        "amount": flt(reference.allocated_amount),
-                    }
-                )
-
-                log_xero_error(
-                    message=f"Successfully synced payment for invoice {invoice_name} from {doc_type} {doc_name}",
-                    status="Success",
-                    erpnext_doc_type=doc_type,
-                    erpnext_doc_name=doc_name,
-                    xero_entity_id=new_xero_payment_id,
-                    xero_entity_type="Payment",
-                    direction="ERPNext to Xero",
-                )
-            else:
-                raise Exception(
-                    f"Xero API response did not contain a PaymentID for invoice {invoice_name}"
-                )
-        else:
+        if not response or not response.get("Payments"):
             raise Exception(
                 f"Invalid response received from Xero Payments API for invoice {invoice_name}"
             )
 
-    # Update ERPNext document with sync results
-    if synced_payments:
-        primary_payment_id = synced_payments[0]["payment_id"]
-        all_payment_data = (
-            frappe.as_json(synced_payments)
-            if len(synced_payments) > 1
-            else primary_payment_id
-        )
+        new_xero_payment_id = response["Payments"][0].get("PaymentID")
+        if not new_xero_payment_id:
+            raise Exception(
+                f"Xero API response did not contain a PaymentID for invoice {invoice_name}"
+            )
 
-        frappe.db.set_value(
-            doc_type,
-            doc_name,
-            {
-                "xero_payment_id": primary_payment_id,
-                "xero_payment_data": all_payment_data,
-                "xero_sync_status": "Synced",
-                "xero_last_sync": now(),
-            },
-            update_modified=False,
-        )
-        frappe.db.commit()
+        # --- Persist BEFORE moving to the next reference ---
+        # If the next reference fails, this commit ensures the retry will
+        # see the just-created payment in the idempotency map and skip it.
+        idemp_map[xero_invoice_id] = new_xero_payment_id
+        _save_payment_idempotency_map(doc_type, doc_name, idemp_map)
 
         log_xero_error(
-            message=f"Successfully synced {doc_type} {doc_name} to Xero. Created {len(synced_payments)} payment(s).",
+            message=f"Successfully synced payment for invoice {invoice_name} from {doc_type} {doc_name}",
             status="Success",
             erpnext_doc_type=doc_type,
             erpnext_doc_name=doc_name,
-            xero_entity_id=primary_payment_id,
+            xero_entity_id=new_xero_payment_id,
             xero_entity_type="Payment",
             direction="ERPNext to Xero",
         )
-    else:
-        raise Exception("No payments were successfully created in Xero.")
+
+    # --- Final summary log ---
+    if not idemp_map:
+        # Map is empty — nothing was synced, ever. Treat as failure to
+        # surface on dashboard, but only if the doc had references that
+        # SHOULD have synced. (Refs with allocated_amount<=0 don't count.)
+        eligible_refs = [r for r in doc.references if r.allocated_amount > 0]
+        if eligible_refs:
+            raise Exception("No payments were successfully created in Xero.")
+        return
+
+    new_count = len(idemp_map) - initial_map_size
+    log_xero_error(
+        message=(
+            f"Payment sync complete for {doc_type} {doc_name}: "
+            f"{len(idemp_map)} payment(s) tracked "
+            f"({new_count} new this run, "
+            f"{initial_map_size} pre-existing/idempotent)."
+        ),
+        status="Success",
+        erpnext_doc_type=doc_type,
+        erpnext_doc_name=doc_name,
+        xero_entity_id=next(iter(idemp_map.values())),
+        xero_entity_type="Payment",
+        direction="ERPNext to Xero",
+    )
 
 
 def sync_standalone_payment(
@@ -428,13 +566,57 @@ def process_xero_payment(xero_payment_data, settings):
         )
         return
 
-    # Check if ERPNext payment already exists
+    # --- Primary dedup: match by xero_payment_id ---
     erpnext_doc_name = frappe.db.get_value(
         "Payment Entry", {"xero_payment_id": xero_payment_id}, "name"
     )
 
     # Get invoice information
     xero_invoice_id = xero_payment_data.get("Invoice", {}).get("InvoiceID")
+
+    # --- Secondary dedup: scan xero_payment_data for this PaymentID ---
+    # When ERPNext synced this PE outbound, the payment_id was stored inside
+    # the JSON map on xero_payment_data, NOT on xero_payment_id (which only
+    # holds the FIRST payment for multi-reference PEs). Without this check,
+    # a multi-reference PE round-tripping through inbound creates duplicate
+    # ERPNext Payment Entries for every reference past the first.
+    if not erpnext_doc_name and xero_payment_id:
+        candidates = frappe.db.sql(
+            """
+            SELECT name FROM `tabPayment Entry`
+            WHERE xero_payment_data LIKE %(needle)s
+            LIMIT 1
+            """,
+            {"needle": f"%{xero_payment_id}%"},
+            as_dict=True,
+        )
+        if candidates:
+            erpnext_doc_name = candidates[0]["name"]
+            # Backfill xero_payment_id for faster future lookups
+            frappe.db.set_value(
+                "Payment Entry",
+                erpnext_doc_name,
+                "xero_payment_id",
+                xero_payment_id,
+                update_modified=False,
+            )
+            frappe.db.commit()
+            log_xero_error(
+                message=(
+                    f"Reattached Xero Payment {xero_payment_id} to existing "
+                    f"Payment Entry {erpnext_doc_name} via xero_payment_data "
+                    f"map (avoided duplicate)."
+                ),
+                status="Info",
+                erpnext_doc_type="Payment Entry",
+                erpnext_doc_name=erpnext_doc_name,
+                xero_entity_id=xero_payment_id,
+                xero_entity_type="Payment",
+                direction="Xero to ERPNext",
+                category="Duplicate Entity",
+            )
+            return  # Already linked, no further work needed
+
     if not xero_invoice_id:
         log_xero_error(
             message=f"Cannot sync payment from Xero: Payment has no linked invoice",
@@ -569,6 +751,66 @@ def process_xero_payment(xero_payment_data, settings):
                 }
             ],
         }
+
+        # --- Tertiary dedup: invoice + amount match ---
+        # If we still have no ERPNext PE matched (neither by xero_payment_id
+        # nor by xero_payment_data scan), try to find a submitted PE that is
+        # already allocated to this invoice for this exact amount. This
+        # catches the case where ERPNext synced the payment outbound, Xero
+        # accepted it, but the local DB write failed before storing the
+        # PaymentID. Without this, inbound creates a duplicate ERPNext PE.
+        if not erpnext_doc_name:
+            candidates = frappe.db.sql(
+                """
+                SELECT pe.name
+                FROM `tabPayment Entry` pe
+                INNER JOIN `tabPayment Entry Reference` per
+                    ON per.parent = pe.name
+                WHERE pe.docstatus = 1
+                  AND per.reference_doctype = %(inv_dt)s
+                  AND per.reference_name = %(inv_name)s
+                  AND ABS(per.allocated_amount - %(amt)s) < 0.01
+                  AND (pe.xero_payment_id IS NULL OR pe.xero_payment_id = '')
+                LIMIT 1
+                """,
+                {
+                    "inv_dt": invoice_doctype,
+                    "inv_name": invoice_name,
+                    "amt": payment_amount,
+                },
+                as_dict=True,
+            )
+            if candidates:
+                matched = candidates[0]["name"]
+                # Attach Xero IDs to the existing PE without modifying it
+                # (it is submitted; only set_value on tracking fields).
+                frappe.db.set_value(
+                    "Payment Entry",
+                    matched,
+                    {
+                        "xero_payment_id": xero_payment_id,
+                        "xero_sync_status": "Synced",
+                        "xero_last_sync": now(),
+                    },
+                    update_modified=False,
+                )
+                frappe.db.commit()
+                log_xero_error(
+                    message=(
+                        f"Linked Xero Payment {xero_payment_id} to existing "
+                        f"submitted Payment Entry {matched} (matched on "
+                        f"{invoice_doctype} {invoice_name} + amount "
+                        f"{payment_amount}). Avoided creating duplicate."
+                    ),
+                    status="Info",
+                    erpnext_doc_type="Payment Entry",
+                    erpnext_doc_name=matched,
+                    xero_entity_id=xero_payment_id,
+                    xero_entity_type="Payment",
+                    direction="Xero to ERPNext",
+                    category="Duplicate Entity",
+                )
+                return
 
         if erpnext_doc_name:
             # Check if existing payment is submitted
