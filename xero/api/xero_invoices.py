@@ -966,6 +966,12 @@ def parse_xero_date(xero_date_string):
     """
     Parse Xero date format /Date(milliseconds+timezone)/ to Python date
     Example: /Date(1769126400000+0000)/ → 2026-01-23
+
+    NOTE: Xero always serialises invoice Date / DueDate as midnight UTC
+    milliseconds. We must parse as UTC, NOT local server time, otherwise
+    servers west of UTC (e.g. America/*) shift the date back by one day,
+    which can spuriously make due_date < posting_date and break ERPNext
+    validation.
     """
     if not xero_date_string:
         return None
@@ -983,10 +989,10 @@ def parse_xero_date(xero_date_string):
     match = re.search(r"/Date\((\d+)", xero_date_string)
     if match:
         milliseconds = int(match.group(1))
-        # Convert milliseconds to seconds and create datetime
-        from datetime import datetime
+        # Convert milliseconds to seconds and create datetime IN UTC
+        from datetime import datetime, timezone
 
-        dt = datetime.fromtimestamp(milliseconds / 1000.0)
+        dt = datetime.fromtimestamp(milliseconds / 1000.0, tz=timezone.utc)
         return dt.date()
 
     return None
@@ -1201,14 +1207,62 @@ def process_xero_invoice(xero_invoice_data, settings):
             company = frappe.get_all("Company", limit=1, pluck="name")[0]
 
         # Map header fields
+        posting_date = parse_xero_date(xero_invoice_data.get("Date"))
+        due_date = parse_xero_date(xero_invoice_data.get("DueDate"))
+
+        # Fall back to posting_date if Xero did not supply a DueDate
+        if not due_date:
+            due_date = posting_date
+            if posting_date:
+                log_xero_error(
+                    message=(
+                        f"Xero invoice {invoice_number} had no DueDate; "
+                        f"defaulting due_date to posting_date {posting_date}."
+                    ),
+                    status="Warning",
+                    xero_entity_id=xero_invoice_id,
+                    xero_entity_type="Invoice",
+                    erpnext_doc_type=erpnext_doctype,
+                    direction="Xero to ERPNext",
+                    category="Validation Errors",
+                )
+
+        # Clamp: ERPNext rejects due_date < posting_date. Some Xero invoices
+        # (back-dated, immediate-payment, imported) have DueDate before Date.
+        # Allow the sync to proceed by clamping due_date up to posting_date,
+        # and surface the discrepancy on the dashboard via Xero Log.
+        if due_date and posting_date and due_date < posting_date:
+            log_xero_error(
+                message=(
+                    f"Xero invoice {invoice_number} had DueDate {due_date} "
+                    f"before posting Date {posting_date}; clamping due_date "
+                    f"to posting_date so the invoice can sync."
+                ),
+                status="Warning",
+                xero_entity_id=xero_invoice_id,
+                xero_entity_type="Invoice",
+                erpnext_doc_type=erpnext_doctype,
+                direction="Xero to ERPNext",
+                category="Validation Errors",
+            )
+            due_date = posting_date
+
         erpnext_data = {
             "xero_invoice_id": xero_invoice_id,
             "xero_sync_status": "Synced",
             "company": company,
-            "posting_date": parse_xero_date(xero_invoice_data.get("Date")),
-            "due_date": parse_xero_date(xero_invoice_data.get("DueDate")),
+            "posting_date": posting_date,
+            "due_date": due_date,
             "currency": xero_invoice_data.get("CurrencyCode", "USD"),
             "conversion_rate": flt(xero_invoice_data.get("CurrencyRate", 1.0)),
+            # Trust Xero's Date / DueDate as the source of truth for inbound
+            # invoices. ignore_default_payment_terms_template=1 skips ERPNext's
+            # validate_due_date() entirely (see accounts_controller.py:660-662),
+            # and clearing payment_terms_template prevents set_payment_schedule()
+            # from generating template-driven rows that would conflict with the
+            # dates we just clamped above.
+            "ignore_default_payment_terms_template": 1,
+            "payment_terms_template": None,
         }
 
         # Add party-specific fields
@@ -1230,8 +1284,11 @@ def process_xero_invoice(xero_invoice_data, settings):
             erpnext_data["credit_to"] = frappe.get_cached_value(
                 "Company", company, "default_payable_account"
             )
-            # bill_date: map from Xero Date (the supplier's invoice date)
-            erpnext_data["bill_date"] = parse_xero_date(xero_invoice_data.get("Date"))
+            # bill_date: map from the already-parsed/clamped posting_date
+            # (NOT a fresh parse of Xero Date). For Purchase Invoices, ERPNext
+            # validates due_date against bill_date, not posting_date — so this
+            # must use the same value we just clamped above.
+            erpnext_data["bill_date"] = posting_date
 
         # Map reference fields
         reference = xero_invoice_data.get("Reference")
