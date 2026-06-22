@@ -3,189 +3,52 @@
 
 import frappe
 from frappe import _
-from frappe.utils import getdate, flt
+from frappe.utils import flt
 from ..utils.xero_client import xero_request, get_xero_settings
 from ..utils.logging import log_xero_error
-from ..utils.retry_handler import retry_with_exponential_backoff
-from .xero_invoices import get_xero_account_code
+from .xero_invoices import parse_xero_date
 
-# --- Bank Transaction Sync (ERPNext to Xero) ---
+# --- Bank Transaction Sync (ERPNext to Xero) — DISABLED BY DESIGN ---
+#
+# In ERPNext a Bank Transaction is a bank-statement / reconciliation artifact:
+# it only acquires a counterparty and a contra (GL) account through the voucher
+# it is reconciled against (a Payment Entry or Journal Entry, via the
+# `payment_entries` child table). Those vouchers already sync to Xero —
+# Payment Entry -> Xero Payment and Journal Entry -> Xero Manual Journal — and
+# each already moves the Xero bank balance. Pushing the Bank Transaction as an
+# additional Xero spend/receive would DOUBLE-COUNT every bank movement, so
+# outbound Bank Transaction sync is intentionally disabled. Inbound sync
+# (Xero -> ERPNext, below) is unaffected.
 
-@frappe.whitelist()
-def enqueue_sync_bank_transaction(doc, method):
-    """Enqueue background job to sync a Bank Transaction to Xero."""
-    settings = get_xero_settings()
-    if not settings.enable_xero_sync or not settings.get("sync_bank_transactions"):
-        return
 
-    frappe.enqueue(
-        "xero.api.xero_bank_transactions.sync_bank_transaction_to_xero",
-        queue="short",
-        timeout=600,
-        retry=1,
-        doc_name=doc.name,
-        doc_type=doc.doctype
+def enqueue_sync_bank_transaction(doc, method=None):
+    """No-op: outbound Bank Transaction sync is disabled by design.
+
+    Retained as a safe stub so legacy queued jobs (or any remaining reference)
+    cannot raise. See the module note above.
+    """
+    return
+
+
+def sync_bank_transaction_to_xero(doc_name=None, doc_type="Bank Transaction", **kwargs):
+    """No-op: outbound Bank Transaction sync is disabled by design.
+
+    Bank movements are represented in Xero via Payment Entry (-> Payment) and
+    Journal Entry (-> Manual Journal) sync; syncing Bank Transactions as well
+    would double-count. See the module note above.
+    """
+    log_xero_error(
+        message=(
+            f"Outbound Bank Transaction sync is disabled by design; skipping "
+            f"{doc_type} {doc_name}. Bank movements sync via Payment Entry and "
+            f"Journal Entry."
+        ),
+        status="Info",
+        erpnext_doc_type=doc_type,
+        erpnext_doc_name=doc_name,
+        category="System Monitoring",
     )
-    frappe.logger().info(f"Queued sync for {doc.doctype} {doc.name} to Xero.", "Xero Sync")
-
-
-@retry_with_exponential_backoff(max_retries=3, base_delay=2)
-def sync_bank_transaction_to_xero(doc_name, doc_type, **kwargs):
-    """
-    Syncs an ERPNext Bank Transaction to Xero Bank Transactions.
-    Uses PUT for create/update.
-    Ref: https://developer.xero.com/documentation/api/accounting/banktransactions
-    """
-    settings = get_xero_settings()
-    if not settings.enable_xero_sync:
-        return # Master switch disabled
-    
-    # Check directional toggle for outbound sync
-    if not settings.enable_sync_to_xero:
-        log_xero_error(
-            message=f"Sync to Xero is disabled. Skipping {doc_type} {doc_name} outbound sync.",
-            status="Info",
-            erpnext_doc_type=doc_type,
-            erpnext_doc_name=doc_name,
-            category="System Monitoring"
-        )
-        return
-    
-    if not settings.get("sync_bank_transactions"):
-        return # Bank transaction sync specifically disabled
-
-    try:
-        doc = frappe.get_doc(doc_type, doc_name)
-        xero_bank_transaction_id = doc.get("xero_bank_transaction_id")
-
-        # --- Basic Validation ---
-        if doc.docstatus != 1:
-            log_xero_error(f"Cannot sync non-submitted document: {doc_type} {doc_name}", status="Info")
-            return
-
-        # --- Get Xero Contact ID ---
-        contact_party_type = "Customer" if doc.party_type == "Customer" else "Supplier"
-        xero_contact_id = frappe.db.get_value(contact_party_type, doc.party, "xero_contact_id")
-        if not xero_contact_id:
-            # Attempt to sync the contact first
-            frappe.logger().info(f"Xero Contact ID not found for {doc.party_type} {doc.party}. Attempting to sync contact first.", "Xero Sync")
-            from .xero_contacts import sync_contact_to_xero
-            try:
-                sync_contact_to_xero(doc.party, contact_party_type)
-                xero_contact_id = frappe.db.get_value(contact_party_type, doc.party, "xero_contact_id")
-                if not xero_contact_id:
-                    raise Exception(f"Failed to sync and retrieve Xero Contact ID for {doc.party_type} {doc.party}.")
-            except Exception as contact_sync_e:
-                raise Exception(f"Prerequisite failed: Could not sync {doc.party_type} {doc.party} to Xero. Error: {contact_sync_e}")
-
-        # --- Get Xero Bank Account ID ---
-        xero_bank_account_id = frappe.db.get_value("Account", doc.account, "xero_account_id")
-        if not xero_bank_account_id:
-            raise Exception(f"Xero Account ID not found for Bank Account: {doc.account}. Please sync Chart of Accounts first.")
-
-        # --- Map ERPNext Bank Transaction Data to Xero Format ---
-        transaction_payload = {
-            "Type": "SPEND" if doc.withdrawal > 0 else "RECEIVE",
-            "Contact": {
-                "ContactID": xero_contact_id
-            },
-            "Date": getdate(doc.date).isoformat(),
-            "LineItems": [],
-            "BankAccount": {
-                "AccountID": xero_bank_account_id
-            },
-            "Reference": doc.reference_number or doc.name,
-            "IsReconciled": doc.clearance_date is not None,
-        }
-
-        # If updating, include the Xero Bank Transaction ID
-        if xero_bank_transaction_id:
-            transaction_payload["BankTransactionID"] = xero_bank_transaction_id
-
-        # --- Map Line Items ---
-        # For bank transactions, we typically have one line item
-        amount = doc.withdrawal if doc.withdrawal > 0 else doc.deposit
-        description = doc.description or f"Bank Transaction {doc.name}"
-        
-        # Get account code for the contra account (usually expense or income)
-        contra_account = doc.against_account if doc.against_account else doc.account
-        xero_account_code = get_xero_account_code(contra_account, settings)
-        if not xero_account_code:
-            raise Exception(f"Xero Account Code mapping not found for Account: {contra_account}")
-
-        line_item = {
-            "Description": description,
-            "Quantity": 1,
-            "UnitAmount": amount,
-            "AccountCode": xero_account_code,
-            "LineAmount": amount,
-            "TaxType": "NONE"  # Bank transactions typically don't have tax
-        }
-        transaction_payload["LineItems"].append(line_item)
-
-        # --- Make API Call (PUT for create/update) ---
-        response = xero_request("PUT", "BankTransactions", data={"BankTransactions": [transaction_payload]})
-
-        if response and response.get("BankTransactions"):
-            updated_transaction = response["BankTransactions"][0]
-            new_xero_transaction_id = updated_transaction.get("BankTransactionID")
-
-            # --- Update ERPNext Document ---
-            if new_xero_transaction_id:
-                frappe.db.set_value(doc_type, doc_name, {
-                    "xero_bank_transaction_id": new_xero_transaction_id,
-                    "xero_sync_status": "Synced"
-                }, update_modified=False)
-                frappe.db.commit()
-
-                log_xero_error(
-                    message=f"Successfully synced {doc_type} {doc_name} to Xero.",
-                    status="Success",
-                    erpnext_doc_type=doc_type,
-                    erpnext_doc_name=doc_name,
-                    xero_entity_id=new_xero_transaction_id,
-                    xero_entity_type="BankTransaction",
-                    direction="ERPNext to Xero"
-                )
-            else:
-                raise Exception("Xero API response did not contain a BankTransactionID.")
-        else:
-            raise Exception("Invalid response received from Xero BankTransactions API.")
-
-    except Exception as e:
-        from ..utils.logging import is_already_exists_error
-        error_traceback = frappe.get_traceback()
-        
-        if is_already_exists_error(str(e), error_traceback):
-            if doc_name and doc_type:
-                frappe.db.set_value(doc_type, doc_name, {"xero_sync_status": "Synced"}, update_modified=False)
-                frappe.db.commit()
-            
-            log_xero_error(
-                message=f"{doc_type} {doc_name} already exists in Xero. No action needed.",
-                status="Info",
-                category="Duplicate Entity",
-                erpnext_doc_type=doc_type,
-                erpnext_doc_name=doc_name,
-                direction="ERPNext to Xero"
-            )
-        else:
-            from ..utils.logging import format_sync_error_message
-            if doc_name and doc_type:
-                frappe.db.set_value(doc_type, doc_name, {"xero_sync_status": "Error"}, update_modified=False)
-                frappe.db.commit()
-
-            user_message = format_sync_error_message(
-                doc_type, doc_name, doc_name, "ERPNext to Xero", e
-            )
-
-            log_xero_error(
-                message=user_message,
-                erpnext_doc_type=doc_type,
-                erpnext_doc_name=doc_name,
-                error_details=error_traceback,
-                direction="ERPNext to Xero"
-            )
+    return
 
 
 # --- Bank Transaction Sync (Xero to ERPNext) ---
@@ -271,10 +134,17 @@ def process_xero_bank_transaction(xero_transaction_data, settings):
         log_xero_error(message=f"Skipping Xero bank transaction {xero_transaction_id}: No bank account information", status="Info")
         return
 
-    # Find corresponding ERPNext bank account
-    bank_account = frappe.db.get_value("Account", {"xero_account_id": xero_bank_account_id}, "name")
+    # Resolve the ERPNext **Bank Account** that mirrors this Xero bank account.
+    # The Xero AccountID is stored on the GL Account (Account.xero_account_id),
+    # but Bank Transaction.bank_account links to the Bank Account doctype — so
+    # map GL Account -> Bank Account.
+    gl_account = frappe.db.get_value("Account", {"xero_account_id": xero_bank_account_id}, "name")
+    if not gl_account:
+        log_xero_error(message=f"Skipping Xero bank transaction {xero_transaction_id}: no ERPNext GL account linked to Xero Account {xero_bank_account_id}. Sync Chart of Accounts / link the bank account first.", status="Info")
+        return
+    bank_account = frappe.db.get_value("Bank Account", {"account": gl_account}, "name")
     if not bank_account:
-        log_xero_error(message=f"Skipping Xero bank transaction {xero_transaction_id}: Bank account not found for Xero Account {xero_bank_account_id}", status="Info")
+        log_xero_error(message=f"Skipping Xero bank transaction {xero_transaction_id}: no ERPNext Bank Account is linked to GL account '{gl_account}'. Create one to mirror Xero bank transactions.", status="Info")
         return
 
     # Get contact information
@@ -302,8 +172,12 @@ def process_xero_bank_transaction(xero_transaction_data, settings):
 
         # Map Xero Data to ERPNext Fields
         erpnext_data = {
-            "date": getdate(xero_transaction_data.get("Date")),
-            "account": bank_account,
+            # Xero serialises dates as /Date(ms+offset)/ — use the shared parser,
+            # NOT getdate() (which raises on that format).
+            "date": parse_xero_date(xero_transaction_data.get("Date")),
+            # Bank Transaction's bank link field is `bank_account` (Link to Bank
+            # Account), NOT `account` — the latter is not a field on the doctype.
+            "bank_account": bank_account,
             "party_type": party_type,
             "party": party,
             "withdrawal": withdrawal,
@@ -407,9 +281,12 @@ def reconcile_bank_transactions(bank_account, from_date=None, to_date=None):
         # Sync bank transactions from Xero for this account
         sync_bank_transactions_from_xero(xero_account_id)
 
-        # Get ERPNext bank transactions for comparison
+        # Get ERPNext Bank Transactions for comparison. `bank_account` here is a
+        # GL Account name; Bank Transaction links to the Bank Account doctype, so
+        # translate GL Account -> Bank Account(s) before filtering.
+        bank_accounts = frappe.get_all("Bank Account", filters={"account": bank_account}, pluck="name")
         filters = {
-            "account": bank_account,
+            "bank_account": ["in", bank_accounts or [None]],
             "docstatus": 1
         }
         

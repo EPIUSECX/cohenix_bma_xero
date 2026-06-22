@@ -33,7 +33,7 @@ def enqueue_sync_quotation(doc, method):
 def sync_quotation_to_xero(doc_name, doc_type, **kwargs):
     """
     Syncs a submitted ERPNext Quotation to Xero as a Quote.
-    Uses PUT for create/update.
+    Uses POST for both create and update (POST with ID in payload updates; without ID creates).
     Ref: https://developer.xero.com/documentation/api/accounting/quotes
     """
     settings = get_xero_settings()
@@ -144,8 +144,10 @@ def sync_quotation_to_xero(doc_name, doc_type, **kwargs):
         # Remove None values from payload
         quote_payload = {k: v for k, v in quote_payload.items() if v is not None}
 
-        # --- Make API Call (PUT for create/update) ---
-        response = xero_request("PUT", "Quotes", data={"Quotes": [quote_payload]})
+        # --- Make API Call ---
+        # Xero API: POST handles both create (no ID) and update (ID in payload).
+        # PUT only creates new records and will not update existing ones.
+        response = xero_request("POST", "Quotes", data={"Quotes": [quote_payload]})
 
         if response and response.get("Quotes"):
             updated_quote = response["Quotes"][0]
@@ -279,6 +281,17 @@ def process_xero_quote(xero_quote_data, settings):
     # Check if ERPNext quotation already exists
     erpnext_doc_name = frappe.db.get_value("Quotation", {"xero_quote_id": xero_quote_id}, "name")
 
+    # Inbound is create-once: if already mirrored, skip (never overwrite local
+    # edits or fail on a submitted document).
+    if erpnext_doc_name:
+        log_xero_error(
+            message=f"Xero Quote {xero_quote_id} already mirrored as {erpnext_doc_name}; skipping (create-once).",
+            status="Info", category="Duplicate Entity",
+            erpnext_doc_type="Quotation", erpnext_doc_name=erpnext_doc_name,
+            xero_entity_id=xero_quote_id, xero_entity_type="Quote", direction="Xero to ERPNext",
+        )
+        return
+
     # Get contact information
     xero_contact_id = xero_quote_data.get("Contact", {}).get("ContactID")
     if not xero_contact_id:
@@ -292,12 +305,19 @@ def process_xero_quote(xero_quote_data, settings):
         return
 
     try:
-        # Map Xero Data to ERPNext Fields
+        from .xero_invoices import parse_xero_date
+        from .xero_items import get_or_create_item_for_xero_line
+
+        company = frappe.defaults.get_global_default("company") or frappe.get_all("Company", limit=1, pluck="name")[0]
+
+        # Map Xero Data to ERPNext Fields. Xero serialises dates as
+        # /Date(ms+offset)/ — use the shared parser, NOT getdate().
         erpnext_data = {
             "quotation_to": "Customer",
             "party_name": customer_name,
-            "transaction_date": getdate(xero_quote_data.get("Date")),
-            "valid_till": getdate(xero_quote_data.get("ExpiryDate")) if xero_quote_data.get("ExpiryDate") else None,
+            "company": company,
+            "transaction_date": parse_xero_date(xero_quote_data.get("Date")),
+            "valid_till": parse_xero_date(xero_quote_data.get("ExpiryDate")),
             "title": xero_quote_data.get("Title"),
             "terms": xero_quote_data.get("Summary"),
             "currency": xero_quote_data.get("CurrencyCode", "USD"),
@@ -305,31 +325,28 @@ def process_xero_quote(xero_quote_data, settings):
             "xero_sync_status": "Synced",
         }
 
-        if erpnext_doc_name:
-            # Update existing quotation
-            doc = frappe.get_doc("Quotation", erpnext_doc_name)
-            doc.update(erpnext_data)
-            doc.save(ignore_permissions=True)
-            log_message = f"Updated Quotation {erpnext_doc_name} from Xero Quote {xero_quote_id}"
-        else:
-            # Create new quotation
-            doc = frappe.new_doc("Quotation")
-            doc.update(erpnext_data)
-            
-            # Add line items if available
-            if xero_quote_data.get("LineItems"):
-                for line_item in xero_quote_data["LineItems"]:
-                    doc.append("items", {
-                        "item_name": line_item.get("Description", "Xero Item"),
-                        "description": line_item.get("Description"),
-                        "qty": line_item.get("Quantity", 1),
-                        "rate": line_item.get("UnitAmount", 0),
-                        "amount": line_item.get("LineAmount", 0),
-                    })
-            
-            doc.insert(ignore_permissions=True)
-            erpnext_doc_name = doc.name
-            log_message = f"Created Quotation {erpnext_doc_name} from Xero Quote {xero_quote_id}"
+        # Create the new Quotation as a Draft (existing docs were skipped above;
+        # inbound is create-once).
+        doc = frappe.new_doc("Quotation")
+        doc.update(erpnext_data)
+
+        # Add line items. Quotation rows REQUIRE item_code, so resolve/create an
+        # item for each Xero line.
+        for line_item in (xero_quote_data.get("LineItems") or []):
+            item_code = get_or_create_item_for_xero_line(
+                line_item.get("ItemCode"), line_item.get("Description"), settings, is_sales=True
+            )
+            doc.append("items", {
+                "item_code": item_code,
+                "item_name": (line_item.get("Description") or item_code)[:140],
+                "description": line_item.get("Description") or "Item from Xero",
+                "qty": frappe.utils.flt(line_item.get("Quantity", 1)) or 1,
+                "rate": frappe.utils.flt(line_item.get("UnitAmount", 0)),
+            })
+
+        doc.insert(ignore_permissions=True)
+        erpnext_doc_name = doc.name
+        log_message = f"Created Quotation {erpnext_doc_name} from Xero Quote {xero_quote_id}"
 
         frappe.db.commit()
         log_xero_error(

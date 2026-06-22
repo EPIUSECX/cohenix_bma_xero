@@ -1,4 +1,4 @@
-# Copyright (c) 2024, Your Name and contributors
+# Copyright (c) 2024, EPI-USE Global Services and contributors
 # For license information, please see license.txt
 
 import frappe
@@ -85,16 +85,17 @@ def handle_oauth_callback(code=None, state=None, error=None):
         response.raise_for_status()
         token_data = response.json()
 
-        # Get Tenant ID
-        tenant_id = get_tenant_id(token_data["access_token"])
+        # Get Tenant ID (returns first tenant by default; user can switch via select_tenant)
+        tenant_id, tenant_name = get_tenant_id(token_data["access_token"])
 
-        # Save tokens and tenant ID
+        # Save tokens and tenant
         settings.access_token = token_data["access_token"]
         settings.refresh_token = token_data["refresh_token"]
         settings.token_expiry = add_to_date(
             now_datetime(), seconds=token_data["expires_in"]
         )
         settings.tenant_id = tenant_id
+        settings.tenant_name = tenant_name
         settings.save(ignore_permissions=True)
         frappe.db.commit()
 
@@ -114,8 +115,8 @@ def handle_oauth_callback(code=None, state=None, error=None):
         frappe.throw("An error occurred during Xero authentication.")
 
 
-def get_tenant_id(access_token):
-    """Fetches the Tenant ID from Xero Connections API."""
+def get_available_connections(access_token):
+    """Returns all Xero tenant connections for the current token."""
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
@@ -123,15 +124,65 @@ def get_tenant_id(access_token):
     try:
         response = requests.get(XERO_CONNECTIONS_URL, headers=headers)
         response.raise_for_status()
-        connections = response.json()
-        if connections and len(connections) > 0:
-            # Assuming the first tenant is the one we want
-            return connections[0]["tenantId"]
-        else:
-            frappe.throw("No Xero tenants found for this connection.")
+        return response.json() or []
     except requests.exceptions.RequestException as e:
-        frappe.log_error(f"Xero Get Tenant ID Failed: {e}", "Xero API Error")
-        frappe.throw("Failed to retrieve Tenant ID from Xero.")
+        frappe.log_error(f"Xero Get Connections Failed: {e}", "Xero API Error")
+        frappe.throw("Failed to retrieve Xero tenant connections.")
+
+
+def get_tenant_id(access_token):
+    """
+    Fetches the Tenant ID from Xero Connections API.
+
+    If multiple tenants are connected, stores them all in cache for the UI
+    to offer a picker, and returns the first one as the default.
+    If settings already has a tenant_id set (e.g. user picked one earlier),
+    that value is preserved and this function is not called.
+    """
+    connections = get_available_connections(access_token)
+    if not connections:
+        frappe.throw("No Xero organisations found for this connection.")
+
+    # Cache the full list so the JS picker can show it
+    frappe.cache().set_value(
+        "xero_available_tenants",
+        [{"id": c["tenantId"], "name": c.get("tenantName", c["tenantId"])} for c in connections],
+        expires_in_sec=3600,
+    )
+
+    return connections[0]["tenantId"], connections[0].get("tenantName", "")
+
+
+@frappe.whitelist()
+def get_available_tenants():
+    """Returns the list of Xero tenants connected to the current OAuth token."""
+    tenants = frappe.cache().get_value("xero_available_tenants")
+    if tenants:
+        return tenants
+
+    # Re-fetch if cache is cold
+    settings = get_xero_settings()
+    if not settings.access_token:
+        return []
+    connections = get_available_connections(settings.access_token)
+    return [{"id": c["tenantId"], "name": c.get("tenantName", c["tenantId"])} for c in connections]
+
+
+@frappe.whitelist()
+def select_tenant(tenant_id):
+    """Allows the user to pick which Xero organisation to sync with."""
+    tenants = get_available_tenants()
+    match = next((t for t in tenants if t["id"] == tenant_id), None)
+    if not match:
+        frappe.throw(f"Tenant {tenant_id} not found in connected organisations.")
+
+    settings = get_xero_settings()
+    settings.tenant_id = match["id"]
+    settings.tenant_name = match["name"]
+    settings.save(ignore_permissions=True)
+    frappe.db.commit()
+    frappe.msgprint(f"Xero organisation changed to: {match['name']}")
+    return {"tenant_id": match["id"], "tenant_name": match["name"]}
 
 
 def refresh_access_token():
@@ -237,49 +288,64 @@ def refresh_access_token():
             time.sleep(wait_time)
 
 
+def get_system_manager_emails():
+    """
+    Returns email addresses of all enabled System Manager users.
+    Uses Has Role (the correct Frappe relationship table) consistently.
+    """
+    rows = frappe.db.sql(
+        """
+        SELECT u.email
+        FROM `tabUser` u
+        INNER JOIN `tabHas Role` hr ON hr.parent = u.name AND hr.parenttype = 'User'
+        WHERE hr.role = 'System Manager'
+          AND u.enabled = 1
+          AND u.email IS NOT NULL
+          AND u.email != ''
+        """,
+        as_dict=True,
+    )
+    return [r.email for r in rows if r.email]
+
+
 def notify_admins_token_failure(reason):
-    """Send notification to system managers about token refresh failure."""
+    """Send email and in-app notification to System Manager users when token refresh fails."""
     try:
-        # Get all users with System Manager role
-        system_managers = frappe.get_all(
-            "Has Role",
-            filters={"role": "System Manager", "parenttype": "User"},
-            fields=["parent"],
+        recipients = get_system_manager_emails()
+        if not recipients:
+            frappe.log_error("No System Manager users found to notify.", "Xero Notification")
+            return
+
+        frappe.sendmail(
+            recipients=recipients,
+            subject="Xero Integration: Token Refresh Failed",
+            message=f"""
+                <p>The Xero integration token refresh has failed.</p>
+                <p><strong>Reason:</strong> {reason}</p>
+                <p>Please log in to ERPNext and re-authenticate with Xero in the
+                <a href="/app/xero-settings">Xero Settings</a> page.</p>
+                <p>Until this is resolved, Xero synchronisation will not function.</p>
+            """,
+            delayed=False,
         )
 
-        if system_managers:
-            recipients = [sm.parent for sm in system_managers]
-
-            # Send email notification
-            frappe.sendmail(
-                recipients=recipients,
-                subject="Xero Integration: Token Refresh Failed",
-                message=f"""
-                    <p>The Xero integration token refresh has failed.</p>
-                    <p><strong>Reason:</strong> {reason}</p>
-                    <p>Please log in to ERPNext and re-authenticate with Xero in the Xero Settings page.</p>
-                    <p>Until this is resolved, Xero synchronization will not function.</p>
-                """,
-                delayed=False,
-            )
-
-            # Also create a notification in the system
-            for user in recipients[:5]:  # Limit to first 5 to avoid spam
-                try:
-                    notification = frappe.get_doc(
-                        {
-                            "doctype": "Notification Log",
-                            "subject": "Xero Token Refresh Failed",
-                            "for_user": user,
-                            "type": "Alert",
-                            "document_type": "Xero Settings",
-                            "document_name": "Xero Settings",
-                            "email_content": f"Xero token refresh failed: {reason}. Please re-authenticate.",
-                        }
-                    )
-                    notification.insert(ignore_permissions=True)
-                except Exception:
-                    pass  # Don't fail if notification creation fails
+        # In-app Notification Log (cap at 5 to avoid spam)
+        for email in recipients[:5]:
+            try:
+                user = frappe.db.get_value("User", {"email": email}, "name")
+                if not user:
+                    continue
+                frappe.get_doc({
+                    "doctype": "Notification Log",
+                    "subject": "Xero Token Refresh Failed",
+                    "for_user": user,
+                    "type": "Alert",
+                    "document_type": "Xero Settings",
+                    "document_name": "Xero Settings",
+                    "email_content": f"Xero token refresh failed: {reason}. Please re-authenticate.",
+                }).insert(ignore_permissions=True)
+            except Exception:
+                pass
 
     except Exception as e:
         frappe.log_error(
@@ -370,18 +436,6 @@ def xero_request(method, endpoint, data=None, params=None):
                 frappe.throw(f"Unsupported HTTP method: {method}")
 
             response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
-
-            # Track successful API call timing
-            processing_time = time.time() - start_time
-            if track_rate_limits:
-                from ..utils.logging import log_xero_error
-
-                log_xero_error(
-                    message=f"Successful API call: {method} {endpoint}",
-                    status="Info",
-                    category="System Monitoring",
-                    processing_time=processing_time,
-                )
 
             # Handle potential empty response body for certain successful calls (e.g., 204 No Content)
             if response.status_code == 204:

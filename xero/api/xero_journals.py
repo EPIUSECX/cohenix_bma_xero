@@ -71,14 +71,21 @@ def sync_journal_to_xero(doc_name, doc_type="Journal Entry", **kwargs):
 
         # --- Prepare Manual Journal Lines ---
         journal_lines = []
+        account_map = settings.get_account_map()
         for acc in doc.accounts:
-            # Get Xero Account Code
-            xero_account_code = frappe.db.get_value("Account", acc.account, "account_number")
+            # Get Xero Account Code from the configured account mapping (Xero
+            # Settings → account_mapping). Fall back to the ERPNext account
+            # number only if it happens to match a Xero code and no explicit
+            # mapping exists. NOTE: the Account doctype has no
+            # `xero_account_code` column — the mapping lives on Xero Settings.
+            xero_account_code = account_map.get(acc.account) or frappe.db.get_value(
+                "Account", acc.account, "account_number"
+            )
             if not xero_account_code:
-                # Try to get from account name mapping
-                xero_account_code = frappe.db.get_value("Account", acc.account, "xero_account_code")
-                if not xero_account_code:
-                    raise Exception(f"Xero Account Code not found for ERPNext Account: {acc.account}. Please set 'account_number' or 'xero_account_code' field.")
+                raise Exception(
+                    f"Xero Account Code mapping not found in Xero Settings for ERPNext Account: {acc.account}. "
+                    f"Add it under Xero Settings → Mappings."
+                )
 
             # Calculate line amount (Xero uses positive for debit, negative for credit)
             line_amount = flt(acc.debit_in_account_currency) - flt(acc.credit_in_account_currency)
@@ -86,9 +93,14 @@ def sync_journal_to_xero(doc_name, doc_type="Journal Entry", **kwargs):
             if line_amount == 0:
                 continue  # Skip zero amount lines
 
-            # Get tracking categories if available
+            # Get tracking categories if available.
+            # These rely on optional custom fields (xero_tracking_category_id /
+            # xero_tracking_option_id) on Cost Center / Project. Those fields are
+            # NOT part of the app's default install, so guard every lookup with
+            # has_column — otherwise the query raises (1054 Unknown column) and
+            # crashes the whole journal sync.
             tracking = []
-            if acc.cost_center:
+            if acc.cost_center and frappe.db.has_column("Cost Center", "xero_tracking_category_id"):
                 cost_center_tracking_id = frappe.db.get_value("Cost Center", acc.cost_center, "xero_tracking_category_id")
                 cost_center_tracking_option = frappe.db.get_value("Cost Center", acc.cost_center, "xero_tracking_option_id")
                 if cost_center_tracking_id and cost_center_tracking_option:
@@ -97,7 +109,7 @@ def sync_journal_to_xero(doc_name, doc_type="Journal Entry", **kwargs):
                         "TrackingOptionID": cost_center_tracking_option
                     })
 
-            if acc.project:
+            if acc.project and frappe.db.has_column("Project", "xero_tracking_category_id"):
                 project_tracking_id = frappe.db.get_value("Project", acc.project, "xero_tracking_category_id")
                 project_tracking_option = frappe.db.get_value("Project", acc.project, "xero_tracking_option_id")
                 if project_tracking_id and project_tracking_option:
@@ -126,7 +138,10 @@ def sync_journal_to_xero(doc_name, doc_type="Journal Entry", **kwargs):
         journal_payload = {
             "Date": getdate(doc.posting_date).isoformat(),
             "Narration": doc.user_remark or doc.title or f"Journal Entry {doc.name}",
-            "ManualJournalLines": journal_lines,
+            # Xero's Manual Journal element names the lines array "JournalLines"
+            # (NOT "ManualJournalLines"). Using the wrong key makes Xero silently
+            # ignore all lines and reject with "must contain at least 2 lines".
+            "JournalLines": journal_lines,
             "Status": "POSTED",  # ERPNext submitted = Xero posted
             "LineAmountTypes": "INCLUSIVE",
             "ShowOnCashBasisReports": True
@@ -136,8 +151,10 @@ def sync_journal_to_xero(doc_name, doc_type="Journal Entry", **kwargs):
         if xero_journal_id:
             journal_payload["ManualJournalID"] = xero_journal_id
 
-        # --- Make API Call (PUT for create/update) ---
-        response = xero_request("PUT", "ManualJournals", data={"ManualJournals": [journal_payload]})
+        # --- Make API Call ---
+        # Xero API: POST handles both create (no ID) and update (ID in payload).
+        # PUT only creates new records and will not update existing ones.
+        response = xero_request("POST", "ManualJournals", data={"ManualJournals": [journal_payload]})
 
         if response and response.get("ManualJournals"):
             updated_journal = response["ManualJournals"][0]
@@ -349,9 +366,22 @@ def process_xero_manual_journal(xero_journal_data, settings):
     # Check if ERPNext journal already exists
     erpnext_doc_name = frappe.db.get_value("Journal Entry", {"xero_manual_journal_id": xero_journal_id}, "name")
 
+    # Inbound is create-once: if this Xero manual journal is already mirrored in
+    # ERPNext, skip it — never overwrite local edits or fail on a submitted doc.
+    if erpnext_doc_name:
+        log_xero_error(
+            message=f"Xero Manual Journal {xero_journal_id} already mirrored as {erpnext_doc_name}; skipping (create-once).",
+            status="Info", category="Duplicate Entity",
+            erpnext_doc_type="Journal Entry", erpnext_doc_name=erpnext_doc_name,
+            xero_entity_id=xero_journal_id, xero_entity_type="ManualJournal", direction="Xero to ERPNext",
+        )
+        return
+
     try:
-        # Get journal lines
-        journal_lines = xero_journal_data.get("ManualJournalLines", [])
+        from .xero_invoices import parse_xero_date, get_erpnext_account_from_xero_code
+
+        # Get journal lines — Xero returns them under "JournalLines"
+        journal_lines = xero_journal_data.get("JournalLines", [])
         if not journal_lines:
             log_xero_error(message=f"Skipping Xero manual journal {xero_journal_id}: No journal lines", status="Info")
             return
@@ -363,11 +393,13 @@ def process_xero_manual_journal(xero_journal_data, settings):
             if not account_code:
                 continue
 
-            # Find corresponding ERPNext account
-            account = frappe.db.get_value("Account", {"account_number": account_code}, "name")
-            if not account:
-                account = frappe.db.get_value("Account", {"xero_account_code": account_code}, "name")
-            
+            # Find corresponding ERPNext account: prefer the configured account
+            # mapping (Xero code -> ERPNext account), then fall back to matching
+            # the ERPNext account_number. NOTE: the Account doctype has no
+            # `xero_account_code` column — the mapping lives on Xero Settings.
+            account = get_erpnext_account_from_xero_code(account_code, settings) or \
+                frappe.db.get_value("Account", {"account_number": account_code}, "name")
+
             if not account:
                 log_xero_error(message=f"Account not found for Xero Account Code {account_code} in manual journal {xero_journal_id}", status="Info")
                 continue
@@ -391,21 +423,24 @@ def process_xero_manual_journal(xero_journal_data, settings):
                 tracking_category_id = track.get("TrackingCategoryID")
                 tracking_option_id = track.get("TrackingOptionID")
                 
-                # Try to find cost center
-                cost_center = frappe.db.get_value("Cost Center", {
-                    "xero_tracking_category_id": tracking_category_id,
-                    "xero_tracking_option_id": tracking_option_id
-                }, "name")
-                
+                # Tracking -> Cost Center / Project mapping relies on optional
+                # custom fields (xero_tracking_*) that are not part of the default
+                # install; guard every lookup with has_column to avoid raising
+                # 1054 Unknown column and crashing the sync.
+                cost_center = None
+                if frappe.db.has_column("Cost Center", "xero_tracking_category_id"):
+                    cost_center = frappe.db.get_value("Cost Center", {
+                        "xero_tracking_category_id": tracking_category_id,
+                        "xero_tracking_option_id": tracking_option_id
+                    }, "name")
+
                 if cost_center:
                     account_entry["cost_center"] = cost_center
-                else:
-                    # Try to find project
+                elif frappe.db.has_column("Project", "xero_tracking_category_id"):
                     project = frappe.db.get_value("Project", {
                         "xero_tracking_category_id": tracking_category_id,
                         "xero_tracking_option_id": tracking_option_id
                     }, "name")
-                    
                     if project:
                         account_entry["project"] = project
 
@@ -415,28 +450,26 @@ def process_xero_manual_journal(xero_journal_data, settings):
             log_xero_error(message=f"No valid accounts found for Xero manual journal {xero_journal_id}", status="Info")
             return
 
+        company = frappe.defaults.get_global_default("company") or frappe.get_all("Company", limit=1, pluck="name")[0]
         erpnext_data = {
-            "posting_date": getdate(xero_journal_data.get("Date")),
-            "title": xero_journal_data.get("Narration", f"Manual Journal from Xero {xero_journal_id}"),
+            "company": company,
+            "voucher_type": "Journal Entry",
+            # Xero serialises dates as /Date(ms+offset)/ — use the shared parser.
+            "posting_date": parse_xero_date(xero_journal_data.get("Date")),
+            "title": xero_journal_data.get("Narration") or f"Manual Journal from Xero {xero_journal_id}",
             "user_remark": xero_journal_data.get("Narration"),
             "accounts": accounts,
             "xero_manual_journal_id": xero_journal_id,
             "xero_sync_status": "Synced",
         }
 
-        if erpnext_doc_name:
-            # Update existing journal
-            doc = frappe.get_doc("Journal Entry", erpnext_doc_name)
-            doc.update(erpnext_data)
-            doc.save(ignore_permissions=True)
-            log_message = f"Updated Journal Entry {erpnext_doc_name} from Xero Manual Journal {xero_journal_id}"
-        else:
-            # Create new journal
-            doc = frappe.new_doc("Journal Entry")
-            doc.update(erpnext_data)
-            doc.insert(ignore_permissions=True)
-            erpnext_doc_name = doc.name
-            log_message = f"Created Journal Entry {erpnext_doc_name} from Xero Manual Journal {xero_journal_id}"
+        # Create the new Journal Entry as a Draft (existing docs were skipped
+        # above; inbound is create-once).
+        doc = frappe.new_doc("Journal Entry")
+        doc.update(erpnext_data)
+        doc.insert(ignore_permissions=True)
+        erpnext_doc_name = doc.name
+        log_message = f"Created Journal Entry {erpnext_doc_name} from Xero Manual Journal {xero_journal_id}"
 
         frappe.db.commit()
         log_xero_error(

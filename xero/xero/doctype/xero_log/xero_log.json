@@ -41,7 +41,7 @@
    "fieldname": "category",
    "fieldtype": "Select",
    "label": "Category",
-   "options": "\nConnection Issues\nValidation Errors\nAuthentication Issues\nRate Limiting\nSystem Monitoring\nMapping Errors\nOther Errors",
+   "options": "\nConnection Issues\nValidation Errors\nAuthentication Issues\nRate Limiting\nSystem Monitoring\nMapping Errors\nDuplicate Entity\nOther Errors",
    "description": "Classification of the log entry for easier filtering and analysis"
   },
   {

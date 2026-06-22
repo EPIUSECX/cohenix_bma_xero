@@ -55,10 +55,33 @@ def sync_all_enabled():
 
             sync_credit_notes_from_xero()
 
-        # NOTE: Non-LITE entities are forced OFF by xero_settings.py validate().
-        # Their toggles (sync_chart_of_accounts, sync_journal_entries,
-        # sync_quotes, sync_bank_transactions, sync_financial_reports) are always 0.
-        # No code needed here — they simply never trigger.
+        # Extended inbound entities (enabled per client via settings).
+        # Each function also re-checks enable_sync_from_xero + its own toggle.
+        if settings.get("sync_chart_of_accounts"):
+            from .api.xero_accounts import sync_accounts_from_xero
+            sync_accounts_from_xero()
+
+        # Manual Journals -> Journal Entries (inbound)
+        if settings.get("sync_journal_entries"):
+            from .api.xero_journals import sync_manual_journals_from_xero
+            sync_manual_journals_from_xero()
+
+        # Purchase Orders (inbound)
+        if settings.get("sync_purchase_orders"):
+            from .api.xero_purchase_orders import sync_purchase_orders_from_xero
+            sync_purchase_orders_from_xero()
+
+        # Quotes -> Quotations (inbound)
+        if settings.get("sync_quotes"):
+            from .api.xero_quotes import sync_quotes_from_xero
+            sync_quotes_from_xero()
+
+        if settings.get("sync_financial_reports"):
+            from .api.xero_reports import sync_financial_reports_from_xero
+            try:
+                sync_financial_reports_from_xero()
+            except AttributeError:
+                pass  # Function may not exist in all versions
 
         log_xero_error(
             message="Daily sync task completed successfully.", status="Success"
@@ -201,16 +224,12 @@ def monitor_sync_health():
         if (
             failed_syncs and failed_syncs[0].count > 10
         ):  # Alert if more than 10 failures in an hour
-            # Send notification to system managers
-            system_managers = frappe.get_all(
-                "User",
-                filters={"role_profile_name": "System Manager", "enabled": 1},
-                fields=["email"],
-            )
+            from .utils.xero_client import get_system_manager_emails
+            recipients = get_system_manager_emails()
 
-            if system_managers:
+            if recipients:
                 frappe.sendmail(
-                    recipients=[user.email for user in system_managers],
+                    recipients=recipients,
                     subject="Xero Integration: High Error Rate Detected",
                     message=f"There have been {failed_syncs[0].count} Xero sync errors in the last hour. Please check the Xero Log for details.",
                 )
@@ -308,7 +327,54 @@ def sync_pending_documents():
                     doc_type="Payment Entry",
                 )
 
-        # NOTE: Non-LITE entities (Journal Entry, etc.) are no longer retried here.
+        # Sync pending Journal Entries (outbound)
+        if settings.get("sync_journal_entries"):
+            pending_journals = frappe.get_all(
+                "Journal Entry",
+                filters={"docstatus": 1, "xero_sync_status": ["in", ["Pending", "Error"]]},
+                fields=["name"],
+            )
+            for je in pending_journals:
+                frappe.enqueue(
+                    "xero.api.xero_journals.sync_journal_to_xero",
+                    queue="short",
+                    doc_name=je.name,
+                    doc_type="Journal Entry",
+                )
+
+        # Bank Transactions are intentionally NOT re-queued for outbound sync —
+        # outbound BT sync is disabled by design to avoid double-counting bank
+        # movements that already sync via Payment Entry / Journal Entry.
+
+        # Sync pending Purchase Orders (outbound)
+        if settings.get("sync_purchase_orders"):
+            pending_pos = frappe.get_all(
+                "Purchase Order",
+                filters={"docstatus": 1, "xero_sync_status": ["in", ["Pending", "Error"]]},
+                fields=["name"],
+            )
+            for po in pending_pos:
+                frappe.enqueue(
+                    "xero.api.xero_purchase_orders.sync_purchase_order_to_xero",
+                    queue="short",
+                    doc_name=po.name,
+                    doc_type="Purchase Order",
+                )
+
+        # Sync pending Quotations (outbound)
+        if settings.get("sync_quotes"):
+            pending_quotes = frappe.get_all(
+                "Quotation",
+                filters={"docstatus": 1, "xero_sync_status": ["in", ["Pending", "Error"]]},
+                fields=["name"],
+            )
+            for quote in pending_quotes:
+                frappe.enqueue(
+                    "xero.api.xero_quotes.sync_quotation_to_xero",
+                    queue="short",
+                    doc_name=quote.name,
+                    doc_type="Quotation",
+                )
 
         log_xero_error(message="Pending documents sync task completed.", status="Info")
 

@@ -21,41 +21,34 @@
   "last_token_refresh",
   "last_sync_time",
   "section_break_directional",
-   "enable_sync_to_xero",
-   "sync_contacts_to_xero",
-   "sync_items_to_xero",
-   "sync_invoices_to_xero",
-   "sync_bills_to_xero",
-   "sync_credit_notes_to_xero",
-   "sync_payments_to_xero",
-   "column_break_directional",
-   "enable_sync_from_xero",
-   "sync_contacts_from_xero",
-   "sync_items_from_xero",
-   "sync_invoices_from_xero",
-   "sync_bills_from_xero",
-   "sync_credit_notes_from_xero",
-   "sync_payments_from_xero",
-  "section_break_defaults",
-   "create_payment_entry_on_sync",
-   "default_bank_account",
-   "auto_submit_payment_entries",
-   "log_retention_days",
-  "account_mapping",
-  "tax_mapping",
-  "section_break_non_lite",
-  "sync_chart_of_accounts",
-  "sync_contacts",
-  "sync_invoices",
-  "sync_payments",
-  "sync_credit_notes",
+  "enable_sync_to_xero",
+  "sync_contacts_to_xero",
+  "sync_items_to_xero",
+  "sync_invoices_to_xero",
+  "sync_bills_to_xero",
+  "sync_credit_notes_to_xero",
+  "sync_payments_to_xero",
   "sync_journal_entries",
-  "sync_items",
-  "sync_payments_standalone",
-  "sync_quotes",
-  "sync_financial_reports",
   "sync_bank_transactions",
   "sync_purchase_orders",
+  "sync_quotes",
+  "column_break_directional",
+  "enable_sync_from_xero",
+  "sync_contacts_from_xero",
+  "sync_items_from_xero",
+  "sync_invoices_from_xero",
+  "sync_bills_from_xero",
+  "sync_credit_notes_from_xero",
+  "sync_payments_from_xero",
+  "sync_chart_of_accounts",
+  "sync_financial_reports",
+  "section_break_defaults",
+  "create_payment_entry_on_sync",
+  "default_bank_account",
+  "auto_submit_payment_entries",
+  "log_retention_days",
+  "account_mapping",
+  "tax_mapping",
   "section_break_auto_sync",
   "enable_auto_sync",
   "sync_frequency",
@@ -69,6 +62,13 @@
   "enable_rate_limit_tracking",
   "rate_limit_backoff_base",
   "rate_limit_max_delay",
+  "section_break_derived_flags",
+  "sync_contacts",
+  "sync_invoices",
+  "sync_payments",
+  "sync_credit_notes",
+  "sync_items",
+  "sync_payments_standalone",
   "directional_sync_warning"
  ],
  "fields": [
@@ -118,9 +118,10 @@
    "fieldtype": "Column Break"
   },
   {
+   "description": "Auto-populated after connecting. To select a different Xero organisation, disconnect and reconnect.",
    "fieldname": "tenant_id",
    "fieldtype": "Data",
-   "label": "Tenant ID (Auto Assigned)",
+   "label": "Tenant ID",
    "read_only": 1
   },
   {
@@ -161,7 +162,7 @@
   },
   {
    "depends_on": "eval:doc.enable_xero_sync",
-   "description": "Control which entities sync in each direction. The global directional toggles act as master gates — entity sub-toggles only apply when the parent direction is ON.",
+   "description": "Control which entities sync in each direction. The directional master gates override all entity-level toggles below them.",
    "fieldname": "section_break_directional",
    "fieldtype": "Section Break",
    "label": "Sync Direction Control"
@@ -169,58 +170,90 @@
   {
    "default": "0",
    "depends_on": "eval:doc.enable_xero_sync",
-   "description": "Master gate for ALL outbound syncs (ERPNext to Xero). When OFF, nothing is written to Xero.",
+   "description": "Master gate for ALL outbound syncs (ERPNext to Xero). When OFF, nothing is written to Xero regardless of individual entity toggles.",
    "fieldname": "enable_sync_to_xero",
    "fieldtype": "Check",
-   "label": "Enable Sync TO Xero (ERPNext \u2192 Xero)"
-  },
-   {
-    "default": "0",
-    "depends_on": "eval:doc.enable_xero_sync && doc.enable_sync_to_xero",
-    "description": "Sync Customers and Suppliers from ERPNext to Xero Contacts.",
-    "fieldname": "sync_contacts_to_xero",
-    "fieldtype": "Check",
-    "label": "  Contacts \u2192 Xero"
-   },
-   {
-    "default": "0",
-    "depends_on": "eval:doc.enable_xero_sync && doc.enable_sync_to_xero",
-    "description": "Sync Items (Products & Services) from ERPNext to Xero Items.",
-    "fieldname": "sync_items_to_xero",
-    "fieldtype": "Check",
-    "label": "  Items \u2192 Xero"
-   },
-   {
-    "default": "0",
-    "depends_on": "eval:doc.enable_xero_sync && doc.enable_sync_to_xero",
-    "description": "Sync Sales Invoices (ACCREC) from ERPNext to Xero.",
-    "fieldname": "sync_invoices_to_xero",
-    "fieldtype": "Check",
-    "label": "  Sales Invoices \u2192 Xero"
-   },
-   {
-    "default": "0",
-    "depends_on": "eval:doc.enable_xero_sync && doc.enable_sync_to_xero",
-    "description": "Sync Purchase Invoices (Bills) from ERPNext to Xero as ACCPAY invoices.",
-    "fieldname": "sync_bills_to_xero",
-    "fieldtype": "Check",
-    "label": "  Bills (Purchase) \u2192 Xero"
-   },
-   {
-    "default": "0",
-    "depends_on": "eval:doc.enable_xero_sync && doc.enable_sync_to_xero",
-    "description": "Sync return invoices (Credit Notes) from ERPNext to Xero.",
-    "fieldname": "sync_credit_notes_to_xero",
-   "fieldtype": "Check",
-   "label": "  Credit Notes \u2192 Xero"
+   "label": "Enable Sync TO Xero (ERPNext → Xero)"
   },
   {
    "default": "0",
    "depends_on": "eval:doc.enable_xero_sync && doc.enable_sync_to_xero",
-   "description": "Sync Payment Entries from ERPNext to Xero Payments.",
+   "description": "Sync Customers and Suppliers to Xero Contacts on save.",
+   "fieldname": "sync_contacts_to_xero",
+   "fieldtype": "Check",
+   "label": "  Contacts → Xero"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.enable_xero_sync && doc.enable_sync_to_xero",
+   "description": "Sync Items (Products and Services) to Xero on save.",
+   "fieldname": "sync_items_to_xero",
+   "fieldtype": "Check",
+   "label": "  Items → Xero"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.enable_xero_sync && doc.enable_sync_to_xero",
+   "description": "Sync Sales Invoices (ACCREC) to Xero on submit.",
+   "fieldname": "sync_invoices_to_xero",
+   "fieldtype": "Check",
+   "label": "  Sales Invoices → Xero"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.enable_xero_sync && doc.enable_sync_to_xero",
+   "description": "Sync Purchase Invoices (Bills / ACCPAY) to Xero on submit.",
+   "fieldname": "sync_bills_to_xero",
+   "fieldtype": "Check",
+   "label": "  Bills (Purchase) → Xero"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.enable_xero_sync && doc.enable_sync_to_xero",
+   "description": "Sync Sales and Purchase return invoices to Xero Credit Notes.",
+   "fieldname": "sync_credit_notes_to_xero",
+   "fieldtype": "Check",
+   "label": "  Credit Notes → Xero"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.enable_xero_sync && doc.enable_sync_to_xero",
+   "description": "Sync Payment Entries to Xero Payments on submit.",
    "fieldname": "sync_payments_to_xero",
    "fieldtype": "Check",
-   "label": "  Payments \u2192 Xero"
+   "label": "  Payments → Xero"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.enable_xero_sync && doc.enable_sync_to_xero",
+   "description": "Sync submitted Journal Entries to Xero Manual Journals.",
+   "fieldname": "sync_journal_entries",
+   "fieldtype": "Check",
+   "label": "  Journal Entries → Xero"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.enable_xero_sync && doc.enable_sync_to_xero",
+   "description": "Sync submitted Bank Transactions to Xero Bank Transactions.",
+   "fieldname": "sync_bank_transactions",
+   "fieldtype": "Check",
+   "label": "  Bank Transactions → Xero"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.enable_xero_sync && doc.enable_sync_to_xero",
+   "description": "Sync submitted Purchase Orders to Xero Purchase Orders.",
+   "fieldname": "sync_purchase_orders",
+   "fieldtype": "Check",
+   "label": "  Purchase Orders → Xero"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.enable_xero_sync && doc.enable_sync_to_xero",
+   "description": "Sync submitted Quotations to Xero Quotes.",
+   "fieldname": "sync_quotes",
+   "fieldtype": "Check",
+   "label": "  Quotations → Xero"
   },
   {
    "fieldname": "column_break_directional",
@@ -229,58 +262,74 @@
   {
    "default": "0",
    "depends_on": "eval:doc.enable_xero_sync",
-   "description": "Master gate for ALL inbound syncs (Xero to ERPNext). When OFF, nothing is read from Xero.",
+   "description": "Master gate for ALL inbound syncs (Xero to ERPNext). When OFF, nothing is read from Xero regardless of individual entity toggles.",
    "fieldname": "enable_sync_from_xero",
    "fieldtype": "Check",
-   "label": "Enable Sync FROM Xero (Xero \u2192 ERPNext)"
-  },
-   {
-    "default": "0",
-    "depends_on": "eval:doc.enable_xero_sync && doc.enable_sync_from_xero",
-    "description": "Sync Xero Contacts into ERPNext as Customers/Suppliers.",
-    "fieldname": "sync_contacts_from_xero",
-    "fieldtype": "Check",
-    "label": "  Contacts \u2190 Xero"
-   },
-   {
-    "default": "0",
-    "depends_on": "eval:doc.enable_xero_sync && doc.enable_sync_from_xero",
-    "description": "Sync Xero Items (Products & Services) into ERPNext as Items.",
-    "fieldname": "sync_items_from_xero",
-    "fieldtype": "Check",
-    "label": "  Items \u2190 Xero"
-   },
-   {
-    "default": "0",
-    "depends_on": "eval:doc.enable_xero_sync && doc.enable_sync_from_xero",
-    "description": "Sync Xero Sales Invoices (ACCREC) into ERPNext as Sales Invoices (created as Draft).",
-    "fieldname": "sync_invoices_from_xero",
-    "fieldtype": "Check",
-    "label": "  Sales Invoices \u2190 Xero"
-   },
-   {
-    "default": "0",
-    "depends_on": "eval:doc.enable_xero_sync && doc.enable_sync_from_xero",
-    "description": "Sync Xero Bills (ACCPAY invoices) into ERPNext as Purchase Invoices (created as Draft).",
-    "fieldname": "sync_bills_from_xero",
-    "fieldtype": "Check",
-    "label": "  Bills (Purchase) \u2190 Xero"
-   },
-   {
-    "default": "0",
-    "depends_on": "eval:doc.enable_xero_sync && doc.enable_sync_from_xero",
-    "description": "Sync Xero Credit Notes into ERPNext as return invoices.",
-    "fieldname": "sync_credit_notes_from_xero",
-   "fieldtype": "Check",
-   "label": "  Credit Notes \u2190 Xero"
+   "label": "Enable Sync FROM Xero (Xero → ERPNext)"
   },
   {
    "default": "0",
    "depends_on": "eval:doc.enable_xero_sync && doc.enable_sync_from_xero",
-   "description": "Sync Xero Payments into ERPNext as Payment Entries. Also enables the hourly payment detection task.",
+   "description": "Sync Xero Contacts into ERPNext as Customers / Suppliers.",
+   "fieldname": "sync_contacts_from_xero",
+   "fieldtype": "Check",
+   "label": "  Contacts ← Xero"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.enable_xero_sync && doc.enable_sync_from_xero",
+   "description": "Sync Xero Items into ERPNext Items.",
+   "fieldname": "sync_items_from_xero",
+   "fieldtype": "Check",
+   "label": "  Items ← Xero"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.enable_xero_sync && doc.enable_sync_from_xero",
+   "description": "Sync Xero ACCREC Invoices into ERPNext Sales Invoices (created as Draft).",
+   "fieldname": "sync_invoices_from_xero",
+   "fieldtype": "Check",
+   "label": "  Sales Invoices ← Xero"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.enable_xero_sync && doc.enable_sync_from_xero",
+   "description": "Sync Xero ACCPAY Bills into ERPNext Purchase Invoices (created as Draft).",
+   "fieldname": "sync_bills_from_xero",
+   "fieldtype": "Check",
+   "label": "  Bills (Purchase) ← Xero"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.enable_xero_sync && doc.enable_sync_from_xero",
+   "description": "Sync Xero Credit Notes into ERPNext return invoices.",
+   "fieldname": "sync_credit_notes_from_xero",
+   "fieldtype": "Check",
+   "label": "  Credit Notes ← Xero"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.enable_xero_sync && doc.enable_sync_from_xero",
+   "description": "Sync Xero Payments into ERPNext Payment Entries. Also enables the hourly payment detection task.",
    "fieldname": "sync_payments_from_xero",
    "fieldtype": "Check",
-   "label": "  Payments \u2190 Xero"
+   "label": "  Payments ← Xero"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.enable_xero_sync && doc.enable_sync_from_xero",
+   "description": "Pull Xero Chart of Accounts into ERPNext Account records. Useful for initial setup.",
+   "fieldname": "sync_chart_of_accounts",
+   "fieldtype": "Check",
+   "label": "  Chart of Accounts ← Xero"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.enable_xero_sync && doc.enable_sync_from_xero",
+   "description": "Pull financial reports (Balance Sheet, P&L) from Xero into ERPNext.",
+   "fieldname": "sync_financial_reports",
+   "fieldtype": "Check",
+   "label": "  Financial Reports ← Xero"
   },
   {
    "fieldname": "section_break_defaults",
@@ -289,14 +338,14 @@
   },
   {
    "default": "0",
-   "description": "If checked, a Payment Entry will be automatically created when a linked invoice's payment is detected via scheduled sync.",
+   "description": "Automatically create a Payment Entry in ERPNext when a linked invoice's payment is detected during scheduled sync.",
    "fieldname": "create_payment_entry_on_sync",
    "fieldtype": "Check",
    "label": "Create Payment Entry in ERPNext when Invoice is Paid in Xero"
   },
   {
    "depends_on": "eval:doc.create_payment_entry_on_sync",
-   "description": "Select the default Bank or Cash account to use in automatically created Payment Entries.",
+   "description": "Default Bank or Cash account to use in automatically created Payment Entries.",
    "fieldname": "default_bank_account",
    "fieldtype": "Link",
    "label": "Default Bank Account for Payments",
@@ -305,14 +354,14 @@
   {
    "default": "1",
    "depends_on": "eval:doc.create_payment_entry_on_sync",
-   "description": "If checked, Payment Entries created from Xero payments will be automatically submitted. If unchecked, they are created as Draft for manual review.",
+   "description": "Auto-submit Payment Entries created from Xero. If unchecked they are created as Draft for manual review.",
    "fieldname": "auto_submit_payment_entries",
    "fieldtype": "Check",
    "label": "Auto-Submit Payment Entries from Xero"
   },
   {
    "default": "90",
-   "description": "Number of days to retain Xero sync logs before automatic cleanup.",
+   "description": "Days to retain Xero sync log entries before automatic cleanup.",
    "fieldname": "log_retention_days",
    "fieldtype": "Int",
    "label": "Log Retention Days"
@@ -330,17 +379,97 @@
    "options": "Xero Tax Mapping"
   },
   {
-   "fieldname": "section_break_non_lite",
+   "depends_on": "eval:doc.enable_xero_sync",
+   "fieldname": "section_break_auto_sync",
    "fieldtype": "Section Break",
-   "hidden": 1,
-   "label": "Non-Core Entity Toggles (LITE Mode: Hidden)"
+   "label": "Automatic Synchronization"
   },
   {
    "default": "0",
-   "fieldname": "sync_chart_of_accounts",
+   "depends_on": "eval:doc.enable_xero_sync",
+   "description": "Run scheduled sync tasks automatically (daily inbound, hourly payment check). Disable for manual-only sync.",
+   "fieldname": "enable_auto_sync",
    "fieldtype": "Check",
+   "label": "Enable Automatic Sync"
+  },
+  {
+   "default": "Daily",
+   "depends_on": "eval:doc.enable_auto_sync",
+   "fieldname": "sync_frequency",
+   "fieldtype": "Select",
+   "label": "Sync Frequency",
+   "options": "Hourly\nDaily\nWeekly"
+  },
+  {
+   "depends_on": "eval:doc.enable_xero_sync",
+   "fieldname": "section_break_webhook",
+   "fieldtype": "Section Break",
+   "label": "Webhook Settings"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.enable_xero_sync",
+   "description": "Enable real-time push notifications from Xero. Requires a publicly accessible webhook URL configured in the Xero Developer Portal.",
+   "fieldname": "enable_webhooks",
+   "fieldtype": "Check",
+   "label": "Enable Webhooks for Real-time Updates"
+  },
+  {
+   "depends_on": "eval:doc.enable_webhooks",
+   "fieldname": "webhook_secret",
+   "fieldtype": "Password",
+   "label": "Webhook Signing Secret",
+   "options": "Password"
+  },
+  {
+   "fieldname": "section_break_api_settings",
+   "fieldtype": "Section Break",
+   "label": "API & Rate Limiting Settings"
+  },
+  {
+   "default": "5",
+   "description": "Maximum number of retry attempts for failed API calls before giving up.",
+   "fieldname": "max_retry_attempts",
+   "fieldtype": "Int",
+   "label": "Max Retry Attempts"
+  },
+  {
+   "default": "30",
+   "description": "Timeout in seconds for each Xero API request.",
+   "fieldname": "api_timeout",
+   "fieldtype": "Int",
+   "label": "API Timeout (seconds)"
+  },
+  {
+   "fieldname": "column_break_rate_limit",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "1",
+   "description": "Log rate-limit headers for debugging. Disable on high-volume systems to reduce log noise.",
+   "fieldname": "enable_rate_limit_tracking",
+   "fieldtype": "Check",
+   "label": "Enable Rate Limit Tracking"
+  },
+  {
+   "default": "2",
+   "description": "Base (seconds) for exponential back-off when rate-limited. Delay = base ^ retry_count, capped by max delay.",
+   "fieldname": "rate_limit_backoff_base",
+   "fieldtype": "Int",
+   "label": "Backoff Base (seconds)"
+  },
+  {
+   "default": "60",
+   "description": "Maximum back-off delay in seconds before giving up on a rate-limited request.",
+   "fieldname": "rate_limit_max_delay",
+   "fieldtype": "Int",
+   "label": "Max Backoff Delay (seconds)"
+  },
+  {
+   "fieldname": "section_break_derived_flags",
+   "fieldtype": "Section Break",
    "hidden": 1,
-   "label": "Sync Chart of Accounts"
+   "label": "Derived Flags (Internal — do not edit)"
   },
   {
    "default": "0",
@@ -372,153 +501,29 @@
   },
   {
    "default": "0",
-   "fieldname": "sync_journal_entries",
-   "fieldtype": "Check",
-   "hidden": 1,
-   "label": "Sync Journal Entries"
-  },
-  {
-   "default": "0",
    "fieldname": "sync_items",
    "fieldtype": "Check",
    "hidden": 1,
-   "label": "Sync Items/Products"
+   "label": "Sync Items (derived)"
   },
   {
    "default": "0",
    "fieldname": "sync_payments_standalone",
    "fieldtype": "Check",
    "hidden": 1,
-   "label": "Sync Standalone Payments"
-  },
-  {
-   "default": "0",
-   "fieldname": "sync_quotes",
-   "fieldtype": "Check",
-   "hidden": 1,
-   "label": "Sync Quotes/Quotations"
-  },
-  {
-   "default": "0",
-   "fieldname": "sync_financial_reports",
-   "fieldtype": "Check",
-   "hidden": 1,
-   "label": "Sync Financial Reports"
-  },
-  {
-   "default": "0",
-   "fieldname": "sync_bank_transactions",
-   "fieldtype": "Check",
-   "hidden": 1,
-   "label": "Sync Bank Transactions"
-  },
-  {
-   "default": "0",
-   "fieldname": "sync_purchase_orders",
-   "fieldtype": "Check",
-   "hidden": 1,
-   "label": "Sync Purchase Orders"
-  },
-  {
-   "fieldname": "section_break_auto_sync",
-   "fieldtype": "Section Break",
-   "hidden": 1,
-   "label": "Automatic Synchronization"
-  },
-  {
-   "default": "0",
-   "fieldname": "enable_auto_sync",
-   "fieldtype": "Check",
-   "hidden": 1,
-   "label": "Enable Automatic Sync"
-  },
-  {
-   "default": "Daily",
-   "depends_on": "eval:doc.enable_auto_sync",
-   "fieldname": "sync_frequency",
-   "fieldtype": "Select",
-   "hidden": 1,
-   "label": "Sync Frequency",
-   "options": "Hourly\nDaily\nWeekly"
-  },
-  {
-   "fieldname": "section_break_webhook",
-   "fieldtype": "Section Break",
-   "hidden": 1,
-   "label": "Webhook Settings"
-  },
-  {
-   "default": "0",
-   "fieldname": "enable_webhooks",
-   "fieldtype": "Check",
-   "hidden": 1,
-   "label": "Enable Webhooks for Real-time Updates"
-  },
-  {
-   "depends_on": "eval:doc.enable_webhooks",
-   "fieldname": "webhook_secret",
-   "fieldtype": "Password",
-   "hidden": 1,
-   "label": "Webhook Signing Secret",
-   "options": "Password"
-  },
-  {
-   "fieldname": "section_break_api_settings",
-   "fieldtype": "Section Break",
-   "hidden": 1,
-   "label": "API & Rate Limiting Settings"
-  },
-  {
-   "default": "5",
-   "fieldname": "max_retry_attempts",
-   "fieldtype": "Int",
-   "hidden": 1,
-   "label": "Max Retry Attempts"
-  },
-  {
-   "default": "30",
-   "fieldname": "api_timeout",
-   "fieldtype": "Int",
-   "hidden": 1,
-   "label": "API Timeout (seconds)"
-  },
-  {
-   "fieldname": "column_break_rate_limit",
-   "fieldtype": "Column Break",
-   "hidden": 1
-  },
-  {
-   "default": "1",
-   "fieldname": "enable_rate_limit_tracking",
-   "fieldtype": "Check",
-   "hidden": 1,
-   "label": "Enable Rate Limit Tracking"
-  },
-  {
-   "default": "2",
-   "fieldname": "rate_limit_backoff_base",
-   "fieldtype": "Int",
-   "hidden": 1,
-   "label": "Backoff Base (seconds)"
-  },
-  {
-   "default": "60",
-   "fieldname": "rate_limit_max_delay",
-   "fieldtype": "Int",
-   "hidden": 1,
-   "label": "Max Backoff Delay (seconds)"
+   "label": "Sync Standalone Payments (reserved)"
   },
   {
    "fieldname": "directional_sync_warning",
    "fieldtype": "HTML",
    "hidden": 1,
    "label": "Directional Sync Warning",
-   "options": "<div class='alert alert-warning'><strong>Important:</strong> Directional toggles provide platform-level control. Disabling 'Sync TO Xero' will prevent ALL writes to Xero, even if entity-specific toggles are enabled.</div>"
+   "options": "<div class='alert alert-warning'><strong>Important:</strong> The directional master toggles act as safety gates. Disabling 'Sync TO Xero' prevents ALL writes to Xero, even if entity-level toggles are enabled.</div>"
   }
  ],
  "issingle": 1,
  "links": [],
- "modified": "2026-04-13 22:43:14.561569",
+ "modified": "2026-06-22 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Xero",
  "name": "Xero Settings",

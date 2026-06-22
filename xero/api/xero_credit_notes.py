@@ -314,6 +314,10 @@ def sync_return_to_xero(doc_name, doc_type, **kwargs):
             return
 
         # --- Map Line Items ---
+        # Track whether any line carries a Xero TaxType. When it does, Xero
+        # computes the tax itself, so we must NOT also send the ERPNext tax rows
+        # as separate line items (that double-counts VAT).
+        has_line_tax = False
         line_items = []
         for item in doc.items:
             # Get Xero Account Code
@@ -344,6 +348,8 @@ def sync_return_to_xero(doc_name, doc_type, **kwargs):
                 "LineAmount": abs(item.amount),
                 "TaxType": map_erpnext_tax_to_xero(item.item_tax_template, settings),
             }
+            if line_item["TaxType"] != "NONE":
+                has_line_tax = True
 
             # Add ItemCode if item has been synced to Xero
             if item.item_code:
@@ -361,6 +367,11 @@ def sync_return_to_xero(doc_name, doc_type, **kwargs):
 
         # --- Map Taxes and Charges ---
         for tax in doc.taxes:
+            # When Xero already computes tax from the line-level TaxType, skip
+            # percentage-based tax rows (e.g. VAT) to avoid double-counting.
+            # Flat "Actual" charges (rate == 0, e.g. freight) are still sent.
+            if has_line_tax and flt(tax.rate):
+                continue
             tax_account_code = get_xero_account_code(tax.account_head, settings)
             if not tax_account_code:
                 raise Exception(

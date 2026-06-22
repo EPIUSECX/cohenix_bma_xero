@@ -1,4 +1,4 @@
-# Copyright (c) 2024, Your Name and contributors
+# Copyright (c) 2024, EPI-USE Global Services and contributors
 # For license information, please see license.txt
 
 import frappe
@@ -18,67 +18,73 @@ class XeroSettings(Document):
 
         access_token: DF.SmallText | None
         account_mapping: DF.Table[XeroAccountMapping]
+        api_timeout: DF.Int
+        backoff_base: DF.Int  # alias kept for compatibility
         client_id: DF.Data | None
         client_secret: DF.Password | None
         connection_status: DF.Data | None
         create_payment_entry_on_sync: DF.Check
         default_bank_account: DF.Link | None
         enable_auto_sync: DF.Check
+        enable_rate_limit_tracking: DF.Check
         enable_sync_from_xero: DF.Check
         enable_sync_to_xero: DF.Check
         enable_webhooks: DF.Check
         enable_xero_sync: DF.Check
+        last_sync_time: DF.Datetime | None
+        last_token_refresh: DF.Datetime | None
+        log_retention_days: DF.Int
+        max_retry_attempts: DF.Int
+        rate_limit_backoff_base: DF.Int
+        rate_limit_max_delay: DF.Int
+        redirect_url: DF.Data | None
         refresh_token: DF.SmallText | None
+        sync_bank_transactions: DF.Check
+        sync_bills_from_xero: DF.Check
+        sync_bills_to_xero: DF.Check
         sync_chart_of_accounts: DF.Check
         sync_contacts: DF.Check
-        sync_contacts_to_xero: DF.Check
         sync_contacts_from_xero: DF.Check
+        sync_contacts_to_xero: DF.Check
         sync_credit_notes: DF.Check
-        sync_credit_notes_to_xero: DF.Check
         sync_credit_notes_from_xero: DF.Check
+        sync_credit_notes_to_xero: DF.Check
+        sync_financial_reports: DF.Check
         sync_frequency: DF.Literal["Hourly", "Daily", "Weekly"] | None
-        sync_bills_to_xero: DF.Check
-        sync_bills_from_xero: DF.Check
         sync_invoices: DF.Check
-        sync_invoices_to_xero: DF.Check
         sync_invoices_from_xero: DF.Check
+        sync_invoices_to_xero: DF.Check
         sync_items: DF.Check
-        sync_items_to_xero: DF.Check
         sync_items_from_xero: DF.Check
+        sync_items_to_xero: DF.Check
         sync_journal_entries: DF.Check
         sync_payments: DF.Check
-        sync_payments_to_xero: DF.Check
         sync_payments_from_xero: DF.Check
         sync_payments_standalone: DF.Check
-        sync_quotes: DF.Check
-        sync_bank_transactions: DF.Check
+        sync_payments_to_xero: DF.Check
         sync_purchase_orders: DF.Check
-        sync_financial_reports: DF.Check
+        sync_quotes: DF.Check
         tax_mapping: DF.Table[XeroTaxMapping]
         tenant_id: DF.Data | None
         tenant_name: DF.Data | None
         token_expiry: DF.Datetime | None
-        last_token_refresh: DF.Datetime | None
-        last_sync_time: DF.Datetime | None
-        log_retention_days: DF.Int
         webhook_secret: DF.Password | None
-        max_retry_attempts: DF.Int
-        api_timeout: DF.Int
-        enable_rate_limit_tracking: DF.Check
-        rate_limit_backoff_base: DF.Int
-        rate_limit_max_delay: DF.Int
     # end: auto-generated types
 
     def validate(self):
         """
-        LITE Mode enforcement:
+        Cascade validation for sync toggles:
         1. Derive legacy entity-existence flags from per-entity directional toggles
-        2. Force non-LITE entity toggles OFF
-        3. Force non-LITE features OFF
+           (backward compat with modules that check e.g. settings.sync_invoices)
+        2. Clear sub-toggles when their parent direction switch is disabled
+        3. Clear everything when the master switch is disabled
+
+        No entities are forcibly disabled — all toggles are respected as set.
+        Operators control exactly what syncs via the settings UI.
         """
-        # --- Derive entity-existence flags from directional sub-toggles ---
-        # These derived flags maintain backward compatibility with all sync modules
-        # that check e.g. settings.sync_invoices or settings.sync_contacts
+        # --- Derive aggregate entity flags from directional sub-toggles ---
+        # These maintain backward compatibility with sync modules that check
+        # the old-style single flag (e.g. settings.sync_invoices).
         self.sync_contacts = (
             1 if (self.sync_contacts_to_xero or self.sync_contacts_from_xero) else 0
         )
@@ -106,44 +112,38 @@ class XeroSettings(Document):
             else 0
         )
 
-        # --- LITE Mode: Force non-core entity toggles OFF ---
-        self.sync_chart_of_accounts = 0
-        self.sync_journal_entries = 0
-        self.sync_payments_standalone = 0
-        self.sync_quotes = 0
-        self.sync_financial_reports = 0
-        self.sync_bank_transactions = 0
-        self.sync_purchase_orders = 0
-
-        # --- LITE Mode: Force non-core features OFF ---
-        self.enable_webhooks = 0
-        self.enable_auto_sync = 0
-
-        # --- Clear sub-toggles if parent direction is OFF ---
+        # --- Cascade: clear outbound sub-toggles if outbound master is OFF ---
         if not self.enable_sync_to_xero:
             self.sync_contacts_to_xero = 0
-            if self.get("sync_items_to_xero"):
-                self.sync_items_to_xero = 0
+            self.sync_items_to_xero = 0
             self.sync_invoices_to_xero = 0
-            if self.get("sync_bills_to_xero"):
-                self.sync_bills_to_xero = 0
+            self.sync_bills_to_xero = 0
             self.sync_credit_notes_to_xero = 0
             self.sync_payments_to_xero = 0
+            # Extended entities (outbound only)
+            self.sync_journal_entries = 0
+            self.sync_bank_transactions = 0
+            self.sync_purchase_orders = 0
+            self.sync_quotes = 0
 
+        # --- Cascade: clear inbound sub-toggles if inbound master is OFF ---
         if not self.enable_sync_from_xero:
             self.sync_contacts_from_xero = 0
-            if self.get("sync_items_from_xero"):
-                self.sync_items_from_xero = 0
+            self.sync_items_from_xero = 0
             self.sync_invoices_from_xero = 0
-            if self.get("sync_bills_from_xero"):
-                self.sync_bills_from_xero = 0
+            self.sync_bills_from_xero = 0
             self.sync_credit_notes_from_xero = 0
             self.sync_payments_from_xero = 0
+            # Extended entities (inbound only)
+            self.sync_financial_reports = 0
+            self.sync_chart_of_accounts = 0
 
-        # --- Clear everything if master switch is OFF ---
+        # --- Cascade: clear direction masters and auto-sync if global switch is OFF ---
         if not self.enable_xero_sync:
             self.enable_sync_to_xero = 0
             self.enable_sync_from_xero = 0
+            self.enable_auto_sync = 0
+            self.enable_webhooks = 0
 
     # Add custom methods if needed, e.g., to fetch mappings easily
     def get_account_map(self):

@@ -437,6 +437,10 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
             invoice_payload["InvoiceID"] = xero_invoice_id
 
         # --- Map Line Items ---
+        # Track whether any line carries a Xero TaxType. When it does, Xero
+        # computes the tax itself from the line, so we must NOT also send the
+        # ERPNext tax rows as separate line items (that double-counts VAT).
+        has_line_tax = False
         for item in doc.items:
             # Get Xero Account Code from mapping in settings
             erpnext_account = (
@@ -468,6 +472,8 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
                     item.item_tax_template, settings
                 ),  # Pass settings
             }
+            if line_item["TaxType"] != "NONE":
+                has_line_tax = True
 
             # Add ItemCode if item has been synced to Xero
             if item.item_code:
@@ -486,6 +492,12 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
         # --- Map Taxes and Charges ---
         # Add each tax/charge as a separate line item, as per Xero's recommendation for non-standard taxes/charges.
         for tax in doc.taxes:
+            # When Xero is already computing tax from the line-level TaxType,
+            # skip percentage-based tax rows (e.g. VAT) so the tax isn't counted
+            # twice. Flat "Actual" charges (rate == 0, e.g. freight) are genuine
+            # additional lines and are still sent.
+            if has_line_tax and flt(tax.rate):
+                continue
             tax_account_code = get_xero_account_code(tax.account_head, settings)
             if not tax_account_code:
                 raise Exception(
@@ -685,9 +697,11 @@ def void_invoice_in_xero(doc_name, doc_type):
         if xero_status in ["DRAFT", "SUBMITTED"]:
             new_status = "DELETED"
             action = "delete"
+            action_past = "Deleted"
         else:
             new_status = "VOIDED"
             action = "void"
+            action_past = "Voided"
 
         invoice_payload = {"InvoiceID": xero_invoice_id, "Status": new_status}
 
@@ -701,12 +715,12 @@ def void_invoice_in_xero(doc_name, doc_type):
                 doc_type,
                 doc_name,
                 "xero_sync_status",
-                f"{action.capitalize()}d in Xero",
+                f"{action_past} in Xero",
                 update_modified=False,
             )
             frappe.db.commit()
             log_xero_error(
-                message=f"Successfully {action}d {doc_type} {doc_name} in Xero (status: {new_status}).",
+                message=f"Successfully {action_past.lower()} {doc_type} {doc_name} in Xero (status: {new_status}).",
                 status="Success",
                 erpnext_doc_type=doc_type,
                 erpnext_doc_name=doc_name,
@@ -1251,10 +1265,28 @@ def process_xero_invoice(xero_invoice_data, settings):
         "Sales Invoice" if invoice_type == "ACCREC" else "Purchase Invoice"
     )
 
-    # Check if invoice already exists
-    erpnext_doc_name = frappe.db.get_value(
-        erpnext_doctype, {"xero_invoice_id": xero_invoice_id}, "name"
-    )
+    # Check if invoice already exists in ERPNext.
+    # Use a per-Xero-ID mutex via cache to prevent duplicate creation when
+    # the hourly task and a manual sync overlap.
+    lock_key = f"xero_inbound_lock_{xero_invoice_id}"
+    if frappe.cache().get_value(lock_key):
+        log_xero_error(
+            message=f"Inbound sync for Xero Invoice {xero_invoice_id} already in progress — skipping duplicate.",
+            status="Info",
+            xero_entity_id=xero_invoice_id,
+            direction="Xero to ERPNext",
+        )
+        return
+    frappe.cache().set_value(lock_key, True, expires_in_sec=120)  # 2-minute lock
+
+    try:
+        erpnext_doc_name = frappe.db.get_value(
+            erpnext_doctype, {"xero_invoice_id": xero_invoice_id}, "name"
+        )
+    finally:
+        # Lock will auto-expire; release early on the happy path is not needed
+        # but we clear it in the exception handler below if insert fails.
+        pass
 
     # Get contact information
     xero_contact_id = xero_invoice_data.get("Contact", {}).get("ContactID")
@@ -1479,6 +1511,8 @@ def process_xero_invoice(xero_invoice_data, settings):
             log_message = f"Created {erpnext_doctype} {erpnext_doc_name} from Xero Invoice {xero_invoice_id} ({invoice_number})"
 
         frappe.db.commit()
+        # Release the idempotency lock now that the record is committed
+        frappe.cache().delete_value(lock_key)
         log_xero_error(
             message=log_message,
             status="Success",
@@ -1490,6 +1524,8 @@ def process_xero_invoice(xero_invoice_data, settings):
         )
 
     except Exception as e:
+        # Always release the lock on failure so retries are not permanently blocked
+        frappe.cache().delete_value(lock_key)
         from ..utils.logging import is_already_exists_error
 
         error_traceback = frappe.get_traceback()

@@ -1,11 +1,11 @@
-# Copyright (c) 2024, Your Name and contributors
+# Copyright (c) 2024, EPI-USE Global Services and contributors
 # For license information, please see license.txt
 
 app_name = "xero"
 app_title = "Xero Integration"
-app_publisher = "Your Name"
+app_publisher = "EPI-USE Global Services"
 app_description = "Integrate ERPNext with Xero Accounting"
-app_email = "your@email.com"
+app_email = "support@epiuse.com"
 app_license = "mit"
 # required_apps = []
 
@@ -163,9 +163,10 @@ doc_events = {
         "on_submit": "xero.api.xero_journals.enqueue_sync_journal",
         "on_cancel": "xero.api.xero_journals.delete_journal_from_xero"
     },
-    "Bank Transaction": {
-        "on_submit": "xero.api.xero_bank_transactions.enqueue_sync_bank_transaction"
-    },
+    # NOTE: Bank Transaction outbound sync is intentionally DISABLED — bank
+    # movements reach Xero via Payment Entry (-> Payment) and Journal Entry
+    # (-> Manual Journal) sync. Pushing Bank Transactions as well would
+    # double-count. See xero/api/xero_bank_transactions.py.
     "Quotation": {
         "on_submit": "xero.api.xero_quotes.enqueue_sync_quotation"
     },
@@ -326,7 +327,10 @@ fixtures = [
 # Include the OAuth callback and a future webhook handler
 api_method_whitelist = [
     "xero.utils.xero_client.handle_oauth_callback",
-    "xero.utils.webhook_handler.handle_webhook" # Webhook handler endpoint
+    "xero.utils.xero_client.get_available_tenants",
+    "xero.utils.xero_client.select_tenant",
+    "xero.utils.xero_client.get_auth_url",
+    "xero.utils.webhook_handler.handle_webhook",
 ]
 
 # Website Route Rules: map routes to handlers

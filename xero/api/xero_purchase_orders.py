@@ -84,7 +84,9 @@ def sync_purchase_order_to_xero(doc_name, doc_type):
             po_payload["PurchaseOrderID"] = xero_po_id
 
         # 4. Make API Call
-        response = xero_request("PUT", "PurchaseOrders", data={"PurchaseOrders": [po_payload]})
+        # Xero API: POST handles both create (no ID) and update (ID in payload).
+        # PUT only creates new records and will not update existing ones.
+        response = xero_request("POST", "PurchaseOrders", data={"PurchaseOrders": [po_payload]})
 
         # 5. Process response
         if response and response.get("PurchaseOrders"):
@@ -210,7 +212,8 @@ def sync_purchase_orders_from_xero(modified_since=None):
 
 def process_xero_purchase_order(xero_order_data, settings):
     """Creates or updates an ERPNext Purchase Order from Xero order data."""
-    from .xero_invoices import parse_xero_date, get_or_create_item_from_xero_code
+    from .xero_invoices import parse_xero_date
+    from .xero_items import get_or_create_item_for_xero_line
     
     xero_order_id = xero_order_data.get("PurchaseOrderID")
     order_number = xero_order_data.get("PurchaseOrderNumber")
@@ -221,7 +224,18 @@ def process_xero_purchase_order(xero_order_data, settings):
     
     # Check if order already exists
     erpnext_doc_name = frappe.db.get_value("Purchase Order", {"xero_purchase_order_id": xero_order_id}, "name")
-    
+
+    # Inbound is create-once: if already mirrored, skip (never overwrite local
+    # edits or fail on a submitted document).
+    if erpnext_doc_name:
+        log_xero_error(
+            message=f"Xero Purchase Order {xero_order_id} already mirrored as {erpnext_doc_name}; skipping (create-once).",
+            status="Info", category="Duplicate Entity",
+            erpnext_doc_type="Purchase Order", erpnext_doc_name=erpnext_doc_name,
+            xero_entity_id=xero_order_id, xero_entity_type="PurchaseOrder", direction="Xero to ERPNext",
+        )
+        return
+
     # Get contact information
     xero_contact_id = xero_order_data.get("Contact", {}).get("ContactID")
     if not xero_contact_id:
@@ -254,7 +268,9 @@ def process_xero_purchase_order(xero_order_data, settings):
             "supplier_name": xero_order_data.get("Contact", {}).get("Name"),
             "company": company,
             "transaction_date": parse_xero_date(xero_order_data.get("Date")),
-            "schedule_date": parse_xero_date(xero_order_data.get("DeliveryDate")),
+            # PO (and its rows) require a Required-By date; Xero POs often have no
+            # DeliveryDate, so fall back to the order date.
+            "schedule_date": parse_xero_date(xero_order_data.get("DeliveryDate")) or parse_xero_date(xero_order_data.get("Date")),
             "currency": xero_order_data.get("CurrencyCode", "USD"),
             "conversion_rate": frappe.utils.flt(xero_order_data.get("CurrencyRate", 1.0)),
         }
@@ -263,50 +279,42 @@ def process_xero_purchase_order(xero_order_data, settings):
         if order_number:
             erpnext_data["remarks"] = f"Xero Order: {order_number}"
         
-        # Create or update order
-        if erpnext_doc_name:
-            # Update existing
-            doc = frappe.get_doc("Purchase Order", erpnext_doc_name)
-            doc.update(erpnext_data)
-            doc.save(ignore_permissions=True)
-            log_message = f"Updated Purchase Order {erpnext_doc_name} from Xero Order {xero_order_id}"
-        else:
-            # Create new
-            doc = frappe.new_doc("Purchase Order")
-            doc.update(erpnext_data)
-            
-            # Add line items
-            line_items = xero_order_data.get("LineItems", [])
-            for line in line_items:
-                item_code = get_or_create_item_from_xero_code(line.get("ItemCode"), line.get("Description"), settings)
-                
-                item_dict = {
-                    "description": line.get("Description", "Item from Xero"),
-                    "qty": frappe.utils.flt(line.get("Quantity", 1)),
-                    "rate": frappe.utils.flt(line.get("UnitAmount", 0)),
-                    "amount": frappe.utils.flt(line.get("LineAmount", 0)),
-                }
-                
-                if item_code:
-                    item_dict["item_code"] = item_code
-                    item_dict["item_name"] = line.get("Description")
-                else:
-                    item_dict["item_name"] = line.get("Description", "Xero Item")
-                
-                doc.append("items", item_dict)
-            
-            if not doc.items:
-                log_xero_error(
-                    message=f"Skipping Xero order {order_number}: No line items",
-                    status="Warning",
-                    xero_entity_id=xero_order_id,
-                    xero_entity_type="PurchaseOrder"
-                )
-                return
-            
-            doc.insert(ignore_permissions=True)
-            erpnext_doc_name = doc.name
-            log_message = f"Created Purchase Order {erpnext_doc_name} from Xero Order {xero_order_id} ({order_number})"
+        # Create the new Purchase Order as a Draft (existing docs were skipped
+        # above; inbound is create-once).
+        doc = frappe.new_doc("Purchase Order")
+        doc.update(erpnext_data)
+
+        # Add line items. Purchase Order rows REQUIRE item_code and a schedule
+        # (Required By) date, so always resolve/create an item and carry the
+        # header schedule date onto each row.
+        po_schedule_date = erpnext_data.get("schedule_date") or erpnext_data.get("transaction_date")
+        line_items = xero_order_data.get("LineItems", [])
+        for line in line_items:
+            item_code = get_or_create_item_for_xero_line(
+                line.get("ItemCode"), line.get("Description"), settings, is_purchase=True
+            )
+            doc.append("items", {
+                "item_code": item_code,
+                "item_name": (line.get("Description") or item_code)[:140],
+                "description": line.get("Description") or "Item from Xero",
+                # PO qty must be > 0
+                "qty": frappe.utils.flt(line.get("Quantity", 1)) or 1,
+                "rate": frappe.utils.flt(line.get("UnitAmount", 0)),
+                "schedule_date": po_schedule_date,
+            })
+
+        if not doc.items:
+            log_xero_error(
+                message=f"Skipping Xero order {order_number}: No line items",
+                status="Warning",
+                xero_entity_id=xero_order_id,
+                xero_entity_type="PurchaseOrder"
+            )
+            return
+
+        doc.insert(ignore_permissions=True)
+        erpnext_doc_name = doc.name
+        log_message = f"Created Purchase Order {erpnext_doc_name} from Xero Order {xero_order_id} ({order_number})"
         
         frappe.db.commit()
         log_xero_error(

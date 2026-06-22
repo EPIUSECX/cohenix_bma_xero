@@ -32,6 +32,62 @@ XERO_ITEM_CODE_MAX_LENGTH = 30
 XERO_ITEM_NAME_MAX_LENGTH = 50
 XERO_DESCRIPTION_MAX_LENGTH = 4000
 
+
+def get_or_create_item_for_xero_line(item_code, description, settings=None, is_sales=False, is_purchase=False):
+    """
+    Resolve an ERPNext Item for an INBOUND Xero line that REQUIRES an item_code
+    (Purchase Order and Quotation both mandate item_code on their rows, unlike
+    Sales/Purchase Invoice which accept description-only rows).
+
+    Resolution order:
+      1. Existing Item whose code matches the Xero ItemCode.
+      2. Existing Item already linked to this Xero code via xero_item_id.
+      3. Otherwise create a minimal non-stock ("service") Item and return it.
+
+    Always returns a usable item_code (str); never returns None.
+    """
+    code = (item_code or "").strip()
+
+    # 1. Existing item by code
+    if code and frappe.db.exists("Item", code):
+        return code
+
+    # 2. Existing item linked by Xero item id (outbound stores the ItemCode)
+    if code:
+        linked = frappe.db.get_value("Item", {"xero_item_id": code}, "name")
+        if linked:
+            return linked
+
+    # 3. Create a minimal non-stock item
+    if not code:
+        slug = re.sub(r"[^A-Za-z0-9]+", "-", (description or "Item")).strip("-")
+        code = (f"XERO-{slug}" if slug else "XERO-ITEM")[:140]
+    base, n = code, 1
+    while frappe.db.exists("Item", code):
+        code = f"{base[:135]}-{n}"
+        n += 1
+
+    item_group = frappe.db.get_value("Item Group", {"is_group": 0}, "name") or "All Item Groups"
+    doc = frappe.new_doc("Item")
+    doc.item_code = code
+    doc.item_name = (description or code)[:140]
+    doc.item_group = item_group
+    doc.stock_uom = "Nos"
+    doc.is_stock_item = 0
+    doc.is_sales_item = 1 if is_sales else 0
+    doc.is_purchase_item = 1 if is_purchase else 0
+    doc.description = description or code
+    doc.flags.ignore_mandatory = True
+    doc.insert(ignore_permissions=True)
+    log_xero_error(
+        message=f"Auto-created ERPNext Item '{code}' from an inbound Xero line (no matching item existed).",
+        status="Info",
+        category="System Monitoring",
+        direction="Xero to ERPNext",
+    )
+    return code
+
+
 # --- Validation Functions ---
 
 

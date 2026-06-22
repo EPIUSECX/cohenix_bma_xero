@@ -1,4 +1,4 @@
-// Copyright (c) 2024, Your Name and contributors
+// Copyright (c) 2024, EPI-USE Global Services and contributors
 // For license information, please see license.txt
 
 // Global cache for Xero data to avoid repeated API calls
@@ -13,13 +13,47 @@ frappe.ui.form.on('Xero Settings', {
 		// --- Connection Status & Buttons ---
 		if (frm.doc.access_token && frm.doc.tenant_id && frm.doc.enable_xero_sync) {
             // Show connected status and add disconnect/check buttons
-            frm.dashboard.set_headline(`Connected to Xero Tenant: ${frm.doc.tenant_id}. Status: ${frm.doc.connection_status || 'Unknown'}`);
+            const tenantLabel = frm.doc.tenant_name || frm.doc.tenant_id;
+            frm.dashboard.set_headline(`Connected to Xero: ${tenantLabel}. Status: ${frm.doc.connection_status || 'Unknown'}`);
 
             frm.add_custom_button(__('Check Connection'), function() {
                 frm.call('check_xero_connection').then(r => {
                     if (r.message) {
                         frm.set_value('connection_status', r.message.status);
                         frappe.show_alert({ message: `Connection Status: ${r.message.status}`, indicator: r.message.status === 'Active' ? 'green' : 'red' });
+                    }
+                });
+            }).removeClass('btn-primary').addClass('btn-default');
+
+            frm.add_custom_button(__('Switch Organisation'), function() {
+                frappe.call({
+                    method: 'xero.utils.xero_client.get_available_tenants',
+                    callback: function(r) {
+                        const tenants = r.message || [];
+                        if (tenants.length <= 1) {
+                            frappe.msgprint(__('Only one Xero organisation is connected.'));
+                            return;
+                        }
+                        const options = tenants.map(t => ({ value: t.id, label: t.name }));
+                        frappe.prompt(
+                            [{
+                                label: __('Select Organisation'),
+                                fieldname: 'tenant_id',
+                                fieldtype: 'Select',
+                                options: options.map(o => o.label),
+                                reqd: 1
+                            }],
+                            function(values) {
+                                const selected = tenants.find(t => t.name === values.tenant_id);
+                                if (!selected) return;
+                                frappe.call({
+                                    method: 'xero.utils.xero_client.select_tenant',
+                                    args: { tenant_id: selected.id },
+                                    callback: function() { frm.reload_doc(); }
+                                });
+                            },
+                            __('Switch Xero Organisation')
+                        );
                     }
                 });
             }).removeClass('btn-primary').addClass('btn-default');
