@@ -12,23 +12,24 @@ from ..utils.retry_handler import retry_with_exponential_backoff
 
 # Mapping from Xero Account Types to ERPNext Root Types / Account Types
 XERO_ACCOUNT_TYPE_MAP = {
-    "BANK": {"root_type": "Asset", "account_type": "Bank"},
-    "CURRENT": {"root_type": "Asset", "account_type": "Receivable"},
-    "CURRLIAB": {"root_type": "Liability", "account_type": "Payable"},
-    "DEPRECIATN": {"root_type": "Asset", "account_type": "Accumulated Depreciation"},
-    "DIRECTCOSTS": {"root_type": "Expense", "account_type": "Direct Expense"},
-    "EQUITY": {"root_type": "Equity", "account_type": "Equity"},
-    "EXPENSE": {"root_type": "Expense", "account_type": "Expense Account"},
-    "FIXED": {"root_type": "Asset", "account_type": "Fixed Asset"},
-    "INVENTORY": {"root_type": "Asset", "account_type": "Stock"},
-    "LIABILITY": {"root_type": "Liability", "account_type": "Liability"},
-    "NONCURRENT": {"root_type": "Asset", "account_type": "Asset"},
-    "OTHERINCOME": {"root_type": "Income", "account_type": "Other Income"},
-    "OVERHEADS": {"root_type": "Expense", "account_type": "Indirect Expense"},
-    "PREPAYMENT": {"root_type": "Asset", "account_type": "Prepaid Expense"},
-    "REVENUE": {"root_type": "Income", "account_type": "Income Account"},
-    "SALES": {"root_type": "Income", "account_type": "Sales"},
-    "TERMLIAB": {"root_type": "Liability", "account_type": "Liability"},
+    # Xero Type          ERPNext root_type   ERPNext account_type (must be a valid DocType option)
+    "BANK":         {"root_type": "Asset",     "account_type": "Bank"},
+    "CURRENT":      {"root_type": "Asset",     "account_type": "Current Asset"},
+    "CURRLIAB":     {"root_type": "Liability", "account_type": "Current Liability"},
+    "DEPRECIATN":   {"root_type": "Asset",     "account_type": "Accumulated Depreciation"},
+    "DIRECTCOSTS":  {"root_type": "Expense",   "account_type": "Direct Expense"},
+    "EQUITY":       {"root_type": "Equity",    "account_type": "Equity"},
+    "EXPENSE":      {"root_type": "Expense",   "account_type": "Expense Account"},
+    "FIXED":        {"root_type": "Asset",     "account_type": "Fixed Asset"},
+    "INVENTORY":    {"root_type": "Asset",     "account_type": "Stock"},
+    "LIABILITY":    {"root_type": "Liability", "account_type": "Liability"},
+    "NONCURRENT":   {"root_type": "Asset",     "account_type": ""},
+    "OTHERINCOME":  {"root_type": "Income",    "account_type": "Indirect Income"},
+    "OVERHEADS":    {"root_type": "Expense",   "account_type": "Indirect Expense"},
+    "PREPAYMENT":   {"root_type": "Asset",     "account_type": "Current Asset"},
+    "REVENUE":      {"root_type": "Income",    "account_type": "Income Account"},
+    "SALES":        {"root_type": "Income",    "account_type": "Direct Income"},
+    "TERMLIAB":     {"root_type": "Liability", "account_type": "Liability"},
 }
 
 # Reverse mapping: ERPNext (root_type, account_type) -> Xero Type
@@ -38,25 +39,25 @@ ERPNEXT_TO_XERO_TYPE_MAP = {
     ("Asset", "Bank"): "BANK",
     
     # Assets - specific types first
-    ("Asset", "Receivable"): "CURRENT",
+    ("Asset", "Current Asset"): "CURRENT",
     ("Asset", "Accumulated Depreciation"): "DEPRECIATN",
     ("Asset", "Fixed Asset"): "FIXED",
     ("Asset", "Stock"): "INVENTORY",
-    ("Asset", "Prepaid Expense"): "PREPAYMENT",
-    ("Asset", "Asset"): "NONCURRENT",  # Generic non-current asset
-    
+    ("Asset", ""): "NONCURRENT",  # Generic non-current asset
+
     # Liabilities
+    ("Liability", "Current Liability"): "CURRLIAB",
     ("Liability", "Payable"): "CURRLIAB",
-    ("Liability", "Liability"): "TERMLIAB",  # Long-term liability
-    
+    ("Liability", "Liability"): "TERMLIAB",
+
     # Equity
     ("Equity", "Equity"): "EQUITY",
-    
+
     # Income
     ("Income", "Income Account"): "REVENUE",
-    ("Income", "Sales"): "SALES",
-    ("Income", "Other Income"): "OTHERINCOME",
-    
+    ("Income", "Direct Income"): "SALES",
+    ("Income", "Indirect Income"): "OTHERINCOME",
+
     # Expenses
     ("Expense", "Direct Expense"): "DIRECTCOSTS",
     ("Expense", "Expense Account"): "EXPENSE",

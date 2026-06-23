@@ -510,9 +510,9 @@ def xero_request(method, endpoint, data=None, params=None):
 
                 # Exponential backoff with configurable base and max delay
                 wait_time = min(backoff_base**retry_count, max_delay)
-                frappe.log_warning(
-                    f"Xero rate limit hit. Retrying in {wait_time} seconds... (Attempt {retry_count}/{max_retries})",
-                    "Xero API Error",
+                frappe.log_error(
+                    message=f"Xero rate limit hit. Retrying in {wait_time}s (attempt {retry_count}/{max_retries}).",
+                    title="Xero API Rate Limit",
                 )
                 time.sleep(wait_time)
             else:
