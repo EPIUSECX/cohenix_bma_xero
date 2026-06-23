@@ -36,7 +36,7 @@ frappe.ui.form.on('Xero Settings', {
                         frappe.show_alert({ message: `Connection Status: ${r.message.status}`, indicator: r.message.status === 'Active' ? 'green' : 'red' });
                     }
                 });
-            }).removeClass('btn-primary').addClass('btn-default');
+            }, __('Actions'));
 
             frm.add_custom_button(__('Switch Organisation'), function() {
                 frappe.call({
@@ -69,7 +69,7 @@ frappe.ui.form.on('Xero Settings', {
                         );
                     }
                 });
-            }).removeClass('btn-primary').addClass('btn-default');
+            }, __('Actions'));
 
             frm.add_custom_button(__('Disconnect from Xero'), function() {
                 frappe.confirm('Are you sure you want to disconnect from Xero? This will clear your tokens.', () => {
@@ -77,11 +77,11 @@ frappe.ui.form.on('Xero Settings', {
                         frm.reload_doc(); // Reload to reflect changes
                     });
                 });
-            }).removeClass('btn-primary').addClass('btn-danger');
+            }, __('Actions'));
 
             frm.add_custom_button(__('Open Sync Dashboard'), function() {
                 window.location.href = '/desk/xero-sync-dashboard/';
-            }).removeClass('btn-primary').addClass('btn-success');
+            }, __('Actions'));
 
         } else if (frm.doc.enable_xero_sync) {
             // Show connect button if sync is enabled but not connected
@@ -104,7 +104,7 @@ frappe.ui.form.on('Xero Settings', {
 
             frm.add_custom_button(__('Open Sync Dashboard'), function() {
                 window.location.href = '/desk/xero-sync-dashboard/';
-            }).removeClass('btn-primary').addClass('btn-success');
+            }, __('Actions'));
         } else {
              frm.dashboard.set_headline('Xero Synchronization is Disabled.');
         }

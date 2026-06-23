@@ -1,6 +1,6 @@
 {
  "actions": [],
- "creation": "2025-04-17 19:09:18.483560",
+ "creation": "2026-06-23 14:46:54.960716",
  "default_view": "List",
  "doctype": "DocType",
  "editable_grid": 1,
@@ -70,7 +70,12 @@
   "sync_credit_notes",
   "sync_items",
   "sync_payments_standalone",
-  "directional_sync_warning"
+  "directional_sync_warning",
+  "section_break_account_mapping_setup",
+  "setup_mode",
+  "mapping_status",
+  "column_break_mapping_setup",
+  "mapping_setup_info"
  ],
  "fields": [
   {
@@ -88,6 +93,7 @@
    "read_only": 1
   },
   {
+   "collapsible": 1,
    "fieldname": "section_break_credentials",
    "fieldtype": "Section Break",
    "label": "Xero API Credentials"
@@ -116,7 +122,8 @@
   },
   {
    "fieldname": "column_break_tokens",
-   "fieldtype": "Column Break"
+   "fieldtype": "Column Break",
+   "read_only": 1
   },
   {
    "description": "Auto-populated after connecting. To select a different Xero organisation, disconnect and reconnect.",
@@ -162,6 +169,7 @@
    "read_only": 1
   },
   {
+   "collapsible": 1,
    "depends_on": "eval:doc.enable_xero_sync",
    "description": "Control which entities sync in each direction. The directional master gates override all entity-level toggles below them.",
    "fieldname": "section_break_directional",
@@ -341,28 +349,28 @@
    "label": "  Financial Reports \u2190 Xero"
   },
   {
+   "collapsible": 1,
+   "depends_on": "eval:doc.enable_xero_sync && doc.tenant_id",
    "fieldname": "section_break_account_mapping_setup",
    "fieldtype": "Section Break",
-   "label": "Account Mapping Setup",
-   "collapsible": 1,
-   "depends_on": "eval:doc.enable_xero_sync && doc.tenant_id"
+   "label": "Account Mapping Setup"
   },
   {
+   "default": "Manual",
+   "description": "Manual: configure account mapping yourself.  Xero as Source: new ERPNext site adopting Xero \u2014 accounts are pulled from Xero and created in ERPNext automatically.  ERPNext as Source: existing ERPNext adopting Xero \u2014 ERPNext accounts are matched to Xero accounts and gaps are flagged for review.",
    "fieldname": "setup_mode",
    "fieldtype": "Select",
    "label": "Setup Mode",
-   "options": "\nManual\nXero as Source\nERPNext as Source",
-   "default": "Manual",
-   "description": "Manual: configure account mapping yourself.  Xero as Source: new ERPNext site adopting Xero \u2014 accounts are pulled from Xero and created in ERPNext automatically.  ERPNext as Source: existing ERPNext adopting Xero \u2014 ERPNext accounts are matched to Xero accounts and gaps are flagged for review."
+   "options": "\nManual\nXero as Source\nERPNext as Source"
   },
   {
+   "default": "Not Started",
+   "description": "Updated automatically when auto-mapping is run or confirmed.",
    "fieldname": "mapping_status",
    "fieldtype": "Select",
    "label": "Mapping Status",
    "options": "Not Started\nIn Progress\nReview Required\nComplete",
-   "default": "Not Started",
-   "read_only": 1,
-   "description": "Updated automatically when auto-mapping is run or confirmed."
+   "read_only": 1
   },
   {
    "fieldname": "column_break_mapping_setup",
@@ -375,6 +383,7 @@
    "options": "<div class='xero-mapping-info'></div>"
   },
   {
+   "collapsible": 1,
    "fieldname": "section_break_defaults",
    "fieldtype": "Section Break",
    "label": "Defaults and Mappings"
@@ -422,6 +431,7 @@
    "options": "Xero Tax Mapping"
   },
   {
+   "collapsible": 1,
    "depends_on": "eval:doc.enable_xero_sync",
    "fieldname": "section_break_auto_sync",
    "fieldtype": "Section Break",
@@ -444,6 +454,7 @@
    "options": "Hourly\nDaily\nWeekly"
   },
   {
+   "collapsible": 1,
    "depends_on": "eval:doc.enable_xero_sync",
    "fieldname": "section_break_webhook",
    "fieldtype": "Section Break",
@@ -465,6 +476,7 @@
    "options": "Password"
   },
   {
+   "collapsible": 1,
    "fieldname": "section_break_api_settings",
    "fieldtype": "Section Break",
    "label": "API & Rate Limiting Settings"
@@ -566,7 +578,7 @@
  ],
  "issingle": 1,
  "links": [],
- "modified": "2026-06-22 00:00:00.000000",
+ "modified": "2026-06-23 14:55:17.152991",
  "modified_by": "Administrator",
  "module": "Xero",
  "name": "Xero Settings",

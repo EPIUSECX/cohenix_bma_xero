@@ -733,7 +733,11 @@ def build_xero_item_payload(doc, settings):
         payload["Name"] = name
 
     # --- Description (Sales, max 4000 chars) ---
-    if doc.get("description"):
+    # Xero's "Description" is the SALES description and is only valid when the
+    # item IsSold. Sending it while IsSold=False makes Xero reject the whole item
+    # ("IsSold cannot be set to false when SalesDetails or Description values are
+    # provided"), so gate it on is_sales_item.
+    if doc.is_sales_item and doc.get("description"):
         description = strip_html(doc.description)
         if len(description) > XERO_DESCRIPTION_MAX_LENGTH:
             description = description[:XERO_DESCRIPTION_MAX_LENGTH]
@@ -746,7 +750,9 @@ def build_xero_item_payload(doc, settings):
         payload["Description"] = description
 
     # --- Purchase Description (max 4000 chars) ---
-    if doc.get("purchase_description"):
+    # Symmetric to Description above: PurchaseDescription is only valid when the
+    # item IsPurchased, otherwise Xero rejects it.
+    if doc.is_purchase_item and doc.get("purchase_description"):
         purchase_desc = strip_html(doc.purchase_description)
         if len(purchase_desc) > XERO_DESCRIPTION_MAX_LENGTH:
             purchase_desc = purchase_desc[:XERO_DESCRIPTION_MAX_LENGTH]

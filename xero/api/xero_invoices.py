@@ -95,16 +95,19 @@ def find_xero_invoice_by_number(invoice_number, xero_invoice_type):
         return None
 
     try:
-        # GET /Invoices/{InvoiceNumber} — Xero supports both InvoiceID and
-        # InvoiceNumber as path identifiers (per Invoices API doc).
+        # Query by InvoiceNumber via a where-clause. This returns HTTP 200 with
+        # an empty Invoices list when there is no match — UNLIKE
+        # GET /Invoices/{InvoiceNumber}, which returns 404 for any not-yet-synced
+        # invoice and made xero_request log a spurious "404" error on EVERY
+        # first-time outbound invoice sync (a large source of Xero Log noise).
+        safe_number = str(invoice_number).replace('"', "")
         response = xero_request(
-            "GET", f"Invoices/{invoice_number}"
+            "GET", "Invoices", params={"where": f'InvoiceNumber=="{safe_number}"'}
         )
     except Exception:
-        # Network / 404 / parse error — treat as "not found" and let the
-        # normal create path proceed. Xero will reject genuine duplicates
-        # via its own validation, which is safer than blocking sync on a
-        # transient lookup failure.
+        # Network / parse error — treat as "not found" and let the normal create
+        # path proceed. Xero will reject genuine duplicates via its own
+        # validation, which is safer than blocking sync on a transient failure.
         return None
 
     invoices = (response or {}).get("Invoices") or []
