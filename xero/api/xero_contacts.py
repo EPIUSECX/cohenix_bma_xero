@@ -1212,6 +1212,11 @@ def sync_xero_address_to_erpnext(
     if not address_line1 and not city and not postal_code:
         return
 
+    # ERPNext Address.city is mandatory. Xero contacts (especially PO Box type)
+    # often omit the city. Fall back through available fields to avoid MandatoryError.
+    if not city:
+        city = region or postal_code or address_line1 or "-"
+
     # Map Xero AddressType to ERPNext address_type
     # STREET → Billing, POBOX → Postal
     erpnext_address_type = "Billing" if address_type == "STREET" else "Postal"
