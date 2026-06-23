@@ -18,6 +18,8 @@ class XeroSettings(Document):
 
         access_token: DF.SmallText | None
         account_mapping: DF.Table[XeroAccountMapping]
+        mapping_status: DF.Literal["Not Started", "In Progress", "Review Required", "Complete"] | None
+        setup_mode: DF.Literal["Manual", "Xero as Source", "ERPNext as Source"] | None
         api_timeout: DF.Int
         backoff_base: DF.Int  # alias kept for compatibility
         client_id: DF.Data | None
@@ -443,6 +445,28 @@ class XeroSettings(Document):
 
         return result
 
+    # ------------------------------------------------------------------
+    # Account Mapping Setup helpers (delegate to account_mapper module)
+    # ------------------------------------------------------------------
+
+    @frappe.whitelist()
+    def run_account_auto_mapping(self, dry_run=1):
+        """Run the auto-mapping engine. dry_run=1 analyses only; 0 also creates accounts (Xero-as-Source)."""
+        from xero.utils.account_mapper import run_auto_mapping
+        return run_auto_mapping(dry_run=frappe.utils.cint(dry_run))
+
+    @frappe.whitelist()
+    def confirm_account_mapping(self, suggestions):
+        """Write a confirmed list of mapping suggestions to the account_mapping table."""
+        from xero.utils.account_mapper import confirm_mapping
+        return confirm_mapping(suggestions)
+
+    @frappe.whitelist()
+    def push_unmatched_to_xero(self, account_names):
+        """Topology B: create listed ERPNext accounts in Xero."""
+        from xero.utils.account_mapper import push_accounts_to_xero
+        return push_accounts_to_xero(account_names)
+
     def retry_failed_syncs_with_account_errors(self):
         """
         Finds and retries syncs that failed due to account mapping errors.
@@ -513,3 +537,37 @@ class XeroSettings(Document):
         except Exception as e:
             frappe.log_error(frappe.get_traceback(), "Retry Failed Syncs Error")
             return {"success": False, "error": str(e), "retried_count": 0}
+
+
+# ---------------------------------------------------------------------------
+# Module-level whitelisted wrappers
+# ---------------------------------------------------------------------------
+# The Account Mapping Setup buttons call these via `frm.call({ method: '...' })`
+# with a bare method name, which Frappe resolves against this controller MODULE
+# (xero.xero.doctype.xero_settings.xero_settings.<name>) — i.e. it expects a
+# module-level function, not a Document class method. The class methods above
+# are kept for direct/server use; these thin wrappers make the form buttons work.
+
+
+@frappe.whitelist()
+def run_account_auto_mapping(dry_run=1):
+    """Run the auto-mapping engine. dry_run=1 analyses only; 0 also creates accounts (Xero-as-Source)."""
+    from xero.utils.account_mapper import run_auto_mapping
+
+    return run_auto_mapping(dry_run=frappe.utils.cint(dry_run))
+
+
+@frappe.whitelist()
+def confirm_account_mapping(suggestions):
+    """Write a confirmed list of mapping suggestions to the account_mapping table."""
+    from xero.utils.account_mapper import confirm_mapping
+
+    return confirm_mapping(suggestions)
+
+
+@frappe.whitelist()
+def push_unmatched_to_xero(account_names):
+    """Topology B: create the listed ERPNext accounts in Xero."""
+    from xero.utils.account_mapper import push_accounts_to_xero
+
+    return push_accounts_to_xero(account_names)

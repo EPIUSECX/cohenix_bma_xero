@@ -32,7 +32,16 @@ def log_xero_error(message, status="Error", erpnext_doc_type=None, erpnext_doc_n
         log_doc.xero_entity_id = xero_entity_id
         log_doc.direction = direction
         log_doc.error_details = error_details
-        log_doc.category = category or auto_categorize_error(message, error_details)
+        # Defensive: `category` is a Select field. A value not in its option
+        # list raises ValidationError, which the except below swallows —
+        # silently dropping the whole log entry. Map any unknown category to
+        # "Other Errors" so a log is never lost over a label typo.
+        chosen_category = category or auto_categorize_error(message, error_details)
+        valid_categories = frappe.get_meta("Xero Log").get_field("category").options or ""
+        valid_set = {o.strip() for o in valid_categories.split("\n") if o.strip()}
+        if chosen_category and chosen_category not in valid_set:
+            chosen_category = "Other Errors"
+        log_doc.category = chosen_category
         log_doc.retry_count = retry_count
         log_doc.processing_time = processing_time
         log_doc.sync_batch_id = sync_batch_id

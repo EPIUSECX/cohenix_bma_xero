@@ -35,6 +35,7 @@
   "column_break_directional",
   "enable_sync_from_xero",
   "sync_contacts_from_xero",
+  "sync_contact_notes",
   "sync_items_from_xero",
   "sync_invoices_from_xero",
   "sync_bills_from_xero",
@@ -173,7 +174,7 @@
    "description": "Master gate for ALL outbound syncs (ERPNext to Xero). When OFF, nothing is written to Xero regardless of individual entity toggles.",
    "fieldname": "enable_sync_to_xero",
    "fieldtype": "Check",
-   "label": "Enable Sync TO Xero (ERPNext → Xero)"
+   "label": "Enable Sync TO Xero (ERPNext \u2192 Xero)"
   },
   {
    "default": "0",
@@ -181,7 +182,7 @@
    "description": "Sync Customers and Suppliers to Xero Contacts on save.",
    "fieldname": "sync_contacts_to_xero",
    "fieldtype": "Check",
-   "label": "  Contacts → Xero"
+   "label": "  Contacts \u2192 Xero"
   },
   {
    "default": "0",
@@ -189,7 +190,7 @@
    "description": "Sync Items (Products and Services) to Xero on save.",
    "fieldname": "sync_items_to_xero",
    "fieldtype": "Check",
-   "label": "  Items → Xero"
+   "label": "  Items \u2192 Xero"
   },
   {
    "default": "0",
@@ -197,7 +198,7 @@
    "description": "Sync Sales Invoices (ACCREC) to Xero on submit.",
    "fieldname": "sync_invoices_to_xero",
    "fieldtype": "Check",
-   "label": "  Sales Invoices → Xero"
+   "label": "  Sales Invoices \u2192 Xero"
   },
   {
    "default": "0",
@@ -205,7 +206,7 @@
    "description": "Sync Purchase Invoices (Bills / ACCPAY) to Xero on submit.",
    "fieldname": "sync_bills_to_xero",
    "fieldtype": "Check",
-   "label": "  Bills (Purchase) → Xero"
+   "label": "  Bills (Purchase) \u2192 Xero"
   },
   {
    "default": "0",
@@ -213,7 +214,7 @@
    "description": "Sync Sales and Purchase return invoices to Xero Credit Notes.",
    "fieldname": "sync_credit_notes_to_xero",
    "fieldtype": "Check",
-   "label": "  Credit Notes → Xero"
+   "label": "  Credit Notes \u2192 Xero"
   },
   {
    "default": "0",
@@ -221,7 +222,7 @@
    "description": "Sync Payment Entries to Xero Payments on submit.",
    "fieldname": "sync_payments_to_xero",
    "fieldtype": "Check",
-   "label": "  Payments → Xero"
+   "label": "  Payments \u2192 Xero"
   },
   {
    "default": "0",
@@ -229,7 +230,7 @@
    "description": "Sync submitted Journal Entries to Xero Manual Journals.",
    "fieldname": "sync_journal_entries",
    "fieldtype": "Check",
-   "label": "  Journal Entries → Xero"
+   "label": "  Journal Entries \u2192 Xero"
   },
   {
    "default": "0",
@@ -237,7 +238,7 @@
    "description": "Sync submitted Bank Transactions to Xero Bank Transactions.",
    "fieldname": "sync_bank_transactions",
    "fieldtype": "Check",
-   "label": "  Bank Transactions → Xero"
+   "label": "  Bank Transactions \u2192 Xero"
   },
   {
    "default": "0",
@@ -245,7 +246,7 @@
    "description": "Sync submitted Purchase Orders to Xero Purchase Orders.",
    "fieldname": "sync_purchase_orders",
    "fieldtype": "Check",
-   "label": "  Purchase Orders → Xero"
+   "label": "  Purchase Orders \u2192 Xero"
   },
   {
    "default": "0",
@@ -253,7 +254,7 @@
    "description": "Sync submitted Quotations to Xero Quotes.",
    "fieldname": "sync_quotes",
    "fieldtype": "Check",
-   "label": "  Quotations → Xero"
+   "label": "  Quotations \u2192 Xero"
   },
   {
    "fieldname": "column_break_directional",
@@ -265,7 +266,7 @@
    "description": "Master gate for ALL inbound syncs (Xero to ERPNext). When OFF, nothing is read from Xero regardless of individual entity toggles.",
    "fieldname": "enable_sync_from_xero",
    "fieldtype": "Check",
-   "label": "Enable Sync FROM Xero (Xero → ERPNext)"
+   "label": "Enable Sync FROM Xero (Xero \u2192 ERPNext)"
   },
   {
    "default": "0",
@@ -273,7 +274,15 @@
    "description": "Sync Xero Contacts into ERPNext as Customers / Suppliers.",
    "fieldname": "sync_contacts_from_xero",
    "fieldtype": "Check",
-   "label": "  Contacts ← Xero"
+   "label": "  Contacts \u2190 Xero"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.enable_xero_sync && doc.enable_sync_from_xero && doc.sync_contacts_from_xero",
+   "description": "Also pull each Xero contact's History & Notes onto the linked Customer/Supplier as timeline Comments. Heavy: one extra Xero API call per contact, so it runs as a throttled rolling background job.",
+   "fieldname": "sync_contact_notes",
+   "fieldtype": "Check",
+   "label": "  Contact Notes \u2190 Xero"
   },
   {
    "default": "0",
@@ -281,7 +290,7 @@
    "description": "Sync Xero Items into ERPNext Items.",
    "fieldname": "sync_items_from_xero",
    "fieldtype": "Check",
-   "label": "  Items ← Xero"
+   "label": "  Items \u2190 Xero"
   },
   {
    "default": "0",
@@ -289,7 +298,7 @@
    "description": "Sync Xero ACCREC Invoices into ERPNext Sales Invoices (created as Draft).",
    "fieldname": "sync_invoices_from_xero",
    "fieldtype": "Check",
-   "label": "  Sales Invoices ← Xero"
+   "label": "  Sales Invoices \u2190 Xero"
   },
   {
    "default": "0",
@@ -297,7 +306,7 @@
    "description": "Sync Xero ACCPAY Bills into ERPNext Purchase Invoices (created as Draft).",
    "fieldname": "sync_bills_from_xero",
    "fieldtype": "Check",
-   "label": "  Bills (Purchase) ← Xero"
+   "label": "  Bills (Purchase) \u2190 Xero"
   },
   {
    "default": "0",
@@ -305,7 +314,7 @@
    "description": "Sync Xero Credit Notes into ERPNext return invoices.",
    "fieldname": "sync_credit_notes_from_xero",
    "fieldtype": "Check",
-   "label": "  Credit Notes ← Xero"
+   "label": "  Credit Notes \u2190 Xero"
   },
   {
    "default": "0",
@@ -313,7 +322,7 @@
    "description": "Sync Xero Payments into ERPNext Payment Entries. Also enables the hourly payment detection task.",
    "fieldname": "sync_payments_from_xero",
    "fieldtype": "Check",
-   "label": "  Payments ← Xero"
+   "label": "  Payments \u2190 Xero"
   },
   {
    "default": "0",
@@ -321,7 +330,7 @@
    "description": "Pull Xero Chart of Accounts into ERPNext Account records. Useful for initial setup.",
    "fieldname": "sync_chart_of_accounts",
    "fieldtype": "Check",
-   "label": "  Chart of Accounts ← Xero"
+   "label": "  Chart of Accounts \u2190 Xero"
   },
   {
    "default": "0",
@@ -329,7 +338,41 @@
    "description": "Pull financial reports (Balance Sheet, P&L) from Xero into ERPNext.",
    "fieldname": "sync_financial_reports",
    "fieldtype": "Check",
-   "label": "  Financial Reports ← Xero"
+   "label": "  Financial Reports \u2190 Xero"
+  },
+  {
+   "fieldname": "section_break_account_mapping_setup",
+   "fieldtype": "Section Break",
+   "label": "Account Mapping Setup",
+   "collapsible": 1,
+   "depends_on": "eval:doc.enable_xero_sync && doc.tenant_id"
+  },
+  {
+   "fieldname": "setup_mode",
+   "fieldtype": "Select",
+   "label": "Setup Mode",
+   "options": "\nManual\nXero as Source\nERPNext as Source",
+   "default": "Manual",
+   "description": "Manual: configure account mapping yourself.  Xero as Source: new ERPNext site adopting Xero \u2014 accounts are pulled from Xero and created in ERPNext automatically.  ERPNext as Source: existing ERPNext adopting Xero \u2014 ERPNext accounts are matched to Xero accounts and gaps are flagged for review."
+  },
+  {
+   "fieldname": "mapping_status",
+   "fieldtype": "Select",
+   "label": "Mapping Status",
+   "options": "Not Started\nIn Progress\nReview Required\nComplete",
+   "default": "Not Started",
+   "read_only": 1,
+   "description": "Updated automatically when auto-mapping is run or confirmed."
+  },
+  {
+   "fieldname": "column_break_mapping_setup",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "mapping_setup_info",
+   "fieldtype": "HTML",
+   "label": "Mapping Setup Info",
+   "options": "<div class='xero-mapping-info'></div>"
   },
   {
    "fieldname": "section_break_defaults",
@@ -469,7 +512,7 @@
    "fieldname": "section_break_derived_flags",
    "fieldtype": "Section Break",
    "hidden": 1,
-   "label": "Derived Flags (Internal — do not edit)"
+   "label": "Derived Flags (Internal \u2014 do not edit)"
   },
   {
    "default": "0",

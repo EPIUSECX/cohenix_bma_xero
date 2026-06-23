@@ -191,7 +191,67 @@ frappe.ui.form.on('Xero Settings', {
                 d.show();
             }, __("Mappings"));
         }
+
+        // --- Account Mapping Setup Section ---
+        if (frm.doc.enable_xero_sync && frm.doc.tenant_id) {
+            frm.trigger("render_mapping_setup");
+        }
 	},
+
+    // -------------------------------------------------------------------------
+    // Account Mapping Setup
+    // -------------------------------------------------------------------------
+
+    render_mapping_setup: function(frm) {
+        const status      = frm.doc.mapping_status || 'Not Started';
+        const mode        = frm.doc.setup_mode || 'Manual';
+        const statusColor = { 'Complete': 'green', 'In Progress': 'blue', 'Review Required': 'orange', 'Not Started': 'grey' }[status] || 'grey';
+
+        const $info = frm.fields_dict.mapping_setup_info.$wrapper;
+        $info.html(`
+            <div style="padding:8px 0;">
+                <span class="indicator ${statusColor}">Mapping Status: <strong>${status}</strong></span>
+                &nbsp;&nbsp;|&nbsp;&nbsp;
+                <span>Mode: <strong>${mode}</strong></span>
+            </div>
+        `);
+
+        // Analyse button — always available when connected
+        frm.add_custom_button(__('Analyse Account Mapping'), function() {
+            xero_run_mapping(frm, true);
+        }, __("Account Mapping"));
+
+        // Re-run (apply) button — visible once analysis has been done
+        if (status !== 'Not Started' && mode !== 'Manual') {
+            frm.add_custom_button(__('Apply Auto-Mapping'), function() {
+                frappe.confirm(
+                    mode === 'Xero as Source'
+                        ? __('This will create missing ERPNext accounts based on your Xero chart of accounts and populate the mapping table. Continue?')
+                        : __('This will populate the mapping table with matched accounts. Gaps will be flagged for review. Continue?'),
+                    () => xero_run_mapping(frm, false)
+                );
+            }, __("Account Mapping"));
+        }
+
+        if (status === 'Review Required' || status === 'In Progress') {
+            frm.add_custom_button(__('Review & Confirm Mapping'), function() {
+                xero_show_mapping_review_dialog(frm);
+            }, __("Account Mapping")).addClass('btn-warning');
+        }
+
+        if (status === 'Complete') {
+            const $info2 = frm.fields_dict.mapping_setup_info.$wrapper;
+            $info2.find('.xero-mapping-info').html(
+                `<div class="alert alert-success" style="margin-top:8px;">
+                    ✅ Account mapping is complete. All Xero accounts are mapped to ERPNext accounts.
+                </div>`
+            );
+        }
+    },
+
+    setup_mode: function(frm) {
+        frm.save().then(() => frm.trigger("render_mapping_setup"));
+    },
 
     enable_xero_sync: function(frm) {
         frm.trigger("toggle_fields");
@@ -405,4 +465,221 @@ function sync_xero_tax_rates(frm) {
             frappe.show_alert({ message: 'Failed to sync Xero tax rates', indicator: 'red' });
         }
     });
+}
+
+// =============================================================================
+// Account Mapping Setup helpers
+// =============================================================================
+
+function xero_run_mapping(frm, dry_run) {
+    const label = dry_run ? 'Analysing account mapping...' : 'Running auto-mapping...';
+    frappe.show_alert({ message: label, indicator: 'blue' });
+
+    frm.call({
+        method: 'run_account_auto_mapping',
+        args: { dry_run: dry_run ? 1 : 0 },
+        callback: function(r) {
+            if (!r.message) {
+                frappe.show_alert({ message: 'No response from server', indicator: 'red' });
+                return;
+            }
+            const result = r.message;
+            if (dry_run) {
+                xero_show_mapping_analysis_dialog(frm, result);
+            } else {
+                frm.reload_doc();
+                frappe.show_alert({
+                    message: `Auto-mapping complete: ${result.summary.matched} matched, ${result.summary.created} accounts created, ${result.summary.unmatched_xero} still unmatched.`,
+                    indicator: result.summary.unmatched_xero > 0 ? 'orange' : 'green'
+                });
+                if (result.summary.unmatched_xero > 0 || result.summary.unmatched_erpnext > 0) {
+                    xero_show_mapping_review_dialog(frm, result);
+                }
+            }
+        },
+        error: function() {
+            frappe.show_alert({ message: 'Failed to run auto-mapping', indicator: 'red' });
+        }
+    });
+}
+
+function xero_show_mapping_analysis_dialog(frm, result) {
+    const s = result.summary;
+    const mode = frm.doc.setup_mode || 'Manual';
+
+    let html = `
+        <div style="margin-bottom:12px;">
+            <table class="table table-bordered table-sm">
+                <tr><td><b>Total Xero accounts</b></td><td>${s.total_xero}</td></tr>
+                <tr><td><b>Total ERPNext accounts</b></td><td>${s.total_erpnext}</td></tr>
+                <tr><td><b>Already mapped</b></td><td>${s.already_mapped}</td></tr>
+                <tr><td><b>Auto-matched</b></td><td>${s.matched}</td></tr>
+                <tr><td><b>Xero accounts with no ERPNext match</b></td><td>${s.unmatched_xero}</td></tr>
+                <tr><td><b>ERPNext accounts not in Xero</b></td><td>${s.unmatched_erpnext}</td></tr>
+            </table>
+        </div>`;
+
+    if (result.matched.length) {
+        html += `<h6>Matched (${result.matched.length})</h6>
+        <div style="max-height:200px;overflow-y:auto;">
+        <table class="table table-sm table-striped">
+            <thead><tr><th>ERPNext Account</th><th>Xero Code</th><th>Xero Name</th><th>Confidence</th></tr></thead><tbody>`;
+        result.matched.forEach(m => {
+            const badge = m.confidence === 'High' ? 'success' : m.confidence === 'Medium' ? 'warning' : 'secondary';
+            html += `<tr>
+                <td>${m.erpnext_account}</td>
+                <td>${m.xero_code || ''}</td>
+                <td>${m.xero_name || ''}</td>
+                <td><span class="badge badge-${badge}">${m.confidence}</span></td>
+            </tr>`;
+        });
+        html += '</tbody></table></div>';
+    }
+
+    if (result.unmatched_xero.length) {
+        html += `<h6 style="margin-top:10px;">Unmatched Xero accounts (${result.unmatched_xero.length})</h6>
+        <div style="max-height:150px;overflow-y:auto;">
+        <table class="table table-sm"><thead><tr><th>Code</th><th>Name</th><th>Type</th></tr></thead><tbody>`;
+        result.unmatched_xero.forEach(a => {
+            html += `<tr><td>${a.xero_code||''}</td><td>${a.xero_name||''}</td><td>${a.xero_type||''}</td></tr>`;
+        });
+        html += '</tbody></table></div>';
+    }
+
+    const applyLabel = mode === 'Xero as Source'
+        ? 'Apply (create missing ERPNext accounts + map all)'
+        : 'Apply (map matched accounts)';
+
+    let d = new frappe.ui.Dialog({
+        title: __('Account Mapping Analysis'),
+        size: 'large',
+        fields: [{ fieldtype: 'HTML', fieldname: 'analysis_html' }],
+        primary_action_label: __(applyLabel),
+        primary_action: function() {
+            d.hide();
+            xero_run_mapping(frm, false);
+        },
+        secondary_action_label: __('Close'),
+        secondary_action: function() { d.hide(); }
+    });
+    d.fields_dict.analysis_html.$wrapper.html(html);
+    d.show();
+}
+
+function xero_show_mapping_review_dialog(frm, result) {
+    // If result not passed, fetch a fresh analysis
+    if (!result) {
+        frm.call({
+            method: 'run_account_auto_mapping',
+            args: { dry_run: 1 },
+            callback: function(r) {
+                if (r.message) xero_show_mapping_review_dialog(frm, r.message);
+            }
+        });
+        return;
+    }
+
+    const mode = frm.doc.setup_mode || 'Manual';
+    const pending = result.matched.filter(m => m.confidence !== 'High' || !m.xero_code);
+    const unmatched = result.unmatched_xero || [];
+
+    let rows_html = '';
+    pending.forEach((m, idx) => {
+        const badge = m.confidence === 'Medium' ? 'warning' : 'secondary';
+        rows_html += `
+        <tr>
+            <td><input type="checkbox" class="confirm-row" data-idx="${idx}" checked></td>
+            <td>${m.erpnext_account}</td>
+            <td>${m.xero_code || ''}</td>
+            <td>${m.xero_name || ''}</td>
+            <td><span class="badge badge-${badge}">${m.confidence}</span></td>
+        </tr>`;
+    });
+
+    let push_section = '';
+    if (mode === 'ERPNext as Source' && unmatched.length > 0) {
+        push_section = `
+        <hr>
+        <h6>Unmatched Xero accounts — no ERPNext equivalent found (${unmatched.length})</h6>
+        <p class="text-muted small">These Xero accounts have no ERPNext counterpart. You can ignore them or push unmatched ERPNext accounts to Xero.</p>`;
+    }
+
+    let html = `
+        <p>Review the suggested mappings below. Uncheck any you want to skip. Click <strong>Confirm Selected</strong> to write them to the mapping table.</p>
+        <div style="max-height:350px;overflow-y:auto;">
+        <table class="table table-sm table-bordered">
+            <thead><tr>
+                <th width="30"><input type="checkbox" id="check-all-mapping" checked></th>
+                <th>ERPNext Account</th><th>Xero Code</th><th>Xero Name</th><th>Confidence</th>
+            </tr></thead>
+            <tbody id="mapping-review-tbody">${rows_html || '<tr><td colspan="5" class="text-muted text-center">No pending suggestions — all matched accounts are High confidence.</td></tr>'}</tbody>
+        </table>
+        </div>${push_section}`;
+
+    let d = new frappe.ui.Dialog({
+        title: __('Review & Confirm Account Mapping'),
+        size: 'extra-large',
+        fields: [{ fieldtype: 'HTML', fieldname: 'review_html' }],
+        primary_action_label: __('Confirm Selected'),
+        primary_action: function() {
+            const checked = [];
+            d.$wrapper.find('.confirm-row:checked').each(function() {
+                const idx = parseInt($(this).data('idx'));
+                checked.push(pending[idx]);
+            });
+            if (!checked.length) {
+                frappe.show_alert({ message: 'No rows selected', indicator: 'orange' });
+                return;
+            }
+            frm.call({
+                method: 'confirm_account_mapping',
+                args: { suggestions: JSON.stringify(checked) },
+                callback: function(r) {
+                    d.hide();
+                    frm.reload_doc();
+                    frappe.show_alert({
+                        message: `${r.message.added} mapping(s) confirmed. Total mapped: ${r.message.total_mapped}.`,
+                        indicator: 'green'
+                    });
+                }
+            });
+        }
+    });
+
+    d.fields_dict.review_html.$wrapper.html(html);
+
+    // Select/deselect all
+    d.$wrapper.find('#check-all-mapping').on('change', function() {
+        d.$wrapper.find('.confirm-row').prop('checked', this.checked);
+    });
+
+    // Push to Xero button (Topology B only)
+    if (mode === 'ERPNext as Source' && result.unmatched_erpnext && result.unmatched_erpnext.length > 0) {
+        d.add_custom_action(__('Push Unmatched ERPNext Accounts to Xero'), function() {
+            const names = result.unmatched_erpnext.map(a => a.erpnext_account);
+            frappe.confirm(
+                __(`Push ${names.length} ERPNext account(s) to Xero? This creates new accounts in your live Xero organisation.`),
+                function() {
+                    frm.call({
+                        method: 'push_unmatched_to_xero',
+                        args: { account_names: JSON.stringify(names) },
+                        callback: function(r) {
+                            const res = r.message;
+                            d.hide();
+                            frm.reload_doc();
+                            frappe.show_alert({
+                                message: `${res.created.length} account(s) pushed to Xero. ${res.errors.length} error(s).`,
+                                indicator: res.errors.length ? 'orange' : 'green'
+                            });
+                            if (res.errors.length) {
+                                frappe.msgprint({ title: 'Push Errors', message: res.errors.join('<br>'), indicator: 'orange' });
+                            }
+                        }
+                    });
+                }
+            );
+        });
+    }
+
+    d.show();
 }

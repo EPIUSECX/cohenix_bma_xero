@@ -58,28 +58,64 @@ def get_sync_statistics(from_date=None, to_date=None):
     if not to_date:
         to_date = now_datetime()
     
-    # Overall stats
+    # Current-state stats: dedupe to the LATEST log entry per entity document so
+    # that an entity which failed once and later synced successfully counts only
+    # as its current (latest) status. This makes the dashboard reflect the LIVE
+    # state of the system — re-syncing a previously-failed entity moves it to
+    # success and the rate climbs to 100% — instead of accumulating every
+    # historical attempt forever.
+    #
+    # Rows with no entity document (erpnext_doc_name NULL/'Unknown' — e.g. system
+    # monitoring logs) are excluded from the success-rate maths because they
+    # don't represent the state of a synced record.
     overall_stats = frappe.db.sql("""
-        SELECT 
+        SELECT
             status,
             COUNT(*) as count,
             AVG(CASE WHEN status = 'Success' THEN 1 ELSE 0 END) * 100 as success_rate
-        FROM `tabXero Log`
-        WHERE timestamp BETWEEN %s AND %s
+        FROM (
+            SELECT status,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY erpnext_doc_type, erpnext_doc_name
+                       ORDER BY timestamp DESC, name DESC
+                   ) AS rn
+            FROM `tabXero Log`
+            WHERE timestamp BETWEEN %s AND %s
+              AND erpnext_doc_type IS NOT NULL
+              AND erpnext_doc_name IS NOT NULL AND erpnext_doc_name != 'Unknown'
+              -- only real sync outcomes determine current state; ignore trailing
+              -- Info/Warning rows (e.g. create-once skips) that would otherwise
+              -- mask an entity's last successful sync.
+              AND status IN ('Success', 'Error')
+        ) latest
+        WHERE rn = 1
         GROUP BY status
     """, (from_date, to_date), as_dict=True)
-    
-    # Entity-wise stats
+
+    # Entity-wise stats (latest attempt per entity document — current state)
     entity_stats = frappe.db.sql("""
-        SELECT 
+        SELECT
             erpnext_doc_type,
             COUNT(*) as total,
             SUM(CASE WHEN status = 'Success' THEN 1 ELSE 0 END) as success,
             SUM(CASE WHEN status = 'Error' THEN 1 ELSE 0 END) as errors,
             AVG(CASE WHEN status = 'Success' THEN 1 ELSE 0 END) * 100 as success_rate
-        FROM `tabXero Log`
-        WHERE timestamp BETWEEN %s AND %s
-        AND erpnext_doc_type IS NOT NULL
+        FROM (
+            SELECT erpnext_doc_type, erpnext_doc_name, status,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY erpnext_doc_type, erpnext_doc_name
+                       ORDER BY timestamp DESC, name DESC
+                   ) AS rn
+            FROM `tabXero Log`
+            WHERE timestamp BETWEEN %s AND %s
+              AND erpnext_doc_type IS NOT NULL
+              AND erpnext_doc_name IS NOT NULL AND erpnext_doc_name != 'Unknown'
+              -- only real sync outcomes determine current state; ignore trailing
+              -- Info/Warning rows (e.g. create-once skips) that would otherwise
+              -- mask an entity's last successful sync.
+              AND status IN ('Success', 'Error')
+        ) latest
+        WHERE rn = 1
         GROUP BY erpnext_doc_type
         ORDER BY total DESC
     """, (from_date, to_date), as_dict=True)
@@ -257,8 +293,12 @@ def get_system_health():
         WHERE timestamp >= %s
     """, (yesterday,))
     
-    total_recent = len(recent_logs)
-    success_recent = len([log for log in recent_logs if log[0] == 'Success'])
+    # Base the success rate on real sync OUTCOMES only (Success vs Error).
+    # Info/Warning rows (skips, deferrals, monitoring notes) are not failures and
+    # must not deflate the health score.
+    outcome_logs = [log for log in recent_logs if log[0] in ('Success', 'Error')]
+    total_recent = len(outcome_logs)
+    success_recent = len([log for log in outcome_logs if log[0] == 'Success'])
     success_rate = (success_recent / total_recent * 100) if total_recent > 0 else 100
     
     # Check for stuck jobs (jobs older than 1 hour)

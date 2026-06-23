@@ -17,6 +17,22 @@ def sync_all_enabled():
     if not settings or not settings.enable_xero_sync:
         return
 
+    # Account mapping safety gate: warn when auto-mapping is configured but incomplete.
+    # This does not block the sync — accounts may still map via line-item lookup —
+    # but an incomplete mapping means GL postings may land in the wrong account.
+    setup_mode = settings.get("setup_mode") or "Manual"
+    mapping_status = settings.get("mapping_status") or "Not Started"
+    if setup_mode != "Manual" and mapping_status not in ("Complete",):
+        log_xero_error(
+            message=(
+                f"Account Mapping Setup is '{setup_mode}' but mapping_status is '{mapping_status}'. "
+                "Transactions may post to incorrect GL accounts until mapping is complete. "
+                "Open Xero Settings → Account Mapping Setup and run Analyse / Apply."
+            ),
+            status="Warning",
+            category="Account Mapping",
+        )
+
     # No blanket directional gate — each entity checks its own flag
 
     try:
@@ -456,5 +472,26 @@ def validate_sync_integrity():
     except Exception as e:
         log_xero_error(
             message="Error during sync integrity validation",
+            error_details=frappe.get_traceback(),
+        )
+
+
+def sync_contact_notes():
+    """Scheduled (hourly): pull Xero contact History & Notes onto the linked
+    ERPNext Customers/Suppliers as timeline Comments. Throttled — processes a
+    rolling batch per run via a cache cursor. Opt-in via the sync_contact_notes
+    setting."""
+    settings = get_xero_settings()
+    if not settings or not settings.enable_xero_sync:
+        return
+    if not settings.get("enable_sync_from_xero") or not settings.get("sync_contact_notes"):
+        return
+    try:
+        from .api.xero_contacts import sync_contact_notes_from_xero
+
+        sync_contact_notes_from_xero(batch_size=100)
+    except Exception:
+        log_xero_error(
+            message="Error during scheduled contact notes sync",
             error_details=frappe.get_traceback(),
         )

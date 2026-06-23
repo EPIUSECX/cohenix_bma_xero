@@ -191,7 +191,8 @@ scheduler_events = {
     "hourly": [
         "xero.tasks.check_payments",
         "xero.tasks.monitor_sync_health",
-        "xero.tasks.sync_pending_documents"
+        "xero.tasks.sync_pending_documents",
+        "xero.tasks.sync_contact_notes"
     ],
     # Weekly tasks
     "weekly": [

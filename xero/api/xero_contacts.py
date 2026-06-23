@@ -1217,6 +1217,11 @@ def sync_xero_address_to_erpnext(
     if not city:
         city = region or postal_code or address_line1 or "-"
 
+    # ERPNext Address.address_line1 is also mandatory. Partial / PO-Box Xero
+    # addresses can omit it; fall back so the insert doesn't MandatoryError.
+    if not address_line1:
+        address_line1 = city or postal_code or address_line2 or "-"
+
     # Map Xero AddressType to ERPNext address_type
     # STREET → Billing, POBOX → Postal
     erpnext_address_type = "Billing" if address_type == "STREET" else "Postal"
@@ -1256,7 +1261,19 @@ def sync_xero_address_to_erpnext(
     if postal_code:
         address_data_dict["pincode"] = postal_code
     if country:
-        address_data_dict["country"] = country
+        # Xero's address "Country" field is free text and frequently holds a
+        # town / region (e.g. "Caledon", "Onrus") rather than a real country,
+        # which fails ERPNext's Country link validation. Use it only when it's a
+        # valid Country; otherwise fall back to the company's country and never
+        # block the address insert over it.
+        if frappe.db.exists("Country", country):
+            address_data_dict["country"] = country
+        else:
+            _default_country = frappe.db.get_value(
+                "Company", frappe.defaults.get_global_default("company"), "country"
+            )
+            if _default_country:
+                address_data_dict["country"] = _default_country
 
     # Set as primary address if it's a STREET/Billing address
     if address_type == "STREET":
@@ -1327,3 +1344,147 @@ def sync_xero_address_to_erpnext(
             error_details=frappe.get_traceback(),
         )
         # Don't re-raise - allow other addresses to be processed
+
+
+# ---------------------------------------------------------------------------
+# Xero Contact History & Notes  ->  ERPNext timeline Comments
+# ---------------------------------------------------------------------------
+# Xero keeps free-text notes on a contact under a SEPARATE endpoint
+# (GET /Contacts/{ContactID}/History) that is NOT part of the Contact payload,
+# so the normal contact sync never sees them. These helpers pull those notes and
+# mirror them onto the linked ERPNext Customer/Supplier as timeline Comments.
+# Because it costs one extra API call per contact, the sync is batched via a
+# rolling cursor and is meant to run as a throttled scheduled job.
+
+XERO_NOTE_MARKER = "[Xero Note"
+
+
+def fetch_contact_notes(xero_contact_id):
+    """Return the manual Notes for a Xero contact (history records where Changes == 'Note')."""
+    from .xero_invoices import parse_xero_date
+
+    response = xero_request("GET", f"Contacts/{xero_contact_id}/History")
+    records = (response or {}).get("HistoryRecords") or []
+    notes = []
+    for rec in records:
+        if (rec.get("Changes") or "").strip().lower() != "note":
+            continue
+        details = (rec.get("Details") or "").strip()
+        if not details:
+            continue
+        note_date = parse_xero_date(rec.get("DateUTC")) or rec.get("DateUTCString") or ""
+        notes.append({
+            "details": details,
+            "date": str(note_date).strip(),
+            "user": (rec.get("User") or "").strip(),
+        })
+    return notes
+
+
+def store_contact_notes(party_doctype, party_name, notes):
+    """Write the given Xero notes onto an ERPNext party as timeline Comments, deduped."""
+    added = 0
+    for n in notes:
+        meta = " · ".join(part for part in [n.get("date", ""), n.get("user", "")] if part)
+        content = f"{XERO_NOTE_MARKER}{(' ' + meta) if meta else ''}] {n['details']}"
+
+        # Dedupe on the exact rendered content already attached to this party so
+        # re-runs never create duplicate comments.
+        if frappe.db.exists("Comment", {
+            "comment_type": "Comment",
+            "reference_doctype": party_doctype,
+            "reference_name": party_name,
+            "content": content,
+        }):
+            continue
+
+        frappe.get_doc({
+            "doctype": "Comment",
+            "comment_type": "Comment",
+            "reference_doctype": party_doctype,
+            "reference_name": party_name,
+            "content": content,
+        }).insert(ignore_permissions=True)
+        added += 1
+
+    if added:
+        frappe.db.commit()
+    return added
+
+
+@frappe.whitelist()
+def sync_contact_notes_from_xero(batch_size=100):
+    """
+    Mirror Xero contact History & Notes onto the linked ERPNext Customers/Suppliers
+    as timeline Comments.
+
+    Processes a rolling batch each run (cursor held in cache) so a large contact
+    book is covered across successive scheduled runs without exhausting the Xero
+    rate limit. Gated by enable_sync_from_xero + the sync_contact_notes toggle.
+    """
+    batch_size = frappe.utils.cint(batch_size) or 100
+    settings = get_xero_settings()
+    if not settings.enable_xero_sync or not settings.enable_sync_from_xero:
+        return {"skipped": "sync disabled"}
+    if not settings.get("sync_contact_notes"):
+        return {"skipped": "sync_contact_notes disabled"}
+
+    # Ordered list of all parties that are linked to a Xero contact.
+    parties = []
+    for dt in ("Customer", "Supplier"):
+        for row in frappe.get_all(
+            dt,
+            filters={"xero_contact_id": ["is", "set"]},
+            fields=["name", "xero_contact_id"],
+            order_by="name asc",
+        ):
+            parties.append((dt, row.name, row.xero_contact_id))
+
+    if not parties:
+        return {"processed": 0, "notes_added": 0, "total_parties": 0}
+
+    cursor = frappe.utils.cint(frappe.cache().get_value("xero_notes_cursor") or 0)
+    if cursor >= len(parties):
+        cursor = 0
+    batch = parties[cursor:cursor + batch_size]
+
+    processed = 0
+    notes_added = 0
+    for dt, name, cid in batch:
+        try:
+            notes_added += store_contact_notes(dt, name, fetch_contact_notes(cid))
+            processed += 1
+        except Exception:
+            log_xero_error(
+                message=f"Failed to sync notes for {dt} {name} (Xero {cid})",
+                status="Warning",
+                erpnext_doc_type=dt,
+                erpnext_doc_name=name,
+                xero_entity_id=cid,
+                xero_entity_type="Contact",
+                direction="Xero to ERPNext",
+                category="System Monitoring",
+                error_details=frappe.get_traceback(),
+            )
+
+    # Advance the rolling cursor, wrapping at the end of the list.
+    next_cursor = cursor + batch_size
+    if next_cursor >= len(parties):
+        next_cursor = 0
+    frappe.cache().set_value("xero_notes_cursor", next_cursor)
+
+    log_xero_error(
+        message=(
+            f"Contact notes sync: processed {processed} of {len(parties)} contacts "
+            f"(cursor {cursor}->{next_cursor}), {notes_added} new note(s) added."
+        ),
+        status="Info",
+        category="System Monitoring",
+        direction="Xero to ERPNext",
+    )
+    return {
+        "processed": processed,
+        "notes_added": notes_added,
+        "total_parties": len(parties),
+        "next_cursor": next_cursor,
+    }
