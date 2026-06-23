@@ -221,8 +221,23 @@ frappe.ui.form.on('Xero Settings', {
             xero_run_mapping(frm, true);
         }, __("Account Mapping"));
 
-        // Re-run (apply) button — visible once analysis has been done
-        if (status !== 'Not Started' && mode !== 'Manual') {
+        // Full Auto-Map — one-shot create-and-map, only for Xero as Source
+        if (mode === 'Xero as Source' && status !== 'Complete') {
+            frm.add_custom_button(__('Full Auto-Map (Create Missing)'), function() {
+                frappe.confirm(
+                    __('This will:<br>' +
+                       '• Match all Xero accounts to existing ERPNext accounts<br>' +
+                       '• Create new ERPNext accounts (with full hierarchy) for any that cannot be matched<br>' +
+                       '• Write everything to the mapping table in one step<br><br>' +
+                       '<strong>Archived Xero accounts will be created as disabled accounts.</strong><br><br>' +
+                       'Continue?'),
+                    () => xero_run_full_auto_map(frm)
+                );
+            }, __("Account Mapping")).addClass('btn-primary');
+        }
+
+        // Step-by-step apply button — visible once analysis has been done
+        if (status !== 'Not Started' && mode !== 'Manual' && status !== 'Complete') {
             frm.add_custom_button(__('Apply Auto-Mapping'), function() {
                 frappe.confirm(
                     mode === 'Xero as Source'
@@ -240,10 +255,9 @@ frappe.ui.form.on('Xero Settings', {
         }
 
         if (status === 'Complete') {
-            const $info2 = frm.fields_dict.mapping_setup_info.$wrapper;
-            $info2.find('.xero-mapping-info').html(
-                `<div class="alert alert-success" style="margin-top:8px;">
-                    ✅ Account mapping is complete. All Xero accounts are mapped to ERPNext accounts.
+            $info.find('div').first().append(
+                `<div class="alert alert-success" style="margin-top:8px;padding:8px 12px;">
+                    &#10003; Account mapping is complete. All active Xero accounts are mapped.
                 </div>`
             );
         }
@@ -681,5 +695,114 @@ function xero_show_mapping_review_dialog(frm, result) {
         });
     }
 
+    d.show();
+}
+
+function xero_run_full_auto_map(frm) {
+    // Show a blocking progress indicator — this call can take a while
+    // when creating 100+ accounts with hierarchy
+    const dlg = new frappe.ui.Dialog({
+        title: __('Full Auto-Map in Progress'),
+        fields: [{ fieldtype: 'HTML', fieldname: 'progress_html' }],
+    });
+    dlg.fields_dict.progress_html.$wrapper.html(`
+        <div style="text-align:center;padding:24px 0;">
+            <div class="spinner-border text-primary" role="status" style="width:2rem;height:2rem;"></div>
+            <p style="margin-top:12px;">Fetching Xero accounts, matching, and creating missing ERPNext accounts...<br>
+            <small class="text-muted">This may take up to a minute for large charts of accounts.</small></p>
+        </div>
+    `);
+    dlg.show();
+    // Prevent closing while running
+    dlg.$wrapper.find('.btn-modal-close').hide();
+
+    frappe.call({
+        method: 'xero.xero.doctype.xero_settings.xero_settings.run_full_account_auto_map',
+        freeze: false,   // we handle our own indicator
+        callback: function(r) {
+            dlg.hide();
+            if (!r.message) {
+                frappe.show_alert({ message: __('No response from server'), indicator: 'red' });
+                return;
+            }
+            xero_show_full_map_result(frm, r.message);
+        },
+        error: function() {
+            dlg.hide();
+            frappe.show_alert({ message: __('Full auto-map failed. Check the Xero Log for details.'), indicator: 'red' });
+        }
+    });
+}
+
+function xero_show_full_map_result(frm, result) {
+    const s      = result.summary;
+    const status = s.mapping_status || 'Unknown';
+    const statusBadge = status === 'Complete'
+        ? `<span class="badge badge-success">Complete</span>`
+        : `<span class="badge badge-warning">${status}</span>`;
+
+    // Build summary table
+    let html = `
+        <h5>Result ${statusBadge}</h5>
+        <table class="table table-bordered table-sm" style="margin-top:10px;">
+            <tr><td>Total Xero accounts fetched</td><td><strong>${s.total_xero}</strong></td></tr>
+            <tr><td>Already mapped (before run)</td><td>${s.already_mapped}</td></tr>
+            <tr><td>Auto-matched to existing ERPNext accounts</td><td>${s.matched - s.created}</td></tr>
+            <tr><td>ERPNext accounts created</td><td>${s.created}</td></tr>
+            <tr><td>Written to mapping table this run</td><td>${s.written !== undefined ? s.written : s.matched}</td></tr>
+            <tr><td>Still unmatched Xero accounts</td><td>${s.unmatched_xero}</td></tr>
+        </table>`;
+
+    // Created accounts — show hierarchy info
+    if (result.created_accounts && result.created_accounts.length > 0) {
+        const active   = result.created_accounts.filter(a => a.xero_status !== 'ARCHIVED');
+        const archived = result.created_accounts.filter(a => a.xero_status === 'ARCHIVED');
+        html += `<h6 style="margin-top:12px;">Created accounts (${result.created_accounts.length})</h6>`;
+        if (active.length) {
+            html += `<p class="text-muted small">${active.length} active, ${archived.length} disabled (archived in Xero)</p>`;
+        }
+        html += `<div style="max-height:200px;overflow-y:auto;">
+            <table class="table table-sm table-striped">
+                <thead><tr><th>ERPNext Account</th><th>Xero Code</th><th>Xero Name</th><th>Status</th></tr></thead>
+                <tbody>`;
+        result.created_accounts.forEach(a => {
+            const badge = a.xero_status === 'ARCHIVED'
+                ? '<span class="badge badge-secondary">Archived / Disabled</span>'
+                : '<span class="badge badge-success">Active</span>';
+            html += `<tr>
+                <td><small>${a.erpnext_account}</small></td>
+                <td>${a.xero_code || ''}</td>
+                <td>${a.xero_name || ''}</td>
+                <td>${badge}</td>
+            </tr>`;
+        });
+        html += `</tbody></table></div>`;
+    }
+
+    // Errors
+    if (result.errors && result.errors.length > 0) {
+        html += `<div class="alert alert-warning" style="margin-top:10px;">
+            <strong>${result.errors.length} error(s) during account creation:</strong><br>
+            <small>${result.errors.slice(0, 10).join('<br>')}</small>
+            ${result.errors.length > 10 ? `<br><em>...and ${result.errors.length - 10} more. Check Xero Log.</em>` : ''}
+        </div>`;
+    }
+
+    // Still unmatched
+    if (result.unmatched_xero && result.unmatched_xero.length > 0) {
+        html += `<div class="alert alert-info" style="margin-top:8px;">
+            <strong>${result.unmatched_xero.length} Xero account(s) could not be created</strong>
+            (unsupported type or missing name). Check the Xero Log.
+        </div>`;
+    }
+
+    let d = new frappe.ui.Dialog({
+        title: __('Full Auto-Map Complete'),
+        size: 'large',
+        fields: [{ fieldtype: 'HTML', fieldname: 'result_html' }],
+        primary_action_label: __('Close'),
+        primary_action: function() { d.hide(); frm.reload_doc(); }
+    });
+    d.fields_dict.result_html.$wrapper.html(html);
     d.show();
 }

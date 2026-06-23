@@ -254,7 +254,6 @@ def confirm_mapping(suggestions):
         existing_codes.add(code)
         added += 1
 
-    settings.flags.ignore_version = True
     settings.save(ignore_permissions=True)
     frappe.db.commit()
 
@@ -668,22 +667,17 @@ def _create_erpnext_account_from_xero(xero_acc, company):
 def _bulk_write_mappings(settings, rows_to_write, existing_codes, existing_erpnext):
     """
     Append mapping rows to settings.account_mapping and save once.
-
-    Reloads the document immediately before writing so we always have the latest
-    modified timestamp — prevents Frappe's concurrent-edit conflict check from
-    rejecting the save when account creation has already bumped the doc.
     Returns the number of rows actually added.
     """
-    added         = 0
-    local_codes   = set(existing_codes)
-    local_erpnext = set(existing_erpnext)
+    added          = 0
+    local_codes    = set(existing_codes)
+    local_erpnext  = set(existing_erpnext)
 
-    # Collect rows to append before touching the document
-    to_append = []
     for row in rows_to_write:
         ea   = row.get("erpnext_account")
         code = row.get("xero_code") or row.get("xero_account_code")
         name = row.get("xero_name") or row.get("xero_account_name", "")
+        xid  = row.get("xero_account_id", "")
 
         if not ea or not code:
             continue
@@ -691,7 +685,8 @@ def _bulk_write_mappings(settings, rows_to_write, existing_codes, existing_erpne
             continue
 
         xero_account_doc = frappe.db.get_value("Xero Account", {"account_code": code}, "name")
-        to_append.append({
+
+        settings.append("account_mapping", {
             "erpnext_account":   ea,
             "xero_account":      xero_account_doc or None,
             "xero_account_code": code,
@@ -702,21 +697,7 @@ def _bulk_write_mappings(settings, rows_to_write, existing_codes, existing_erpne
         added += 1
 
     if added:
-        # Reload fresh to get the current modified timestamp, then bypass version check
-        fresh = frappe.get_doc("Xero Settings", "Xero Settings")
-        fresh.flags.ignore_version = True
-
-        fresh_codes   = {r.xero_account_code for r in fresh.account_mapping if r.xero_account_code}
-        fresh_erpnext = {r.erpnext_account for r in fresh.account_mapping if r.erpnext_account}
-
-        for row in to_append:
-            if row["xero_account_code"] in fresh_codes or row["erpnext_account"] in fresh_erpnext:
-                continue
-            fresh.append("account_mapping", row)
-            fresh_codes.add(row["xero_account_code"])
-            fresh_erpnext.add(row["erpnext_account"])
-
-        fresh.save(ignore_permissions=True)
+        settings.save(ignore_permissions=True)
         frappe.db.commit()
 
     return added

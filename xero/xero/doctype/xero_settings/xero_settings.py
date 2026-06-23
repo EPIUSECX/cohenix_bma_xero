@@ -467,6 +467,12 @@ class XeroSettings(Document):
         from xero.utils.account_mapper import push_accounts_to_xero
         return push_accounts_to_xero(account_names)
 
+    @frappe.whitelist()
+    def run_full_account_auto_map(self):
+        """One-shot: match all, create missing ERPNext accounts (with hierarchy), write mapping table."""
+        from xero.utils.account_mapper import run_full_auto_map
+        return run_full_auto_map()
+
     def retry_failed_syncs_with_account_errors(self):
         """
         Finds and retries syncs that failed due to account mapping errors.
@@ -571,3 +577,11 @@ def push_unmatched_to_xero(account_names):
     from xero.utils.account_mapper import push_accounts_to_xero
 
     return push_accounts_to_xero(account_names)
+
+
+@frappe.whitelist()
+def run_full_account_auto_map():
+    """One-shot: match all, create missing ERPNext accounts (with hierarchy), write mapping table."""
+    from xero.utils.account_mapper import run_full_auto_map
+
+    return run_full_auto_map()
