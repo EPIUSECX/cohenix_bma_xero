@@ -1,4 +1,4 @@
-# Copyright (c) 2024, Your Name and contributors
+# Copyright (c) 2024, EPI-USE Global Services and contributors
 # For license information, please see license.txt
 
 """
@@ -23,7 +23,7 @@ from frappe.utils import flt
 import hashlib
 import re
 from ..utils.xero_client import xero_request, get_xero_settings
-from ..utils.logging import log_xero_error
+from ..utils.logging import log_xero_error, get_leaf_doctype_value
 from ..utils.retry_handler import retry_with_exponential_backoff
 from .xero_invoices import get_xero_account_code  # Reuse account mapping
 
@@ -943,7 +943,7 @@ def process_xero_item(xero_item_data, settings):
     erpnext_data = {
         "item_code": item_code,
         "item_name": xero_item_data.get("Name", item_code)[:140],  # ERPNext limit
-        "item_group": frappe.db.get_default("item_group") or "All Item Groups",
+        "item_group": get_leaf_doctype_value("Item Group", frappe.db.get_default("item_group")),
         "stock_uom": frappe.db.get_default("stock_uom") or "Nos",
         "description": strip_html(xero_item_data.get("Description")),
         "purchase_description": strip_html(xero_item_data.get("PurchaseDescription")),

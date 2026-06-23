@@ -3,6 +3,7 @@ Phase 1: Contact Sync Test
 Run: bench --site cohenix.localhost execute xero.utils.phase1_contacts.step_a_create
 """
 import frappe
+from xero.utils.logging import get_leaf_doctype_value
 
 def step_a_create():
     """Step 1A: Create test contacts in ERPNext"""
@@ -14,8 +15,8 @@ def step_a_create():
     c = frappe.new_doc("Customer")
     c.customer_name = "SyncTest Customer Alpha"
     c.customer_type = "Company"
-    c.customer_group = "Commercial"
-    c.territory = "All Territories"
+    c.customer_group = get_leaf_doctype_value("Customer Group", "Commercial")
+    c.territory = get_leaf_doctype_value("Territory")
     c.insert(ignore_permissions=True)
     frappe.db.commit()
     print(f"✅ Created Customer: {c.name}")
@@ -23,7 +24,7 @@ def step_a_create():
     # Supplier
     s = frappe.new_doc("Supplier")
     s.supplier_name = "SyncTest Supplier Beta"
-    s.supplier_group = "All Supplier Groups"
+    s.supplier_group = get_leaf_doctype_value("Supplier Group")
     s.supplier_type = "Company"
     s.insert(ignore_permissions=True)
     frappe.db.commit()

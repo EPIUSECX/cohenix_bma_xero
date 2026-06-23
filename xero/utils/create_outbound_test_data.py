@@ -7,6 +7,7 @@ Generates 2 example entries for each entity type following the pattern:
 
 import frappe
 from frappe.utils import today, add_days, nowdate, now_datetime
+from xero.utils.logging import get_leaf_doctype_value
 
 def create_test_customers():
     """Create 2 test customers for outbound sync"""
@@ -28,8 +29,8 @@ def create_test_customers():
             customer = frappe.new_doc("Customer")
             customer.customer_name = customer_name
             customer.customer_type = "Company"
-            customer.customer_group = "Commercial"
-            customer.territory = "All Territories"
+            customer.customer_group = get_leaf_doctype_value("Customer Group", "Commercial")
+            customer.territory = get_leaf_doctype_value("Territory")
             customer.insert(ignore_permissions=True)
             frappe.db.commit()
             
@@ -59,7 +60,7 @@ def create_test_suppliers():
         try:
             supplier = frappe.new_doc("Supplier")
             supplier.supplier_name = supplier_name
-            supplier.supplier_group = "All Supplier Groups"
+            supplier.supplier_group = get_leaf_doctype_value("Supplier Group")
             supplier.supplier_type = "Company"
             supplier.insert(ignore_permissions=True)
             frappe.db.commit()

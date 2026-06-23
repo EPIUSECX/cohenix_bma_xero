@@ -21,6 +21,7 @@ import frappe
 from frappe.utils import getdate, flt, nowdate, add_days
 import json
 from datetime import datetime
+from xero.utils.logging import get_leaf_doctype_value
 
 
 class InvoiceRoundTripTest:
@@ -127,7 +128,7 @@ class InvoiceRoundTripTest:
         cust = frappe.new_doc("Customer")
         cust.customer_name = customer_name
         cust.customer_type = "Company"
-        cust.territory = "All Territories"
+        cust.territory = get_leaf_doctype_value("Territory")
         cust.insert(ignore_permissions=True)
         self.created_docs.append({"doctype": "Customer", "name": cust.name})
         

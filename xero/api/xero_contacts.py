@@ -1,4 +1,4 @@
-# Copyright (c) 2024, Your Name and contributors
+# Copyright (c) 2024, EPI-USE Global Services and contributors
 # For license information, please see license.txt
 
 import frappe
@@ -7,7 +7,7 @@ from frappe.utils import get_fullname
 import hashlib
 import re
 from ..utils.xero_client import xero_request, get_xero_settings
-from ..utils.logging import log_xero_error  # We'll create this logging utility next
+from ..utils.logging import log_xero_error, get_leaf_doctype_value
 from ..utils.retry_handler import retry_with_exponential_backoff
 
 
@@ -17,6 +17,8 @@ from ..utils.retry_handler import retry_with_exponential_backoff
 
 # Xero API limits
 XERO_MAX_CONTACT_PERSONS = 5  # Xero allows max 5 ContactPersons per contact
+
+
 
 
 # =============================================================================
@@ -151,7 +153,7 @@ def enqueue_sync_contact(doc_name, doc_type=None):
         doc_name=doc_name,
         doc_type=doc_type,
     )
-    frappe.msgprint(_("Contact sync to Xero queued."))
+    frappe.publish_realtime("show_alert", {"message": _("Contact sync to Xero queued."), "indicator": "blue"}, user=frappe.session.user)
 
 
 @retry_with_exponential_backoff(max_retries=3, base_delay=1)
@@ -825,17 +827,17 @@ def sync_xero_contact_to_erpnext(xero_contact_data, target_doctype):
 
     if target_doctype == "Customer":
         erpnext_data["customer_name"] = contact_name
-        erpnext_data["customer_group"] = (
-            frappe.db.get_default("customer_group") or "All Customer Groups"
-        )  # Default group
-        erpnext_data["territory"] = (
-            frappe.db.get_default("territory") or "All Territories"
-        )  # Default territory
+        erpnext_data["customer_group"] = get_leaf_doctype_value(
+            "Customer Group", frappe.db.get_default("customer_group")
+        )
+        erpnext_data["territory"] = get_leaf_doctype_value(
+            "Territory", frappe.db.get_default("territory")
+        )
     else:  # Supplier
         erpnext_data["supplier_name"] = contact_name
-        erpnext_data["supplier_group"] = (
-            frappe.db.get_default("supplier_group") or "All Supplier Groups"
-        )  # Default group
+        erpnext_data["supplier_group"] = get_leaf_doctype_value(
+            "Supplier Group", frappe.db.get_default("supplier_group")
+        )
 
     # --- Create or Update ERPNext Document ---
     try:

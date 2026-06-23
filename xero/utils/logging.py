@@ -1,4 +1,4 @@
-# Copyright (c) 2024, Your Name and contributors
+# Copyright (c) 2024, EPI-USE Global Services and contributors
 # For license information, please see license.txt
 
 import frappe
@@ -48,6 +48,27 @@ def log_xero_error(message, status="Error", erpnext_doc_type=None, erpnext_doc_n
         print(f"Logging Error: {e}")
         print("--- END XERO LOGGING FAILED ---")
         frappe.log_error(f"Failed to create Xero Log entry: {e}", "Xero Logging Error")
+
+def get_leaf_doctype_value(doctype, default=None):
+    """
+    Return a usable (is_group=0) value for a tree DocType such as Customer Group,
+    Supplier Group, Territory, or Item Group.
+
+    ERPNext validates that the assigned value must not be a Group node.
+    Root defaults like "All Customer Groups" are group nodes and fail that check.
+
+    Resolution order:
+    1. If `default` is provided and is not a group node → return it as-is.
+    2. Find the first non-group record ordered by name.
+    3. Fall back to `default` (lets ERPNext surface the validation error clearly).
+    """
+    if default:
+        is_group = frappe.db.get_value(doctype, default, "is_group")
+        if is_group == 0:
+            return default
+    leaf = frappe.db.get_value(doctype, {"is_group": 0}, "name", order_by="name asc")
+    return leaf or default or ""
+
 
 def auto_categorize_error(message, error_details=None):
     """
