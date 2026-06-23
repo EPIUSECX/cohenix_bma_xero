@@ -10,6 +10,19 @@ frappe.ui.form.on('Xero Settings', {
         frm.dashboard.clear_headline(); // Clear previous headlines
         frm.trigger("toggle_fields"); // Enable/disable based on master switch
 
+        // Show OAuth error if redirected back from a failed connection attempt
+        const urlParams = new URLSearchParams(window.location.search);
+        const oauthError = urlParams.get('xero_oauth_error');
+        if (oauthError) {
+            frappe.msgprint({
+                title: __('Xero Connection Failed'),
+                message: decodeURIComponent(oauthError),
+                indicator: 'red'
+            });
+            // Clean the URL so the message doesn't reappear on refresh
+            window.history.replaceState({}, document.title, window.location.pathname);
+        }
+
 		// --- Connection Status & Buttons ---
 		if (frm.doc.access_token && frm.doc.tenant_id && frm.doc.enable_xero_sync) {
             // Show connected status and add disconnect/check buttons

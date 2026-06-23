@@ -45,30 +45,66 @@ def get_auth_url():
         "response_type": "code",
         "client_id": settings.client_id,
         "redirect_uri": get_redirect_uri(),
-        "scope": "openid profile email accounting.transactions accounting.contacts accounting.settings offline_access",
+        # Granular scopes required for apps created on or after 2 March 2026.
+        # accounting.transactions is deprecated; replaced by the four scopes below.
+        "scope": (
+            "openid profile email offline_access "
+            "accounting.invoices accounting.payments accounting.banktransactions accounting.manualjournals "
+            "accounting.contacts accounting.settings "
+            "accounting.reports.balancesheet.read accounting.reports.profitandloss.read "
+            "accounting.reports.aged.read accounting.reports.trialbalance.read"
+        ),
         "state": state,
     }
     return f"{XERO_AUTH_URL}?{urlencode(params)}"
+
+
+def _redirect_with_error(message):
+    """Redirect to Xero Settings with an error message instead of throwing a 500."""
+    from urllib.parse import quote
+    frappe.local.response["type"] = "redirect"
+    frappe.local.response["location"] = (
+        f"/app/xero-settings?xero_oauth_error={quote(message)}"
+    )
 
 
 @frappe.whitelist(allow_guest=True)
 def handle_oauth_callback(code=None, state=None, error=None):
     """Handles the OAuth2 callback from Xero."""
     if error:
-        frappe.throw(f"Xero OAuth Error: {error}")
+        # Map Xero error codes to actionable messages
+        error_messages = {
+            "invalid_scope": (
+                "Xero rejected the requested permissions (invalid_scope). "
+                "Your Xero app was created after 2 March 2026 and uses granular scopes. "
+                "The old 'accounting.transactions' scope is no longer valid. "
+                "The code has been updated to use the new granular scopes. "
+                "If you see this error again, ensure your Xero app in the Developer Portal "
+                "is set to 'Web App' (not Custom Connection)."
+            ),
+            "access_denied": "Access was denied. Please try connecting again and accept the permissions request.",
+            "invalid_client": "Invalid Client ID or Client Secret. Check your Xero Settings credentials.",
+        }
+        friendly = error_messages.get(error, f"Xero OAuth error: {error}")
+        frappe.log_error(friendly, "Xero OAuth Error")
+        _redirect_with_error(friendly)
+        return
 
     # State is encoded as "{user}:{token}" so the guest callback can resolve the initiating user
     if not state or ":" not in state:
-        frappe.throw("Invalid OAuth state. Please try connecting again.")
+        _redirect_with_error("Invalid OAuth state. Please try connecting again.")
+        return
     initiating_user, state_token = state.split(":", 1)
     cached_state = frappe.cache().hget("xero_oauth_state", initiating_user)
     if not cached_state or state_token != cached_state:
-        frappe.throw("Invalid OAuth state. Please try connecting again.")
+        _redirect_with_error("Invalid OAuth state. Please try connecting again.")
+        return
     # Clear the used state token to prevent replay attacks
     frappe.cache().hdel("xero_oauth_state", initiating_user)
 
     if not code:
-        frappe.throw("Missing authorization code from Xero.")
+        _redirect_with_error("Missing authorization code from Xero.")
+        return
 
     try:
         settings = get_xero_settings()
@@ -107,12 +143,12 @@ def handle_oauth_callback(code=None, state=None, error=None):
 
     except requests.exceptions.RequestException as e:
         frappe.log_error(f"Xero OAuth Token Request Failed: {e}", "Xero Auth Error")
-        frappe.throw("Failed to get access token from Xero.")
+        _redirect_with_error("Failed to get access token from Xero. Check your Client ID and Secret.")
     except Exception as e:
         frappe.log_error(
             message=frappe.get_traceback(), title="Xero OAuth Callback Error"
         )
-        frappe.throw("An error occurred during Xero authentication.")
+        _redirect_with_error("An error occurred during Xero authentication. Check the Error Log for details.")
 
 
 def get_available_connections(access_token):
