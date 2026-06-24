@@ -63,6 +63,7 @@
   "enable_rate_limit_tracking",
   "rate_limit_backoff_base",
   "rate_limit_max_delay",
+  "rate_limit_per_minute",
   "section_break_derived_flags",
   "sync_contacts",
   "sync_invoices",
@@ -519,6 +520,13 @@
    "fieldname": "rate_limit_max_delay",
    "fieldtype": "Int",
    "label": "Max Backoff Delay (seconds)"
+  },
+  {
+   "default": "55",
+   "description": "Proactive cap on outbound Xero API calls per minute per organisation (Xero's hard limit is 60). Enforced centrally across all background workers via Redis, so first-time/bulk syncs no longer trip the rate limit. Lower it if you run multiple integrations against the same Xero org.",
+   "fieldname": "rate_limit_per_minute",
+   "fieldtype": "Int",
+   "label": "Max Xero Calls / Minute"
   },
   {
    "fieldname": "section_break_derived_flags",

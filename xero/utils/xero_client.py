@@ -427,6 +427,45 @@ def get_xero_client():
 # --- Wrapper functions for API calls ---
 
 
+def _throttle_xero_call(settings):
+    """Distributed, per-tenant rate governor for ALL outbound Xero API calls.
+
+    Every Xero call funnels through xero_request, so enforcing the limit here
+    throttles EVERY entity sync at once (invoices, items, payments, contacts,
+    journals, ...). Because the counter lives in Redis it coordinates across all
+    background workers — something per-function sleeps cannot do. It proactively
+    holds calls under Xero's 60/minute/tenant limit (default 55, for headroom)
+    instead of only reacting to 429s after the fact.
+
+    Uses a fixed 1-minute window counter (atomic Redis INCR). Fails open if the
+    cache is unavailable — the 429 back-off below remains the backstop.
+    """
+    import time
+
+    limit = frappe.utils.cint(getattr(settings, "rate_limit_per_minute", 0)) or 55
+    if limit <= 0:
+        return
+
+    cache = frappe.cache()
+    tenant = settings.tenant_id or "default"
+    site = getattr(frappe.local, "site", "site")
+    deadline = time.time() + 90  # never block a single call here for >90s
+
+    while time.time() < deadline:
+        bucket = int(time.time() // 60)
+        key = f"xero_rl:{site}:{tenant}:{bucket}"
+        try:
+            count = cache.incr(key)
+            if count == 1:
+                cache.expire(key, 120)
+        except Exception:
+            return  # cache unavailable -> fail open
+        if count <= limit:
+            return
+        # Over the per-minute budget — wait into the next minute window.
+        time.sleep(min(2.0, max(0.2, 60 - (time.time() % 60))))
+
+
 def xero_request(method, endpoint, data=None, params=None):
     """Makes a request to the Xero API, handling authentication and errors."""
     import time
@@ -447,6 +486,8 @@ def xero_request(method, endpoint, data=None, params=None):
     start_time = time.time()
 
     while retry_count < max_retries:
+        # Proactively stay under the per-minute limit before every attempt.
+        _throttle_xero_call(settings)
         try:
             if method.upper() == "GET":
                 response = requests.get(
@@ -509,8 +550,18 @@ def xero_request(method, endpoint, data=None, params=None):
                     )
                     raise e
 
-                # Exponential backoff with configurable base and max delay
-                wait_time = min(backoff_base**retry_count, max_delay)
+                # Honor Xero's Retry-After header when present (it tells you
+                # exactly how long the limit lasts); otherwise fall back to
+                # exponential backoff. Cap at max_delay so a worker is never
+                # blocked indefinitely (e.g. on a daily-limit Retry-After).
+                retry_after = e.response.headers.get("Retry-After")
+                if retry_after:
+                    try:
+                        wait_time = min(float(retry_after), max_delay)
+                    except (TypeError, ValueError):
+                        wait_time = min(backoff_base**retry_count, max_delay)
+                else:
+                    wait_time = min(backoff_base**retry_count, max_delay)
                 frappe.log_error(
                     message=f"Xero rate limit hit. Retrying in {wait_time}s (attempt {retry_count}/{max_retries}).",
                     title="Xero API Rate Limit",
