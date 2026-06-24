@@ -1412,47 +1412,107 @@ def store_contact_notes(party_doctype, party_name, notes):
     return added
 
 
+def get_contact_notes_progress():
+    """Return (total_linked, synced, never_synced) contact-notes coverage counts
+    across Customers + Suppliers, for the dashboard and the sync job."""
+    total = synced = 0
+    for dt in ("Customer", "Supplier"):
+        if not frappe.db.has_column(dt, "xero_notes_last_sync"):
+            continue
+        total += frappe.db.count(dt, {"xero_contact_id": ["is", "set"]})
+        synced += frappe.db.count(
+            dt, {"xero_contact_id": ["is", "set"], "xero_notes_last_sync": ["is", "set"]}
+        )
+    return total, synced, total - synced
+
+
 @frappe.whitelist()
-def sync_contact_notes_from_xero(batch_size=100):
+def sync_contact_notes_from_xero(batch_size=50, refresh_days=7, call_delay=0.4):
     """
     Mirror Xero contact History & Notes onto the linked ERPNext Customers/Suppliers
     as timeline Comments.
 
-    Processes a rolling batch each run (cursor held in cache) so a large contact
-    book is covered across successive scheduled runs without exhausting the Xero
-    rate limit. Gated by enable_sync_from_xero + the sync_contact_notes toggle.
+    Rate-limit safe by design:
+      * Each contact carries a `xero_notes_last_sync` marker. Only contacts that
+        have NEVER been notes-synced, or whose marker is older than `refresh_days`
+        (to pick up newly added notes), are fetched. So once the initial backlog
+        is drained the job idles to a trickle — it does NOT re-poll every contact
+        on every run (which is what made the old cursor version burn the rate
+        limit continuously).
+      * At most `batch_size` contacts per run, globally oldest-marker first.
+      * `call_delay` seconds between Xero calls so a single run never bursts past
+        Xero's 60-calls/minute limit; xero_request's 429 back-off is the final
+        safety net.
+
+    Gated by enable_sync_from_xero + the sync_contact_notes toggle.
     """
-    batch_size = frappe.utils.cint(batch_size) or 100
+    import time
+    from datetime import datetime
+
+    batch_size = frappe.utils.cint(batch_size) or 50
+    refresh_days = frappe.utils.cint(refresh_days)
+    try:
+        call_delay = float(call_delay)
+    except (TypeError, ValueError):
+        call_delay = 0.4
+
     settings = get_xero_settings()
     if not settings.enable_xero_sync or not settings.enable_sync_from_xero:
         return {"skipped": "sync disabled"}
     if not settings.get("sync_contact_notes"):
         return {"skipped": "sync_contact_notes disabled"}
 
-    # Ordered list of all parties that are linked to a Xero contact.
-    parties = []
+    cutoff = (
+        frappe.utils.add_to_date(frappe.utils.now_datetime(), days=-refresh_days)
+        if refresh_days > 0
+        else None
+    )
+
+    # Collect the contacts due a notes sync (marker NULL, or older than cutoff),
+    # then globally order oldest-marker-first and cap at batch_size for this run.
+    candidates = []
     for dt in ("Customer", "Supplier"):
-        for row in frappe.get_all(
-            dt,
-            filters={"xero_contact_id": ["is", "set"]},
-            fields=["name", "xero_contact_id"],
-            order_by="name asc",
-        ):
-            parties.append((dt, row.name, row.xero_contact_id))
+        if not frappe.db.has_column(dt, "xero_notes_last_sync"):
+            continue
+        if cutoff is not None:
+            rows = frappe.get_all(
+                dt,
+                filters={"xero_contact_id": ["is", "set"]},
+                or_filters=[
+                    ["xero_notes_last_sync", "is", "not set"],
+                    ["xero_notes_last_sync", "<", cutoff],
+                ],
+                fields=["name", "xero_contact_id", "xero_notes_last_sync"],
+                order_by="xero_notes_last_sync asc",
+                limit=batch_size,
+            )
+        else:
+            rows = frappe.get_all(
+                dt,
+                filters={"xero_contact_id": ["is", "set"], "xero_notes_last_sync": ["is", "not set"]},
+                fields=["name", "xero_contact_id", "xero_notes_last_sync"],
+                order_by="name asc",
+                limit=batch_size,
+            )
+        for r in rows:
+            candidates.append((r.xero_notes_last_sync or datetime.min, dt, r.name, r.xero_contact_id))
 
-    if not parties:
-        return {"processed": 0, "notes_added": 0, "total_parties": 0}
+    candidates.sort(key=lambda x: x[0])
+    due = candidates[:batch_size]
 
-    cursor = frappe.utils.cint(frappe.cache().get_value("xero_notes_cursor") or 0)
-    if cursor >= len(parties):
-        cursor = 0
-    batch = parties[cursor:cursor + batch_size]
+    if not due:
+        total, synced, never = get_contact_notes_progress()
+        return {"processed": 0, "notes_added": 0, "never_synced_remaining": never, "synced": synced, "total": total}
 
     processed = 0
     notes_added = 0
-    for dt, name, cid in batch:
+    now = frappe.utils.now_datetime()
+    for i, (_marker, dt, name, cid) in enumerate(due):
         try:
             notes_added += store_contact_notes(dt, name, fetch_contact_notes(cid))
+            # Stamp the marker even when there were no notes, so an empty contact
+            # is not re-polled until the refresh window elapses.
+            frappe.db.set_value(dt, name, "xero_notes_last_sync", now, update_modified=False)
             processed += 1
         except Exception:
             log_xero_error(
@@ -1466,17 +1526,18 @@ def sync_contact_notes_from_xero(batch_size=100):
                 category="System Monitoring",
                 error_details=frappe.get_traceback(),
             )
+        # Pace between Xero calls to stay under the per-minute rate limit.
+        if call_delay and i < len(due) - 1:
+            time.sleep(call_delay)
 
-    # Advance the rolling cursor, wrapping at the end of the list.
-    next_cursor = cursor + batch_size
-    if next_cursor >= len(parties):
-        next_cursor = 0
-    frappe.cache().set_value("xero_notes_cursor", next_cursor)
+    frappe.db.commit()
+    total, synced, never = get_contact_notes_progress()
 
     log_xero_error(
         message=(
-            f"Contact notes sync: processed {processed} of {len(parties)} contacts "
-            f"(cursor {cursor}->{next_cursor}), {notes_added} new note(s) added."
+            f"Contact notes sync: processed {processed} contact(s), "
+            f"{notes_added} new note(s) added. Coverage {synced}/{total} "
+            f"({never} never-synced remaining)."
         ),
         status="Info",
         category="System Monitoring",
@@ -1485,6 +1546,7 @@ def sync_contact_notes_from_xero(batch_size=100):
     return {
         "processed": processed,
         "notes_added": notes_added,
-        "total_parties": len(parties),
-        "next_cursor": next_cursor,
+        "never_synced_remaining": never,
+        "synced": synced,
+        "total": total,
     }

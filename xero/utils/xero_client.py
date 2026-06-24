@@ -497,6 +497,7 @@ def xero_request(method, endpoint, data=None, params=None):
                         message=f"Rate limit hit on {method} {endpoint}. Remaining: {rate_limit_remaining}, Reset: {rate_limit_reset}",
                         status="Warning",
                         category="Rate Limiting",
+                        direction="Xero to ERPNext" if method == "GET" else "ERPNext to Xero",
                         retry_count=retry_count,
                     )
 

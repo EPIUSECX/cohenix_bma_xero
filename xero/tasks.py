@@ -489,7 +489,8 @@ def sync_contact_notes():
     try:
         from .api.xero_contacts import sync_contact_notes_from_xero
 
-        sync_contact_notes_from_xero(batch_size=100)
+        # Rate-limit safe: marker-driven (only new/stale contacts) + paced calls.
+        sync_contact_notes_from_xero(batch_size=50)
     except Exception:
         log_xero_error(
             message="Error during scheduled contact notes sync",

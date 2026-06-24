@@ -1375,6 +1375,163 @@ class XeroSyncDashboard {
             .bg-warning { background: var(--ch-warning)    !important; }
             .bg-danger  { background: var(--ch-danger)     !important; }
             .bg-info    { background: var(--ch-info)       !important; }
+
+            /* ════════════════════════════════════════════
+               RESPONSIVE BREAKPOINTS
+               ════════════════════════════════════════════
+
+               Breakpoints:
+                 ≤1100px  laptop / tablet landscape
+                 ≤768px   tablet portrait / large phone
+                 ≤480px   phone
+            */
+
+            /* ── 1100px: 4-col grids → 2-col ── */
+            @media (max-width: 1100px) {
+                .overview-stats-grid {
+                    grid-template-columns: repeat(2, 1fr);
+                }
+                .queue-stats-grid {
+                    grid-template-columns: repeat(2, 1fr);
+                }
+            }
+
+            /* ── 768px: tablet portrait ── */
+            @media (max-width: 768px) {
+                /* Container padding */
+                .xero-dashboard-container {
+                    padding: 0 8px;
+                }
+
+                /* Tabs: allow wrapping, smaller text */
+                .xero-dashboard-container .nav-tabs {
+                    gap: 4px;
+                    justify-content: flex-start;
+                    overflow-x: auto;
+                    flex-wrap: nowrap;
+                    padding-bottom: 4px;
+                    -webkit-overflow-scrolling: touch;
+                    scrollbar-width: none;
+                }
+                .xero-dashboard-container .nav-tabs::-webkit-scrollbar { display: none; }
+                .xero-dashboard-container .nav-tabs .nav-link {
+                    font-size: 12px;
+                    padding: 6px 12px;
+                    white-space: nowrap;
+                }
+
+                /* 2-col → 1-col */
+                .overview-stats-grid,
+                .queue-stats-grid {
+                    grid-template-columns: repeat(2, 1fr);
+                    gap: 10px;
+                }
+
+                /* Entity cards: auto-fill down to 240px */
+                .entity-status-grid {
+                    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+                    gap: 10px;
+                }
+
+                /* Sync chips: full-width on tablet */
+                .sync-chips-grid {
+                    flex-direction: column;
+                }
+                .sync-chip {
+                    width: 100%;
+                }
+
+                /* Card body padding tighter */
+                .card-body {
+                    padding: 14px 16px;
+                }
+                .overview-stat-card {
+                    padding: 14px 16px;
+                }
+                .overview-stat-card .stat-value {
+                    font-size: 24px;
+                }
+
+                /* Tables: horizontal scroll container */
+                .table-responsive-wrap {
+                    overflow-x: auto;
+                    -webkit-overflow-scrolling: touch;
+                }
+                table.table {
+                    min-width: 540px;
+                }
+
+                /* Queue oldest-pending: stack if flex row */
+                .queue-pending-row {
+                    flex-direction: column;
+                    align-items: flex-start;
+                    gap: 8px;
+                }
+
+                /* Analytics: reduce chart heights */
+                .chart-container canvas {
+                    max-height: 220px !important;
+                }
+            }
+
+            /* ── 480px: phone ── */
+            @media (max-width: 480px) {
+                /* Single-col for everything */
+                .overview-stats-grid,
+                .queue-stats-grid {
+                    grid-template-columns: 1fr;
+                    gap: 8px;
+                }
+
+                .entity-status-grid {
+                    grid-template-columns: 1fr;
+                }
+
+                /* Stat values: smaller on phone */
+                .overview-stat-card .stat-value,
+                .stat-value {
+                    font-size: 22px;
+                }
+                .queue-stat-card .queue-stat-value {
+                    font-size: 22px;
+                }
+
+                /* Tab nav: icon-only on very small screens */
+                .xero-dashboard-container .nav-tabs .nav-link svg {
+                    width: 14px;
+                    height: 14px;
+                }
+
+                /* Card header: wrap text */
+                .card-header {
+                    flex-wrap: wrap;
+                    gap: 4px;
+                    font-size: 12px;
+                    padding: 12px 14px;
+                }
+
+                /* Reduce modal/dialog width for log detail */
+                .xero-log-detail-modal {
+                    width: 95vw !important;
+                    max-width: 95vw !important;
+                }
+
+                /* Sync chip buttons: compact */
+                .sync-chip-label {
+                    font-size: 12px;
+                }
+
+                /* Tables on phone: all scrollable */
+                table.table {
+                    min-width: 420px;
+                }
+
+                /* Reduce card body padding */
+                .card-body {
+                    padding: 12px;
+                }
+            }
+
         </style>`).appendTo('head');
 
         this.wrapper.html(`
@@ -2107,7 +2264,15 @@ class XeroSyncDashboard {
     }
 
     calculate_success_rate(stats) {
-        const total = stats.reduce((sum, s) => sum + s.count, 0);
+        // Backend now returns a single-row aggregate: [{success_count, total_count, success_rate}]
+        // Support both the new shape and the legacy [{status, count}] shape for safety.
+        if (!stats || stats.length === 0) return 0;
+        const row = stats[0];
+        if (row.success_rate !== undefined) {
+            return Math.round(row.success_rate);
+        }
+        // Legacy fallback
+        const total = stats.reduce((sum, s) => sum + (s.count || 0), 0);
         const success = stats.find(s => s.status === 'Success')?.count || 0;
         return total > 0 ? Math.round((success / total) * 100) : 0;
     }

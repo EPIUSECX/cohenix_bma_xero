@@ -313,6 +313,15 @@ def setup_custom_fields():
                 "read_only": 1,
                 "print_hide": 1,
                 "insert_after": "xero_data_hash"
+            },
+            {
+                "fieldname": "xero_notes_last_sync",
+                "fieldtype": "Datetime",
+                "label": "Xero Notes Last Sync",
+                "no_copy": 1,
+                "read_only": 1,
+                "print_hide": 1,
+                "insert_after": "xero_last_contact_sync"
             }
         ],
         "Supplier": [
@@ -360,6 +369,15 @@ def setup_custom_fields():
                 "read_only": 1,
                 "print_hide": 1,
                 "insert_after": "xero_data_hash"
+            },
+            {
+                "fieldname": "xero_notes_last_sync",
+                "fieldtype": "Datetime",
+                "label": "Xero Notes Last Sync",
+                "no_copy": 1,
+                "read_only": 1,
+                "print_hide": 1,
+                "insert_after": "xero_last_contact_sync"
             }
         ],
         "Item": [

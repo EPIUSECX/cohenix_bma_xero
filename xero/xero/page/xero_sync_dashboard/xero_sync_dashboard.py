@@ -70,9 +70,13 @@ def get_sync_statistics(from_date=None, to_date=None):
     # don't represent the state of a synced record.
     overall_stats = frappe.db.sql("""
         SELECT
-            status,
-            COUNT(*) as count,
-            AVG(CASE WHEN status = 'Success' THEN 1 ELSE 0 END) * 100 as success_rate
+            SUM(CASE WHEN status = 'Success' THEN 1 ELSE 0 END) as success_count,
+            SUM(CASE WHEN status = 'Error'   THEN 1 ELSE 0 END) as error_count,
+            COUNT(*) as total_count,
+            ROUND(
+                SUM(CASE WHEN status = 'Success' THEN 1 ELSE 0 END)
+                / COUNT(*) * 100
+            , 1) as success_rate
         FROM (
             SELECT status,
                    ROW_NUMBER() OVER (
@@ -83,13 +87,9 @@ def get_sync_statistics(from_date=None, to_date=None):
             WHERE timestamp BETWEEN %s AND %s
               AND erpnext_doc_type IS NOT NULL
               AND erpnext_doc_name IS NOT NULL AND erpnext_doc_name != 'Unknown'
-              -- only real sync outcomes determine current state; ignore trailing
-              -- Info/Warning rows (e.g. create-once skips) that would otherwise
-              -- mask an entity's last successful sync.
               AND status IN ('Success', 'Error')
         ) latest
         WHERE rn = 1
-        GROUP BY status
     """, (from_date, to_date), as_dict=True)
 
     # Entity-wise stats (latest attempt per entity document — current state)
@@ -99,7 +99,7 @@ def get_sync_statistics(from_date=None, to_date=None):
             COUNT(*) as total,
             SUM(CASE WHEN status = 'Success' THEN 1 ELSE 0 END) as success,
             SUM(CASE WHEN status = 'Error' THEN 1 ELSE 0 END) as errors,
-            AVG(CASE WHEN status = 'Success' THEN 1 ELSE 0 END) * 100 as success_rate
+            ROUND(SUM(CASE WHEN status = 'Success' THEN 1 ELSE 0 END) / COUNT(*) * 100, 1) as success_rate
         FROM (
             SELECT erpnext_doc_type, erpnext_doc_name, status,
                    ROW_NUMBER() OVER (
@@ -160,11 +160,27 @@ def get_entity_sync_status():
         "Customer", "Supplier", "Item", "Account", "Quotation", "Bank Transaction"
     ]
     
+    TRANSACTIONAL = {"Sales Invoice", "Purchase Invoice", "Payment Entry",
+                    "Journal Entry", "Quotation", "Bank Transaction"}
+    MASTER_DISABLED = {"Item", "Account"}
+
     entity_status = []
     for entity in entities:
-        # Get total documents
-        total = frappe.db.count(entity)
-        
+        # Only count relevant documents:
+        #   transactional -> submitted (docstatus=1)
+        #   masters with disabled flag -> not disabled
+        #   other masters (Customer, Supplier) -> all records
+        if entity in TRANSACTIONAL:
+            total = frappe.db.sql(
+                f"SELECT COUNT(*) FROM `tab{entity}` WHERE docstatus = 1"
+            )[0][0]
+        elif entity in MASTER_DISABLED:
+            total = frappe.db.sql(
+                f"SELECT COUNT(*) FROM `tab{entity}` WHERE disabled = 0"
+            )[0][0]
+        else:
+            total = frappe.db.count(entity)
+
         # Get synced documents (those with Xero IDs)
         synced_field_map = {
             "Sales Invoice": "xero_invoice_id",
@@ -185,10 +201,11 @@ def get_entity_sync_status():
         errors = 0
         
         if xero_field:
-            # Count synced documents
+            # Count synced documents -- exclude cancelled records
             synced = frappe.db.sql(f"""
                 SELECT COUNT(*) FROM `tab{entity}`
                 WHERE {xero_field} IS NOT NULL AND {xero_field} != ''
+                AND docstatus != 2
             """)[0][0]
             
             # Count pending/error documents if sync status field exists
@@ -198,11 +215,13 @@ def get_entity_sync_status():
                     pending = frappe.db.sql(f"""
                         SELECT COUNT(*) FROM `tab{entity}`
                         WHERE {sync_status_field} = 'Pending'
+                        AND docstatus != 2
                     """)[0][0]
-                    
+
                     errors = frappe.db.sql(f"""
                         SELECT COUNT(*) FROM `tab{entity}`
                         WHERE {sync_status_field} = 'Error'
+                        AND docstatus != 2
                     """)[0][0]
             except Exception:
                 # Table doesn't exist or column missing, skip
@@ -223,7 +242,30 @@ def get_entity_sync_status():
             "sync_rate": round((synced / total * 100) if total > 0 else 0, 1),
             "last_sync": last_sync[0][0] if last_sync and last_sync[0][0] else None
         })
-    
+
+    # Contact Notes coverage (Xero contact History & Notes -> ERPNext Comments).
+    # This is not a synced doctype but a per-contact background mirror, tracked
+    # via the xero_notes_last_sync marker on Customer/Supplier.
+    try:
+        if frappe.get_single("Xero Settings").get("sync_contact_notes"):
+            from xero.api.xero_contacts import get_contact_notes_progress
+            cn_total, cn_synced, cn_pending = get_contact_notes_progress()
+            cn_last = frappe.db.sql("""
+                SELECT MAX(timestamp) FROM `tabXero Log`
+                WHERE status = 'Info' AND message LIKE 'Contact notes sync:%'
+            """)
+            entity_status.append({
+                "entity": "Contact Notes",
+                "total": cn_total,
+                "synced": cn_synced,
+                "pending": cn_pending,
+                "errors": 0,
+                "sync_rate": round((cn_synced / cn_total * 100) if cn_total > 0 else 0, 1),
+                "last_sync": cn_last[0][0] if cn_last and cn_last[0][0] else None,
+            })
+    except Exception:
+        pass  # Never let the optional notes metric break the dashboard
+
     return entity_status
 
 @frappe.whitelist()
@@ -334,7 +376,7 @@ def get_system_health():
         health_score -= 20
     if stuck_jobs > 0:
         health_score -= 15
-    if len([t for t in error_trend if (t.errors / t.total * 100) > 10]) > 2:
+    if len([t for t in error_trend if t.total and (t.errors or 0) / t.total * 100 > 10]) > 2:
         health_score -= 15
     
     health_status = "Excellent" if health_score >= 90 else \
@@ -1345,9 +1387,12 @@ def get_health_monitoring_metrics():
         except Exception:
             pass  # RQ Job table might not exist
         
-        # Calculate uptime percentage (last 24h)
+        # Calculate uptime percentage (last 24h) -- only real sync outcomes
+        # (Success / Error); Info and Warning rows are not failures and must not
+        # deflate the uptime figure.
         total_operations_24h = frappe.db.count("Xero Log", filters={
-            "timestamp": [">=", one_day_ago]
+            "timestamp": [">=", one_day_ago],
+            "status": ["in", ["Success", "Error"]]
         })
         successful_operations_24h = frappe.db.count("Xero Log", filters={
             "timestamp": [">=", one_day_ago],
@@ -1511,14 +1556,14 @@ def get_sync_performance_metrics():
                 COUNT(*) as pending_count
             FROM `tabSales Invoice`
             WHERE docstatus = 1
-            AND (xero_sync_status IS NULL OR xero_sync_status IN ('Pending', 'Error', 'Pending Prerequisites'))
+            AND (xero_sync_status IS NULL OR xero_sync_status IN ('Pending', 'Pending Prerequisites'))
             UNION ALL
             SELECT 
                 'Purchase Invoice' as doctype,
                 COUNT(*) as pending_count
             FROM `tabPurchase Invoice`
             WHERE docstatus = 1
-            AND (xero_sync_status IS NULL OR xero_sync_status IN ('Pending', 'Error', 'Pending Prerequisites'))
+            AND (xero_sync_status IS NULL OR xero_sync_status IN ('Pending', 'Pending Prerequisites'))
         """, as_dict=True)
         
         # Oldest pending sync
@@ -1527,11 +1572,12 @@ def get_sync_performance_metrics():
                 'Sales Invoice' as doctype,
                 name,
                 posting_date,
-                DATEDIFF(NOW(), posting_date) as days_pending
+                modified,
+                DATEDIFF(NOW(), modified) as days_pending
             FROM `tabSales Invoice`
             WHERE docstatus = 1
-            AND (xero_sync_status IS NULL OR xero_sync_status IN ('Pending', 'Error'))
-            ORDER BY posting_date ASC
+            AND (xero_sync_status IS NULL OR xero_sync_status IN ('Pending', 'Pending Prerequisites'))
+            ORDER BY modified ASC
             LIMIT 1
         """, as_dict=True)
         
@@ -1541,11 +1587,12 @@ def get_sync_performance_metrics():
                     'Purchase Invoice' as doctype,
                     name,
                     posting_date,
-                    DATEDIFF(NOW(), posting_date) as days_pending
+                    modified,
+                    DATEDIFF(NOW(), modified) as days_pending
                 FROM `tabPurchase Invoice`
                 WHERE docstatus = 1
-                AND (xero_sync_status IS NULL OR xero_sync_status IN ('Pending', 'Error'))
-                ORDER BY posting_date ASC
+                AND (xero_sync_status IS NULL OR xero_sync_status IN ('Pending', 'Pending Prerequisites'))
+                ORDER BY modified ASC
                 LIMIT 1
             """, as_dict=True)
         
@@ -1859,7 +1906,7 @@ def get_last_sync_attempts():
                 AND status IN ('Success', 'Error', 'Warning')
                 AND message NOT LIKE '%%Manual sync started%%'
                 AND message NOT LIKE '%%sync is disabled%%'
-                GROUP BY DATE_FORMAT(timestamp, '%%Y-%%m-%%d %%H:%%i:00'), direction
+                GROUP BY DATE_FORMAT(timestamp, '%%Y-%%m-%%d %%H:%%i:00'), COALESCE(direction, 'Unknown')
                 HAVING item_count > 0
                 ORDER BY sync_time DESC
                 LIMIT %s
@@ -1879,7 +1926,7 @@ def get_last_sync_attempts():
                         processing_time
                     FROM `tabXero Log`
                     WHERE DATE_FORMAT(timestamp, '%%Y-%%m-%%d %%H:%%i:00') = %s
-                    AND direction = %s
+                    AND COALESCE(direction, 'Unknown') = %s
                     AND (sync_batch_id IS NULL OR sync_batch_id = '')
                     AND erpnext_doc_type IS NOT NULL
                     AND erpnext_doc_type != 'Unknown'
