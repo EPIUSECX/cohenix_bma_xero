@@ -1,24 +1,20 @@
-/* xero_sync_dashboard.css — Cohenix HR Design System (secondary styles)
-   Tokens: --radius: 0.625rem (10px), font: Source Sans Pro
-   Primary: hsl(221,78%,58%) = #4A7FE5
+/* xero_sync_dashboard.css — Xero design system (secondary styles)
+   Primary: #0078C8 (Xero action blue) | Accent: #13B5EA (Xero cyan)
+   The page's inline <style> block carries the full token system; these
+   are light fallbacks/overrides aligned to the same Xero palette.
 */
 
 .xero-dashboard-container {
     padding: 24px;
-    font-family: 'Source Sans Pro', 'Segoe UI', system-ui, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, 'Source Sans Pro', 'Segoe UI', system-ui, sans-serif;
 }
 
-/* Card base — white surface, 10px radius, subtle shadow */
+/* Card base — white surface, 8px radius, soft Xero shadow (no hover lift) */
 .dashboard-card, .xero-card {
     background: #FFFFFF;
-    border: 1px solid #ECEEF0;
-    border-radius: 10px;
-    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-    transition: box-shadow 0.2s ease;
-}
-
-.dashboard-card:hover, .xero-card:hover {
-    box-shadow: 0 4px 14px 0 hsl(221 78% 58% / 0.35);
+    border: 1px solid #E2E6EA;
+    border-radius: 8px;
+    box-shadow: 0 1px 2px 0 rgba(9, 30, 66, 0.06);
 }
 
 /* Frappe card overrides */
@@ -27,13 +23,13 @@
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    color: #7F8A96;
+    color: #6B7785;
 }
 
 .frappe-card-value {
     font-size: 28px;
     font-weight: 700;
-    color: #1A1F26;
+    color: #1F2D3D;
     line-height: 1.2;
 }
 
@@ -46,5 +42,5 @@
 
 /* Progress bar height override */
 .xero-dashboard-container .progress {
-    height: 5px;
+    height: 6px;
 }

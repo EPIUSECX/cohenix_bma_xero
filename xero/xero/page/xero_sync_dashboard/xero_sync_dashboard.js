@@ -87,63 +87,76 @@ class XeroSyncDashboard {
                ============================================================ */
 
             :root {
-                /* Primary — dusty blue */
-                --ch-primary:          #5B8AC4;
-                --ch-primary-dark:     #4A78B0;   /* hover */
-                --ch-primary-light:    #F0F4FA;   /* tint */
+                /* Primary — Xero action blue (buttons, links, active states) */
+                --ch-primary:          #0078C8;
+                --ch-primary-dark:     #0063A6;   /* hover */
+                --ch-primary-light:    #E8F6FC;   /* cyan tint */
 
-                /* Semantic colors — muted/dusty tones */
-                --ch-success:          #5BA88A;   /* dusty green */
-                --ch-success-bg:       #F0F8F4;   /* success tint */
-                --ch-success-border:   #C2E0D2;   /* success border */
-                --ch-warning:          #C4923A;   /* dusty amber */
-                --ch-warning-bg:       #FBF7F0;   /* warning tint */
-                --ch-warning-border:   #EDDCB8;   /* warning border */
-                --ch-danger:           #B87D5A;   /* dusty terracotta */
-                --ch-danger-alt:       #C45B5B;   /* muted red for error states */
-                --ch-danger-bg:        #FBF3EF;   /* destructive tint */
-                --ch-danger-border:    #E8CCBB;   /* destructive border */
-                --ch-info:             #5B8AC4;   /* same as primary */
-                --ch-info-bg:          #F0F4FA;
+                /* Accent — Xero signature cyan (brand mark, tab underline, focus) */
+                --ch-accent:           #13B5EA;
+                --ch-accent-dark:      #0FA0D2;
 
-                /* Surfaces — hsl(210,20%,98%) background, white cards */
-                --ch-bg:               #F7F9FB;   /* hsl(210,20%,98%) */
-                --ch-surface:          #FFFFFF;   /* hsl(0,0%,100%) */
-                --ch-border:           #ECEEF0;   /* hsl(215,5%,93%) */
-                --ch-border-strong:    #D1D5DB;
+                /* Semantic colors — Xero palette */
+                --ch-success:          #36B37E;   /* Xero green */
+                --ch-success-bg:       #E9F8F1;   /* success tint */
+                --ch-success-border:   #BFE9D4;   /* success border */
+                --ch-warning:          #E8910A;   /* amber */
+                --ch-warning-bg:       #FFF6E6;   /* warning tint */
+                --ch-warning-border:   #FAE2B3;   /* warning border */
+                --ch-danger:           #D0021B;   /* Xero red */
+                --ch-danger-alt:       #E5253C;   /* red for error states */
+                --ch-danger-bg:        #FDECEE;   /* destructive tint */
+                --ch-danger-border:    #F6C6CC;   /* destructive border */
+                --ch-info:             #13B5EA;   /* accent cyan */
+                --ch-info-bg:          #E8F6FC;
 
-                /* Typography — hsl(210,15%,12%) foreground */
-                --ch-text:             #1A1F26;   /* hsl(210,15%,12%) */
-                --ch-text-muted:       #7F8A96;   /* hsl(210,10%,55%) */
-                --ch-text-subtle:      #9CA3AF;
+                /* Surfaces — light-gray canvas, white cards */
+                --ch-bg:               #F4F6F8;
+                --ch-surface:          #FFFFFF;
+                --ch-border:           #E2E6EA;
+                --ch-border-strong:    #CBD2D9;
 
-                /* Shadows */
-                --ch-shadow-sm:        0 1px 2px 0 rgba(0,0,0,0.05);
-                --ch-shadow-md:        0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -2px rgba(0,0,0,0.1);
-                --ch-shadow-hover:     0 4px 14px 0 hsl(221 78% 58% / 0.35);
+                /* Typography — navy ink */
+                --ch-text:             #1F2D3D;
+                --ch-text-muted:       #6B7785;
+                --ch-text-subtle:      #97A0A8;
 
-                /* Radii — --radius: 0.625rem = 10px */
-                --ch-radius-sm:        6px;
-                --ch-radius-md:        10px;   /* = var(--radius) */
+                /* Shadows — soft Xero elevation */
+                --ch-shadow-sm:        0 1px 2px 0 rgba(9,30,66,0.06);
+                --ch-shadow-md:        0 1px 3px 0 rgba(9,30,66,0.10), 0 1px 2px 0 rgba(9,30,66,0.06);
+                --ch-shadow-hover:     0 4px 12px 0 rgba(9,30,66,0.12);
+
+                /* Radii — Xero uses tighter corners */
+                --ch-radius-sm:        4px;
+                --ch-radius-md:        8px;
                 --ch-radius-lg:        12px;
                 --ch-radius-pill:      9999px;
 
                 /* Font */
-                --ch-font:             'Source Sans Pro', 'Segoe UI', system-ui, sans-serif;
+                --ch-font:             -apple-system, BlinkMacSystemFont, 'Source Sans Pro', 'Segoe UI', system-ui, sans-serif;
             }
 
             /* Dark mode — from .dark in reference CSS */
             html[data-theme-mode="dark"] {
-                --ch-bg:               #0D1117;   /* hsl(222,47%,7%) */
-                --ch-surface:          #161B22;   /* hsl(222,32%,12%) */
-                --ch-border:           #21262D;   /* hsl(217,30%,22%) */
-                --ch-text:             #F0F6FC;   /* hsl(210,5%,96%) */
-                --ch-text-muted:       #8B949E;   /* hsl(215,12%,70%) */
-                --ch-primary-light:    #1C2A4A;
-                --ch-success-bg:       #0D2818;
-                --ch-warning-bg:       #2D1F00;
-                --ch-danger-bg:        #2D1500;
-                --ch-info-bg:          #1C2A4A;
+                --ch-bg:               #0E1726;   /* deep navy canvas */
+                --ch-surface:          #16202E;   /* navy card */
+                --ch-border:           #243042;
+                --ch-border-strong:    #33415A;
+                --ch-text:             #E8EDF2;
+                --ch-text-muted:       #93A1B0;
+                --ch-text-subtle:      #6B7785;
+                --ch-primary:          #2AA9E0;   /* brighter blue on navy */
+                --ch-primary-dark:     #1893C8;
+                --ch-primary-light:    #16344A;   /* cyan tint on navy */
+                --ch-accent:           #13B5EA;
+                --ch-success-bg:       #0E2A20;
+                --ch-success-border:   #1E4D3A;
+                --ch-warning-bg:       #2E2310;
+                --ch-warning-border:   #4D3B14;
+                --ch-danger-bg:        #2E1518;
+                --ch-danger-border:    #4D2329;
+                --ch-info-bg:          #16344A;
+                --ch-shadow-hover:     0 4px 14px 0 rgba(0,0,0,0.45);
             }
 
             /* ─── Page Container ─── */
@@ -158,58 +171,68 @@ class XeroSyncDashboard {
                 -webkit-font-smoothing: antialiased;
             }
 
-            /* ─── Tab Navigation (pill style) ─── */
+            /* ─── Tab Navigation (Xero underline style) ─── */
             .xero-dashboard-tabs {
                 display: flex;
-                justify-content: center;
+                justify-content: flex-start;
                 margin-bottom: 24px;
+                border-bottom: 1px solid var(--ch-border);
             }
 
             .xero-dashboard-container .nav-tabs {
                 display: flex;
-                flex-wrap: wrap;
-                gap: 8px;
+                flex-wrap: nowrap;
+                gap: 4px;
                 border: none;
                 padding: 0;
                 background: transparent;
-                justify-content: center;
+                justify-content: flex-start;
+                overflow-x: auto;
+                scrollbar-width: none;
+                margin-bottom: -1px;
             }
+
+            .xero-dashboard-container .nav-tabs::-webkit-scrollbar { display: none; }
 
             .xero-dashboard-container .nav-tabs .nav-link {
                 color: var(--ch-text-muted);
                 background: transparent;
                 border: none;
-                border-radius: var(--ch-radius-pill);
-                padding: 7px 18px;
+                border-bottom: 2px solid transparent;
+                border-radius: 0;
+                padding: 12px 16px;
                 font-size: 13px;
-                font-weight: 500;
+                font-weight: 600;
                 line-height: 1.4;
-                transition: background 0.15s, color 0.15s;
+                transition: color 0.15s, border-color 0.15s;
                 white-space: nowrap;
                 display: inline-flex;
                 align-items: center;
-                gap: 6px;
+                gap: 7px;
             }
 
             .xero-dashboard-container .nav-tabs .nav-link svg {
                 width: 15px;
                 height: 15px;
+                opacity: 0.85;
             }
 
             .xero-dashboard-container .nav-tabs .nav-link:hover:not(.active) {
-                background: var(--ch-primary-light);
-                color: var(--ch-primary);
+                background: transparent;
+                color: var(--ch-text);
+                border-bottom-color: var(--ch-border-strong);
                 text-decoration: none;
             }
 
             .xero-dashboard-container .nav-tabs .nav-link.active {
-                background: var(--ch-primary) !important;
-                color: #fff !important;
-                box-shadow: var(--ch-shadow-md);
+                background: transparent !important;
+                color: var(--ch-primary) !important;
+                border-bottom-color: var(--ch-accent) !important;
             }
 
             .xero-dashboard-container .nav-tabs .nav-link.active svg {
-                color: #fff;
+                color: var(--ch-primary);
+                opacity: 1;
             }
 
             /* ─── Content Wrapper ─── */
@@ -232,11 +255,6 @@ class XeroSyncDashboard {
                 box-shadow: var(--ch-shadow-sm);
                 margin-bottom: 20px;
                 overflow: hidden;
-                transition: box-shadow 0.2s;
-            }
-
-            .metric-card:hover, .entity-card:hover {
-                box-shadow: var(--ch-shadow-hover);
             }
 
             .card-header {
@@ -349,7 +367,7 @@ class XeroSyncDashboard {
             .badge-info, .badge.info, span.indicator-pill.blue {
                 background: var(--ch-info-bg) !important;
                 color: var(--ch-info) !important;
-                border-color: rgba(74,127,229,0.3) !important;
+                border-color: rgba(19,181,234,0.35) !important;
             }
 
             /* Primary — solid blue pill (like "NET PAY" in reference) */
@@ -400,14 +418,14 @@ class XeroSyncDashboard {
                 background: transparent;
             }
 
-            /* No zebra — clean white rows, subtle hover */
+            /* No zebra — clean white rows, subtle neutral hover */
             .table tbody tr:hover td {
-                background: hsl(221 78% 58% / 0.04);
+                background: var(--ch-bg);
             }
 
             /* Row status tinting — very subtle */
-            .table-danger td { background: hsl(27 50% 58% / 0.06) !important; }
-            .table-success td { background: hsl(142 76% 36% / 0.06) !important; }
+            .table-danger td { background: var(--ch-danger-bg) !important; }
+            .table-success td { background: var(--ch-success-bg) !important; }
 
             /* Progress bars */
             .progress {
@@ -614,11 +632,12 @@ class XeroSyncDashboard {
             .sync-direction-icon svg {
                 width: 18px;
                 height: 18px;
-                color: #fff;
             }
 
-            .sync-direction-icon.to-xero   { background: #7BA3CC; }
-            .sync-direction-icon.from-xero { background: #7BB89E; }
+            .sync-direction-icon.to-xero       { background: var(--ch-primary-light); }
+            .sync-direction-icon.to-xero svg    { color: var(--ch-primary); }
+            .sync-direction-icon.from-xero      { background: var(--ch-success-bg); }
+            .sync-direction-icon.from-xero svg  { color: var(--ch-success); }
 
             .sync-direction-info h3 {
                 margin: 0;
@@ -660,7 +679,7 @@ class XeroSyncDashboard {
 
             .sync-chip-btn:hover {
                 border-color: var(--ch-primary);
-                box-shadow: 0 2px 8px rgba(74,127,229,0.12);
+                box-shadow: 0 2px 8px rgba(0,120,200,0.14);
                 background: var(--ch-primary-light);
                 text-decoration: none !important;
                 color: var(--ch-text) !important;
@@ -683,17 +702,17 @@ class XeroSyncDashboard {
                 flex-shrink: 0;
             }
 
-            /* Chip icon colors — dusty/muted palette */
-            .chip-icon-blue    { color: #5B7EC2; }
-            .chip-icon-indigo  { color: #5A8AB5; }
-            .chip-icon-green   { color: #5BA88A; }
-            .chip-icon-orange  { color: #C4923A; }
-            .chip-icon-purple  { color: #8B6FC0; }
-            .chip-icon-red     { color: #C07A50; }
-            .chip-icon-teal    { color: #4A9BA8; }
-            .chip-icon-violet  { color: #9B6EAD; }
-            .chip-icon-gray    { color: #7A8490; }
-            .chip-icon-crimson { color: #B85A5A; }
+            /* Chip icon colors — Xero-aligned palette */
+            .chip-icon-blue    { color: #0078C8; }
+            .chip-icon-indigo  { color: #2D6CDF; }
+            .chip-icon-green   { color: #36B37E; }
+            .chip-icon-orange  { color: #E8910A; }
+            .chip-icon-purple  { color: #7A5AC4; }
+            .chip-icon-red     { color: #E5253C; }
+            .chip-icon-teal    { color: #13B5EA; }
+            .chip-icon-violet  { color: #9B5AC4; }
+            .chip-icon-gray    { color: #6B7785; }
+            .chip-icon-crimson { color: #D0021B; }
 
             /* ─── Bulk Operations — Modern ─── */
             .bulk-ops-card {
@@ -752,7 +771,7 @@ class XeroSyncDashboard {
             }
 
             .bulk-btn-danger:hover {
-                background: rgba(220,38,38,0.06);
+                background: var(--ch-danger-bg);
             }
 
             .bulk-btn-primary {
@@ -762,8 +781,8 @@ class XeroSyncDashboard {
             }
 
             .bulk-btn-primary:hover {
-                background: #4D9578;
-                box-shadow: 0 2px 8px rgba(91,168,138,0.3);
+                background: #2E9E6B;
+                box-shadow: 0 2px 8px rgba(54,179,126,0.3);
             }
 
             .bulk-btn-ghost {
@@ -849,12 +868,7 @@ class XeroSyncDashboard {
                 border-radius: var(--ch-radius-lg);
                 padding: 18px 20px;
                 box-shadow: var(--ch-shadow-sm);
-                transition: box-shadow 0.2s;
                 margin-bottom: 0;
-            }
-
-            .entity-card:hover {
-                box-shadow: var(--ch-shadow-hover);
             }
 
             .entity-card-header {
@@ -1039,7 +1053,7 @@ class XeroSyncDashboard {
                 width: 40px;
                 height: 40px;
                 border-radius: 50%;
-                background: #7BA3CC;
+                background: var(--ch-info-bg);
                 display: flex;
                 align-items: center;
                 justify-content: center;
@@ -1049,7 +1063,7 @@ class XeroSyncDashboard {
             .xero-connection-icon svg {
                 width: 20px;
                 height: 20px;
-                color: #fff;
+                color: var(--ch-accent);
             }
 
             .xero-connection-title {
@@ -1262,8 +1276,8 @@ class XeroSyncDashboard {
             .logs-filters-card select,
             .logs-filters-card input {
                 border: 1px solid var(--ch-border);
-                border-radius: var(--ch-radius-pill);
-                padding: 8px 16px;
+                border-radius: var(--ch-radius-sm);
+                padding: 8px 12px;
                 font-size: 13px;
                 color: var(--ch-text);
                 background: var(--ch-surface);
@@ -1294,9 +1308,9 @@ class XeroSyncDashboard {
                 background: var(--ch-primary);
                 color: #fff;
                 border: none;
-                border-radius: var(--ch-radius-pill);
+                border-radius: var(--ch-radius-md);
                 font-size: 13px;
-                font-weight: 500;
+                font-weight: 600;
                 cursor: pointer;
                 transition: background 0.15s;
                 margin-left: auto;
@@ -1375,6 +1389,39 @@ class XeroSyncDashboard {
             .bg-warning { background: var(--ch-warning)    !important; }
             .bg-danger  { background: var(--ch-danger)     !important; }
             .bg-info    { background: var(--ch-info)       !important; }
+
+            /* ─── Polish: spinner, focus rings, scrollbars, links ─── */
+            .xero-dashboard-container .spinner-border.text-primary {
+                color: var(--ch-primary) !important;
+            }
+
+            .xero-dashboard-container a:not(.nav-link):not(.badge) {
+                color: var(--ch-primary);
+            }
+            .xero-dashboard-container a:not(.nav-link):not(.badge):hover {
+                color: var(--ch-primary-dark);
+            }
+
+            .xero-dashboard-container *:focus-visible {
+                outline: 2px solid var(--ch-accent);
+                outline-offset: 1px;
+            }
+
+            /* Thin custom scrollbars in scroll areas */
+            .xero-dashboard-container .table-responsive::-webkit-scrollbar,
+            .xero-dashboard-container .logs-table-card::-webkit-scrollbar {
+                height: 8px;
+                width: 8px;
+            }
+            .xero-dashboard-container .table-responsive::-webkit-scrollbar-thumb,
+            .xero-dashboard-container .logs-table-card::-webkit-scrollbar-thumb {
+                background: var(--ch-border-strong);
+                border-radius: var(--ch-radius-pill);
+            }
+            .xero-dashboard-container .table-responsive::-webkit-scrollbar-track,
+            .xero-dashboard-container .logs-table-card::-webkit-scrollbar-track {
+                background: transparent;
+            }
 
             /* ════════════════════════════════════════════
                RESPONSIVE BREAKPOINTS
@@ -2865,7 +2912,7 @@ class XeroSyncDashboard {
                                                 <i data-lucide="lightbulb" style="width:14px;height:14px;"></i> Recommended Actions
                                             </h6>
                                             ${attempt.actionable_recommendations.map(rec => `
-                                                <div style="background:${rec.severity === 'high' ? 'var(--ch-danger-bg)' : rec.severity === 'medium' ? 'var(--ch-warning-bg)' : 'var(--ch-info-bg)'};border:1px solid ${rec.severity === 'high' ? 'var(--ch-danger-border)' : rec.severity === 'medium' ? 'var(--ch-warning-border)' : 'rgba(91,138,196,0.2)'};border-radius:var(--ch-radius-md);padding:14px 16px;margin-bottom:10px;">
+                                                <div style="background:${rec.severity === 'high' ? 'var(--ch-danger-bg)' : rec.severity === 'medium' ? 'var(--ch-warning-bg)' : 'var(--ch-info-bg)'};border:1px solid ${rec.severity === 'high' ? 'var(--ch-danger-border)' : rec.severity === 'medium' ? 'var(--ch-warning-border)' : 'rgba(19,181,234,0.25)'};border-radius:var(--ch-radius-md);padding:14px 16px;margin-bottom:10px;">
                                                     <h6 style="margin:0 0 4px 0;font-size:13px;font-weight:600;">${rec.title}</h6>
                                                     <p style="margin:0 0 4px 0;font-size:13px;color:var(--ch-text-muted);">${rec.message}</p>
                                                     <p style="margin:0 0 10px 0;font-size:13px;"><strong>Action:</strong> ${rec.action}</p>
