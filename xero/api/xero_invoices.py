@@ -1577,6 +1577,23 @@ def process_xero_invoice(xero_invoice_data, settings):
         if erpnext_doc_name:
             # Update existing invoice
             doc = frappe.get_doc(erpnext_doctype, erpnext_doc_name)
+            # An existing ERPNext invoice that is already submitted (1) or
+            # cancelled (2) must NOT be rewritten from Xero: ERPNext rejects
+            # editing submitted/cancelled docs, and regressing xero_sync_status
+            # to "Pending" on them is invalid. Skip cleanly (Info, not Error).
+            if doc.docstatus != 0:
+                frappe.cache().delete_value(lock_key)
+                log_xero_error(
+                    message=f"Xero Invoice {xero_invoice_id} ({invoice_number}) already exists as {erpnext_doctype} {erpnext_doc_name} (docstatus {doc.docstatus}); skipping update.",
+                    status="Info",
+                    category="Duplicate Entity",
+                    xero_entity_id=xero_invoice_id,
+                    xero_entity_type="Invoice",
+                    erpnext_doc_type=erpnext_doctype,
+                    erpnext_doc_name=erpnext_doc_name,
+                    direction="Xero to ERPNext",
+                )
+                return
             doc.update(erpnext_data)
             doc.save(ignore_permissions=True)
             log_message = f"Updated {erpnext_doctype} {erpnext_doc_name} from Xero Invoice {xero_invoice_id}"

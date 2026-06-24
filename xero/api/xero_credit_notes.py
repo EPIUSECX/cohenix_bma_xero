@@ -1118,6 +1118,21 @@ def process_xero_credit_note(xero_cn_data, settings):
         if erpnext_doc_name:
             # Update existing
             doc = frappe.get_doc(erpnext_doctype, erpnext_doc_name)
+            # A submitted (1) or cancelled (2) return cannot be rewritten from
+            # Xero — ERPNext blocks editing it, and regressing xero_sync_status
+            # to "Pending" on a submitted doc is invalid. Skip cleanly.
+            if doc.docstatus != 0:
+                log_xero_error(
+                    message=f"Xero Credit Note {cn_number} already exists as {erpnext_doctype} {erpnext_doc_name} (docstatus {doc.docstatus}); skipping update.",
+                    status="Info",
+                    category="Duplicate Entity",
+                    xero_entity_id=xero_cn_id,
+                    xero_entity_type="CreditNote",
+                    erpnext_doc_type=erpnext_doctype,
+                    erpnext_doc_name=erpnext_doc_name,
+                    direction="Xero to ERPNext",
+                )
+                return
             doc.update(erpnext_data)
             doc.save(ignore_permissions=True)
             log_message = f"Updated {erpnext_doctype} (Return) {erpnext_doc_name} from Xero Credit Note {xero_cn_id}"

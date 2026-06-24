@@ -96,7 +96,12 @@ def sync_quotation_to_xero(doc_name, doc_type, **kwargs):
             "Reference": doc.customer_name,
             "Title": doc.get("title") or f"Quote for {doc.customer_name}",
             "Summary": doc.terms or "Quote generated from ERPNext",
-            "Status": "DRAFT",  # Xero quotes start as DRAFT
+            # NOTE: Do NOT send Status. Xero rejected an explicit "DRAFT" with
+            # "Please provide a valid Status Code", and a newly-created quote
+            # defaults to DRAFT on Xero's side anyway. Omitting Status also
+            # preserves the existing Xero status on update rather than forcing a
+            # transition. (Status-transition mapping can be added later if the
+            # business wants ERPNext quotation states pushed to Xero.)
             "CurrencyCode": doc.currency,
         }
 
