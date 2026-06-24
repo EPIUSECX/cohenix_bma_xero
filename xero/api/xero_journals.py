@@ -62,10 +62,32 @@ def sync_journal_to_xero(doc_name, doc_type="Journal Entry", **kwargs):
             log_xero_error(f"Cannot sync non-submitted document: {doc_type} {doc_name}", status="Info")
             return
 
-        # --- Validate Journal Balance ---
-        total_debit = sum([flt(acc.debit_in_account_currency) for acc in doc.accounts])
-        total_credit = sum([flt(acc.credit_in_account_currency) for acc in doc.accounts])
-        
+        # --- Validate single currency (HI-11) ---
+        # Xero manual journals are SINGLE-CURRENCY. If the ERPNext Journal Entry
+        # mixes account currencies we cannot represent it as one Xero manual
+        # journal, so reject it explicitly rather than silently posting wrong
+        # amounts.
+        account_currencies = {
+            (acc.account_currency or "")
+            for acc in doc.accounts
+            if (acc.account_currency or "")
+        }
+        if len(account_currencies) > 1:
+            frappe.throw(
+                _(
+                    "Journal Entry {0} mixes multiple account currencies ({1}). "
+                    "Xero manual journals are single-currency and cannot be synced. "
+                    "Split this into separate single-currency journals."
+                ).format(doc_name, ", ".join(sorted(account_currencies)))
+            )
+
+        # --- Validate Journal Balance (HI-11) ---
+        # Validate in COMPANY currency (debit/credit) rather than account currency.
+        # The account-currency fields only balance per-currency; the company-currency
+        # debit/credit are what actually post to the GL and what Xero will receive.
+        total_debit = sum([flt(acc.debit) for acc in doc.accounts])
+        total_credit = sum([flt(acc.credit) for acc in doc.accounts])
+
         if abs(total_debit - total_credit) > 0.01:  # Allow for minor rounding differences
             raise Exception(f"Journal Entry {doc_name} is not balanced. Debit: {total_debit}, Credit: {total_credit}")
 
@@ -143,7 +165,11 @@ def sync_journal_to_xero(doc_name, doc_type="Journal Entry", **kwargs):
             # ignore all lines and reject with "must contain at least 2 lines".
             "JournalLines": journal_lines,
             "Status": "POSTED",  # ERPNext submitted = Xero posted
-            "LineAmountTypes": "INCLUSIVE",
+            # HI-11: Every line carries TaxType "NONE", so the amounts are tax-free.
+            # Sending "INCLUSIVE" tells Xero the amounts include tax and can make it
+            # back out a tax component, distorting the posting. "NoTax" is the correct
+            # LineAmountType when no line has tax.
+            "LineAmountTypes": "NoTax",
             "ShowOnCashBasisReports": True
         }
 
@@ -154,7 +180,17 @@ def sync_journal_to_xero(doc_name, doc_type="Journal Entry", **kwargs):
         # --- Make API Call ---
         # Xero API: POST handles both create (no ID) and update (ID in payload).
         # PUT only creates new records and will not update existing ones.
-        response = xero_request("POST", "ManualJournals", data={"ManualJournals": [journal_payload]})
+        # Pass a stable idempotency key on CREATE so a retry after a network
+        # timeout does not post a duplicate manual journal in Xero.
+        idempotency_key = (
+            None if xero_journal_id else f"{doc_type}:{doc_name}:create"
+        )
+        response = xero_request(
+            "POST",
+            "ManualJournals",
+            data={"ManualJournals": [journal_payload]},
+            idempotency_key=idempotency_key,
+        )
 
         if response and response.get("ManualJournals"):
             updated_journal = response["ManualJournals"][0]
@@ -450,7 +486,19 @@ def process_xero_manual_journal(xero_journal_data, settings):
             log_xero_error(message=f"No valid accounts found for Xero manual journal {xero_journal_id}", status="Info")
             return
 
-        company = frappe.defaults.get_global_default("company") or frappe.get_all("Company", limit=1, pluck="name")[0]
+        # ME-11: Require an explicit company rather than silently picking the
+        # "first" company, which is non-deterministic in multi-company sites and
+        # can post journals against the wrong books. Xero Settings has no company
+        # field, so we use the Frappe global default and throw a clear error if
+        # none is configured.
+        company = frappe.defaults.get_global_default("company")
+        if not company:
+            frappe.throw(
+                _(
+                    "No default Company is configured. Set a global Default Company "
+                    "before syncing Xero manual journal {0} into ERPNext."
+                ).format(xero_journal_id)
+            )
         erpnext_data = {
             "company": company,
             "voucher_type": "Journal Entry",

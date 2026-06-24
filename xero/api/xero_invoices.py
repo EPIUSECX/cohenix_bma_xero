@@ -17,6 +17,64 @@ from ..utils.logging import log_xero_error
 from ..utils.retry_handler import retry_with_exponential_backoff
 # from .xero_accounts import get_xero_tax_rates # No longer needed here directly
 
+
+def maybe_submit_inbound(doc, settings, xero_entity_id, xero_entity_type):
+    """Opt-in auto-submit for documents imported FROM Xero (invoices, bills,
+    credit notes).
+
+    Default behaviour (auto_submit_inbound OFF): imported documents stay Draft
+    for manual review and this is a no-op. When the operator enables
+    auto_submit_inbound, the document is posted to the GL and marked 'Synced'.
+
+    The caller must have already committed the draft, so a submission failure
+    here only rolls back the failed submit — the draft survives, is marked
+    'Error', and the surrounding import batch continues. Returns True on submit.
+    """
+    if not settings or not settings.get("auto_submit_inbound"):
+        return False
+    if getattr(doc, "docstatus", 0) != 0:
+        return False
+    try:
+        # Don't bounce the document straight back out to Xero on submit hooks.
+        doc.flags.ignore_xero_sync = True
+        doc.submit()
+        frappe.db.set_value(
+            doc.doctype, doc.name, "xero_sync_status", "Synced", update_modified=False
+        )
+        frappe.db.commit()
+        log_xero_error(
+            message=f"Auto-submitted inbound {doc.doctype} {doc.name} from Xero {xero_entity_type} {xero_entity_id}",
+            status="Success",
+            erpnext_doc_type=doc.doctype,
+            erpnext_doc_name=doc.name,
+            xero_entity_id=xero_entity_id,
+            xero_entity_type=xero_entity_type,
+            direction="Xero to ERPNext",
+        )
+        return True
+    except Exception:
+        frappe.db.rollback()
+        try:
+            frappe.db.set_value(
+                doc.doctype, doc.name, "xero_sync_status", "Error", update_modified=False
+            )
+            frappe.db.commit()
+        except Exception:
+            pass
+        log_xero_error(
+            message=f"Auto-submit failed for inbound {doc.doctype} {doc.name}; left as Draft for manual review.",
+            status="Error",
+            error_details=frappe.get_traceback(),
+            erpnext_doc_type=doc.doctype,
+            erpnext_doc_name=doc.name,
+            xero_entity_id=xero_entity_id,
+            xero_entity_type=xero_entity_type,
+            direction="Xero to ERPNext",
+            category="Validation Errors",
+        )
+        return False
+
+
 # --- Validation Functions ---
 
 
@@ -101,8 +159,19 @@ def find_xero_invoice_by_number(invoice_number, xero_invoice_type):
         # invoice and made xero_request log a spurious "404" error on EVERY
         # first-time outbound invoice sync (a large source of Xero Log noise).
         safe_number = str(invoice_number).replace('"', "")
+        # HI-10: Exclude VOIDED/DELETED invoices from the recovery lookup.
+        # Without this, a dead invoice in Xero could be matched and then the
+        # outbound sync would attempt to UPDATE it (Xero rejects edits on a
+        # voided/deleted doc, or worse we'd reattach ERPNext to a dead record).
         response = xero_request(
-            "GET", "Invoices", params={"where": f'InvoiceNumber=="{safe_number}"'}
+            "GET",
+            "Invoices",
+            params={
+                "where": (
+                    f'InvoiceNumber=="{safe_number}" '
+                    'AND Status!="VOIDED" AND Status!="DELETED"'
+                )
+            },
         )
     except Exception:
         # Network / parse error — treat as "not found" and let the normal create
@@ -112,7 +181,13 @@ def find_xero_invoice_by_number(invoice_number, xero_invoice_type):
 
     invoices = (response or {}).get("Invoices") or []
     if len(invoices) == 1:
-        return invoices[0].get("InvoiceID")
+        # HI-10: Defensively verify the matched invoice is in a live, editable
+        # state before handing the ID back for an UPDATE. Belt-and-braces with
+        # the where-clause filter above.
+        matched = invoices[0]
+        if matched.get("Status") in ("AUTHORISED", "DRAFT", "SUBMITTED"):
+            return matched.get("InvoiceID")
+        return None
     # Either 0 (not found) or >1 (ambiguous — should not happen for
     # ACCREC but be defensive). In both cases return None.
     return None
@@ -370,6 +445,15 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
         # Ref: https://developer.xero.com/documentation/api/accounting/invoices
         # For Purchase Invoices, use bill_date (supplier's invoice date) if set; fall back to posting_date
         bill_date = doc.get("bill_date") if doc_type == "Purchase Invoice" else None
+
+        # CR-7: Detect tax-inclusive ERPNext invoices. ERPNext flags this on the
+        # tax rows via included_in_print_rate=1 (the rate already contains tax).
+        # If ANY tax row is inclusive we must tell Xero "Inclusive" so it does
+        # not add tax on top of an already-tax-inclusive line amount.
+        line_amount_types = "Exclusive"
+        if any(flt(tax.get("included_in_print_rate")) for tax in doc.taxes):
+            line_amount_types = "Inclusive"
+
         invoice_payload = {
             "Type": xero_invoice_type,
             "Contact": {"ContactID": xero_contact_id},
@@ -381,9 +465,9 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
             ),  # Validate invoice number
             "CurrencyCode": doc.currency,
             "Status": "AUTHORISED",  # Or SUBMITTED? AUTHORISED seems more appropriate for synced invoices.
-            # LineAmountTypes: Inclusive, Exclusive, NoTax (default Exclusive)
-            # ERPNext invoices are typically tax-exclusive; use Exclusive as safe default
-            "LineAmountTypes": "Exclusive",
+            # CR-7: LineAmountTypes derived from ERPNext tax config (Inclusive vs
+            # Exclusive) rather than hardcoded. See line_amount_types above.
+            "LineAmountTypes": line_amount_types,
         }
 
         # Add Reference field (max 255 chars)
@@ -486,10 +570,10 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
                 if xero_item_code:
                     line_item["ItemCode"] = item.item_code
 
-            # Add discount if present
-            if item.discount_percentage and item.discount_percentage > 0:
-                line_item["DiscountRate"] = item.discount_percentage
-
+            # LO-1: Do NOT send DiscountRate. ERPNext's item.rate / item.amount
+            # are ALREADY net of the discount, so also sending DiscountRate makes
+            # Xero apply the discount a SECOND time. We send the net rate only
+            # (no DiscountRate) so the figure Xero stores matches ERPNext.
             invoice_payload["LineItems"].append(line_item)
 
         # --- Map Taxes and Charges ---
@@ -522,10 +606,64 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
             }
             invoice_payload["LineItems"].append(tax_line_item)
 
+        # --- CR-7: Tax reconciliation guard ---
+        # Compare the tax we are effectively sending Xero against ERPNext's own
+        # tax total. When has_line_tax is True, Xero computes tax from the line
+        # TaxTypes, so the "tax we send" is the sum of ERPNext percentage tax
+        # rows that we intentionally dropped from the payload (they are encoded
+        # in the line TaxType instead). When has_line_tax is False, every tax
+        # row was sent as an explicit line, so the "sent" tax equals the doc
+        # tax total. In both cases the authoritative figure is the ERPNext doc
+        # tax total; we surface any divergence rather than silently shipping a
+        # payload whose VAT does not match the ERPNext document.
+        erpnext_tax_total = sum(
+            flt(tax.base_tax_amount_after_discount_amount or tax.tax_amount_after_discount_amount)
+            for tax in doc.taxes
+        )
+        if has_line_tax:
+            # Tax encoded in line TaxTypes — what we "send" is the dropped
+            # percentage rows that Xero will recompute.
+            sent_tax_total = sum(
+                flt(tax.tax_amount_after_discount_amount)
+                for tax in doc.taxes
+                if flt(tax.rate)
+            )
+        else:
+            # All tax rows sent as explicit NONE-taxed line items.
+            sent_tax_total = sum(
+                flt(tax.tax_amount_after_discount_amount) for tax in doc.taxes
+            )
+        if abs(flt(erpnext_tax_total) - flt(sent_tax_total)) > 0.02:
+            log_xero_error(
+                message=(
+                    f"Tax mismatch on outbound {doc_type} {doc_name}: ERPNext "
+                    f"tax total {erpnext_tax_total} vs tax represented in Xero "
+                    f"payload {sent_tax_total} (LineAmountTypes="
+                    f"{invoice_payload['LineAmountTypes']}, has_line_tax="
+                    f"{has_line_tax}). Verify tax mapping before relying on the "
+                    f"Xero figures."
+                ),
+                status="Warning",
+                erpnext_doc_type=doc_type,
+                erpnext_doc_name=doc_name,
+                direction="ERPNext to Xero",
+                category="Validation Errors",
+            )
+
         # --- Make API Call (POST for both create and update) ---
         # Xero API: POST creates OR updates (if InvoiceID provided, updates; otherwise creates)
+        # CR-6/idempotency: pass a stable idempotency key only when CREATING
+        # (no xero_invoice_id). On UPDATE the InvoiceID already makes Xero
+        # target the existing record; reusing a create key across edits would
+        # wrongly dedup legitimate edits within Xero's 24h window.
+        idempotency_key = None
+        if not xero_invoice_id:
+            idempotency_key = f"{doc_type}:{doc_name}:create-invoice"
         response = xero_request(
-            "POST", "Invoices", data={"Invoices": [invoice_payload]}
+            "POST",
+            "Invoices",
+            data={"Invoices": [invoice_payload]},
+            idempotency_key=idempotency_key,
         )
 
         if response and response.get("Invoices"):
@@ -630,7 +768,15 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
 def enqueue_void_invoice(doc, method):
     """Enqueue background job to void a cancelled invoice in Xero."""
     settings = get_xero_settings()
-    if not settings.enable_xero_sync or not settings.sync_invoices:
+    # ME-6: Voiding pushes a change TO Xero, so gate on the OUTBOUND directional
+    # flag for this document type, not the legacy aggregate `sync_invoices`
+    # (which is also true when only inbound sync is enabled).
+    outbound_enabled = (
+        settings.get("sync_bills_to_xero")
+        if doc.doctype == "Purchase Invoice"
+        else settings.get("sync_invoices_to_xero")
+    )
+    if not settings.enable_xero_sync or not settings.enable_sync_to_xero or not outbound_enabled:
         return
 
     # Route return documents to credit note void handler
@@ -874,7 +1020,11 @@ def check_invoice_payments():
 
 
 # Cache for mappings to avoid fetching settings repeatedly within a request/job
-@frappe.whitelist(allow_guest=True)  # Allow use in JS? Maybe not needed.
+# HI-2: Removed allow_guest=True. This exposed the account/tax mapping
+# (internal Chart-of-Accounts structure) to unauthenticated callers. No guest
+# JS relies on it (verified: no references in any .js file), so requiring an
+# authenticated session is safe.
+@frappe.whitelist()
 def get_cached_mapping(map_type):
     """Gets account or tax mapping from cache or settings."""
     cache_key = f"xero_{map_type}_map"
@@ -922,7 +1072,31 @@ def map_erpnext_tax_to_xero(erpnext_tax_template, settings=None):
 
 
 def create_payment_entry_for_xero_payment(invoice_doc, xero_invoice_data, settings):
-    """Creates and submits a Payment Entry in ERPNext based on Xero payment."""
+    """
+    Reconcile ERPNext with the payments recorded against a Xero invoice.
+
+    CR-6 (duplicate Payment Entries): This routine and
+    xero_payments.process_xero_payment used to both create Payment Entries for
+    the same Xero payment, with DIFFERENT dedup keys, so they could double-book.
+    They are now consolidated: this function NO LONGER creates Payment Entries
+    itself. Instead it iterates the individual Xero invoice Payments[] rows and
+    DELEGATES each one to xero_payments.process_xero_payment — the single
+    creation routine. That routine owns the canonical dedup logic
+    (xero_payment_id match, xero_payment_data scan, invoice+amount match, and a
+    live pre-create Xero check via the inbound payments path) and stamps the
+    Xero PaymentID onto the PE's xero_payment_id field, so no path can
+    double-book a payment.
+
+    CR-5 (payment date): process_xero_payment reads the real payment date from
+    each Payments[].Date (parse_xero_date), so the PE posting_date / reference_date
+    are the actual Xero payment date, not nowdate().
+
+    HI-9 (FX): per-payment currency/amount is taken from the Xero Payments[]
+    row, and process_xero_payment lets ERPNext compute exchange gain/loss
+    instead of assuming payment currency == invoice currency. We additionally
+    warn here when the invoice currency differs from the company currency so
+    multi-currency cases are visible for manual review.
+    """
     if not settings.create_payment_entry_on_sync or not settings.default_bank_account:
         log_xero_error(
             f"Skipping PE creation for {invoice_doc.doctype} {invoice_doc.name}: Setting disabled or default bank account missing.",
@@ -934,127 +1108,87 @@ def create_payment_entry_for_xero_payment(invoice_doc, xero_invoice_data, settin
             frappe.db.commit()
         return
 
+    from .xero_payments import process_xero_payment
+
+    payments = xero_invoice_data.get("Payments") or []
+    invoice_id = xero_invoice_data.get("InvoiceID")
+
+    if not payments:
+        # No itemised payments on the invoice payload. We deliberately do NOT
+        # fabricate a lump Payment Entry from cumulative AmountPaid (the old
+        # behaviour) because that PE could not be deduped against the inbound
+        # payments path and would double-book. Log so the gap is visible; the
+        # scheduled payments sync (sync_payments_from_xero) will pick the
+        # payment up by PaymentID when Xero exposes it.
+        log_xero_error(
+            message=(
+                f"Invoice {invoice_doc.doctype} {invoice_doc.name} shows as paid "
+                f"in Xero (AmountPaid={flt(xero_invoice_data.get('AmountPaid', 0.0))}) "
+                f"but the invoice payload carried no Payments[] rows. Deferring "
+                f"Payment Entry creation to the payments sync to avoid creating "
+                f"an un-deduplicable lump payment."
+            ),
+            status="Warning",
+            erpnext_doc_type=invoice_doc.doctype,
+            erpnext_doc_name=invoice_doc.name,
+            xero_entity_id=invoice_id,
+            xero_entity_type="Invoice",
+            direction="Xero to ERPNext",
+            category="Missing Prerequisites",
+        )
+        return
+
+    # HI-9: surface FX cases. ERPNext will still compute the gain/loss; this is
+    # purely to make multi-currency payments visible for manual reconciliation.
+    company_currency = None
     try:
-        # Basic details
-        paid_amount = flt(xero_invoice_data.get("AmountPaid", 0.0))
-        if paid_amount <= 0:
-            log_xero_error(
-                f"Skipping PE creation for {invoice_doc.doctype} {invoice_doc.name}: Xero AmountPaid is zero or missing.",
-                status="Info",
-            )
-            return
-
-        # Check if a PE already exists for this payment (simple check based on amount and invoice)
-        # More robust check might involve storing Xero Payment ID if available
-        existing_pe = frappe.db.exists(
-            "Payment Entry Reference",
-            {
-                "reference_doctype": invoice_doc.doctype,
-                "reference_name": invoice_doc.name,
-                # Check amount? This might be tricky with partial payments
-            },
+        company_currency = frappe.get_cached_value(
+            "Company", invoice_doc.company, "default_currency"
         )
-        if existing_pe:
-            log_xero_error(
-                f"Skipping PE creation for {invoice_doc.doctype} {invoice_doc.name}: Payment Entry reference already exists.",
-                status="Info",
-            )
-            # Ensure invoice status is Paid if PE exists but status wasn't updated
-            if invoice_doc.status != "Paid":
-                invoice_doc.db_set("status", "Paid")
-                frappe.db.commit()
-            return
-
-        # Determine party type and account
-        if invoice_doc.doctype == "Sales Invoice":
-            party_type = "Customer"
-            party = invoice_doc.customer
-            party_account = invoice_doc.debit_to
-            mode_of_payment = frappe.db.get_value(
-                "Mode of Payment", {"type": "General"}, "name"
-            )  # Find a generic MOP
-        else:  # Purchase Invoice
-            party_type = "Supplier"
-            party = invoice_doc.supplier
-            party_account = invoice_doc.credit_to
-            mode_of_payment = frappe.db.get_value(
-                "Mode of Payment", {"type": "Pay"}, "name"
-            )  # Find a generic MOP
-
-        # Use default bank account from settings
-        paid_from_or_to_account = settings.default_bank_account
-
-        # Create Payment Entry doc
-        pe = frappe.new_doc("Payment Entry")
-        pe.payment_type = "Receive" if invoice_doc.doctype == "Sales Invoice" else "Pay"
-        pe.party_type = party_type
-        pe.party = party
-        pe.party_account = party_account
-        # Assign to correct field based on payment type
-        if pe.payment_type == "Pay":
-            pe.paid_from = paid_from_or_to_account
-        else:  # Receive
-            pe.paid_to = paid_from_or_to_account
-        pe.paid_amount = paid_amount
-        pe.received_amount = (
-            paid_amount  # Assuming payment currency matches invoice currency
-        )
-        pe.base_paid_amount = (
-            paid_amount * invoice_doc.conversion_rate
-        )  # Adjust for multi-currency
-        pe.base_received_amount = paid_amount * invoice_doc.conversion_rate
-        pe.target_exchange_rate = invoice_doc.conversion_rate
-        pe.posting_date = (
-            nowdate()
-        )  # Use today's date for payment? Or try to get from Xero?
-        pe.mode_of_payment = mode_of_payment
-        pe.reference_no = (
-            f"XERO-{xero_invoice_data.get('InvoiceID', invoice_doc.name)}"  # Reference
-        )
-        pe.reference_date = nowdate()
-
-        pe.append(
-            "references",
-            {
-                "reference_doctype": invoice_doc.doctype,
-                "reference_name": invoice_doc.name,
-                "bill_no": invoice_doc.bill_no
-                if invoice_doc.doctype == "Purchase Invoice"
-                else None,
-                "due_date": invoice_doc.due_date,
-                "total_amount": invoice_doc.grand_total,
-                "outstanding_amount": invoice_doc.outstanding_amount,
-                "allocated_amount": paid_amount,  # Allocate the full paid amount
-            },
-        )
-
-        pe.flags.ignore_permissions = True
-        pe.flags.ignore_mandatory = True  # May need this depending on PE config
-        pe.insert()
-        pe.submit()
-
+    except Exception:
+        company_currency = None
+    if company_currency and invoice_doc.currency != company_currency:
         log_xero_error(
-            f"Created Payment Entry {pe.name} for paid {invoice_doc.doctype} {invoice_doc.name} from Xero.",
-            status="Success",
+            message=(
+                f"Multi-currency payment(s) for {invoice_doc.doctype} "
+                f"{invoice_doc.name}: invoice currency {invoice_doc.currency} "
+                f"!= company currency {company_currency}. ERPNext will compute "
+                f"exchange gain/loss; verify the applied FX rate."
+            ),
+            status="Warning",
             erpnext_doc_type=invoice_doc.doctype,
             erpnext_doc_name=invoice_doc.name,
-            xero_entity_id=xero_invoice_data.get("InvoiceID"),
-            xero_entity_type="Invoice/Payment",
+            xero_entity_id=invoice_id,
+            xero_entity_type="Invoice",
+            direction="Xero to ERPNext",
+            category="Validation Errors",
         )
 
-    except Exception as e:
-        # Log error but don't stop main sync process
-        log_xero_error(
-            f"Failed to create Payment Entry for {invoice_doc.doctype} {invoice_doc.name}",
-            status="Error",
-            erpnext_doc_type=invoice_doc.doctype,
-            erpnext_doc_name=invoice_doc.name,
-            xero_entity_id=xero_invoice_data.get("InvoiceID"),
-            error_details=frappe.get_traceback(),
-        )
-        # Ensure invoice status is still updated even if PE fails? Or mark as error?
-        # For safety, let's not mark as Paid if PE creation failed. User needs to resolve.
-        # invoice_doc.db_set("status", "Paid") # Maybe don't do this on PE failure
+    # Delegate each Xero payment to the single creation routine. Each payment
+    # row needs the InvoiceID so process_xero_payment can resolve the invoice.
+    for payment in payments:
+        payment_data = dict(payment)
+        if invoice_id and not payment_data.get("Invoice"):
+            payment_data["Invoice"] = {"InvoiceID": invoice_id}
+        try:
+            process_xero_payment(payment_data, settings)
+        except Exception:
+            # process_xero_payment logs its own failures; keep going so one bad
+            # payment row does not block the others.
+            log_xero_error(
+                message=(
+                    f"Failed delegating Xero payment "
+                    f"{payment_data.get('PaymentID')} for {invoice_doc.doctype} "
+                    f"{invoice_doc.name} to process_xero_payment."
+                ),
+                status="Error",
+                erpnext_doc_type=invoice_doc.doctype,
+                erpnext_doc_name=invoice_doc.name,
+                xero_entity_id=payment_data.get("PaymentID"),
+                xero_entity_type="Payment",
+                direction="Xero to ERPNext",
+                error_details=frappe.get_traceback(),
+            )
 
 
 # --- Invoice Sync (Xero to ERPNext) ---
@@ -1078,7 +1212,14 @@ def parse_xero_date(xero_date_string):
     if not xero_date_string.startswith("/Date("):
         try:
             return getdate(xero_date_string)
-        except:
+        except Exception as e:
+            # LO-3: Use a specific exception and log the failure rather than
+            # silently swallowing it, so unparseable Xero dates are visible.
+            log_xero_error(
+                message=f"Failed to parse Xero date '{xero_date_string}': {e}",
+                status="Warning",
+                category="Validation Errors",
+            )
             return None
 
     # Extract milliseconds from /Date(milliseconds+timezone)/
@@ -1363,9 +1504,19 @@ def process_xero_invoice(xero_invoice_data, settings):
             )
             due_date = posting_date
 
+        # HI-8: Inbound invoices are created as DRAFT (docstatus=0) and must be
+        # manually reviewed/submitted before check_invoice_payments (which
+        # filters docstatus=1) will reconcile them. Labelling them "Synced"
+        # while they sit in draft was dishonest and hid them from operators.
+        # xero_sync_status is a Select with fixed options
+        # (Pending/Synced/Error/Skipped), so we use "Pending" to mean
+        # "imported, awaiting manual submission" rather than inventing an option
+        # that would fail Select validation. We do NOT auto-submit. The status
+        # is upgraded to "Synced" only on the UPDATE path for an
+        # already-existing local doc (handled below).
         erpnext_data = {
             "xero_invoice_id": xero_invoice_id,
-            "xero_sync_status": "Synced",
+            "xero_sync_status": "Pending",
             "company": company,
             "posting_date": posting_date,
             "due_date": due_date,
@@ -1513,9 +1664,38 @@ def process_xero_invoice(xero_invoice_data, settings):
             erpnext_doc_name = doc.name
             log_message = f"Created {erpnext_doctype} {erpnext_doc_name} from Xero Invoice {xero_invoice_id} ({invoice_number})"
 
+        # ME-12: Verify the ERPNext document total matches the Xero Total.
+        # Account mappings, skipped lines, tax-template gaps or discount
+        # handling can silently shift the total. Surface any divergence beyond
+        # a 0.02 tolerance as a Warning instead of trusting the imported doc.
+        xero_total = flt(xero_invoice_data.get("Total", 0))
+        erpnext_total = flt(doc.get("grand_total"))
+        if xero_total and abs(erpnext_total - xero_total) > 0.02:
+            log_xero_error(
+                message=(
+                    f"Total mismatch on inbound {erpnext_doctype} "
+                    f"{erpnext_doc_name} (Xero Invoice {invoice_number}): "
+                    f"ERPNext grand_total {erpnext_total} vs Xero Total "
+                    f"{xero_total}. Review before submitting."
+                ),
+                status="Warning",
+                xero_entity_id=xero_invoice_id,
+                xero_entity_type="Invoice",
+                erpnext_doc_type=erpnext_doctype,
+                erpnext_doc_name=erpnext_doc_name,
+                direction="Xero to ERPNext",
+                category="Validation Errors",
+            )
+
         frappe.db.commit()
         # Release the idempotency lock now that the record is committed
         frappe.cache().delete_value(lock_key)
+
+        # Opt-in: post the imported invoice to the GL when auto-submit is enabled.
+        # The draft is already committed above, so a failed submit leaves the
+        # draft intact for manual review rather than losing the import.
+        maybe_submit_inbound(doc, settings, xero_invoice_id, "Invoice")
+
         log_xero_error(
             message=log_message,
             status="Success",

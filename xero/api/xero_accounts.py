@@ -34,6 +34,15 @@ XERO_ACCOUNT_TYPE_MAP = {
 
 # Reverse mapping: ERPNext (root_type, account_type) -> Xero Type
 # Order matters - more specific mappings should come first
+#
+# ME-3(b) — LOSSY ROUND TRIP WARNING: the inbound map (XERO_ACCOUNT_TYPE_MAP) is
+# many-to-one. e.g. both Xero PREPAYMENT and CURRENT map to ERPNext
+# "Current Asset", which this reverse map always sends back to Xero as CURRENT.
+# So a PREPAYMENT account synced into ERPNext and back out becomes CURRENT — its
+# original Xero type is lost. The clean fix is to persist the original Xero
+# account type on the Account (a `xero_account_type` custom field) on inbound and
+# read it back here on outbound. That requires a schema/custom-field change which
+# is OUT OF SCOPE for this edit, so it is documented here rather than implemented.
 ERPNEXT_TO_XERO_TYPE_MAP = {
     # Bank accounts
     ("Asset", "Bank"): "BANK",
@@ -128,15 +137,19 @@ def get_xero_type_from_erpnext(root_type, account_type):
     """
     # Try exact match first
     xero_type = ERPNEXT_TO_XERO_TYPE_MAP.get((root_type, account_type))
-    
+
     if xero_type:
         return xero_type
-    
-    # Try with just root_type
-    for (rt, at), xt in ERPNEXT_TO_XERO_TYPE_MAP.items():
-        if rt == root_type and at == account_type:
+
+    # ME-3(a): Second tier — match on root_type ALONE. The previous version
+    # re-tested (rt == root_type AND at == account_type), i.e. the exact tuple the
+    # .get() above already tested, so it could never produce a different result.
+    # Returning the first mapping whose root_type matches gives a sensible default
+    # account type for the same root before falling through to the generic table.
+    for (rt, _at), xt in ERPNEXT_TO_XERO_TYPE_MAP.items():
+        if rt == root_type:
             return xt
-    
+
     # Fallback based on root_type
     if root_type == "Asset":
         return "CURRENT"
@@ -202,9 +215,14 @@ def enqueue_sync_account(doc, method=None):
     # Handle string input from whitelisted calls
     if isinstance(doc, str):
         doc = frappe.get_doc("Account", doc)
-    
+
+    # HI-4: the inbound (Xero -> ERPNext) sync sets this flag before saving the
+    # Account so this on_update hook does not bounce the data back out to Xero.
+    if getattr(doc.flags, "ignore_xero_sync", False):
+        return
+
     settings = get_xero_settings()
-    
+
     # Check master switch
     if not settings or not settings.enable_xero_sync:
         return
@@ -270,11 +288,13 @@ def sync_account_to_xero(account_name):
             )
             action = "Updated"
         else:
-            # Create new - use PUT
+            # Create new - use PUT. Pass a stable idempotency key so a retry after
+            # a network timeout does not create a duplicate account in Xero.
             response = xero_request(
                 "PUT",
                 "Accounts",
-                data={"Accounts": [payload]}
+                data={"Accounts": [payload]},
+                idempotency_key=f"Account:{doc.name}:create"
             )
             action = "Created"
         
@@ -360,8 +380,18 @@ def build_xero_account_payload(doc, settings):
     Raises:
         ValueError: If required fields are missing or invalid
     """
-    # Get Xero Type
-    xero_type = get_xero_type_from_erpnext(doc.root_type, doc.account_type)
+    # Get Xero Type. ME-3: prefer the original Xero type captured on inbound
+    # sync (stored in the `xero_account_type` custom field) so a round-tripped
+    # account keeps its exact type instead of being re-derived through the lossy
+    # ERPNext->Xero map (e.g. PREPAYMENT/CURRENT both collapse to Current Asset
+    # and would otherwise come back as CURRENT). Fall back to derivation for
+    # ERPNext-origin accounts that have no stored Xero type.
+    xero_type = doc.get("xero_account_type")
+    if xero_type and xero_type not in XERO_ACCOUNT_TYPE_MAP:
+        # Stored value is stale/invalid — ignore it and re-derive.
+        xero_type = None
+    if not xero_type:
+        xero_type = get_xero_type_from_erpnext(doc.root_type, doc.account_type)
     if not xero_type:
         raise ValueError(f"Cannot map ERPNext account type ({doc.root_type}, {doc.account_type}) to Xero")
     
@@ -640,6 +670,9 @@ def process_xero_account(xero_account_data, company):
         "is_group": 0,
         "disabled": 1 if xero_status == "ARCHIVED" else 0,
         "xero_account_id": xero_account_id,
+        # ME-3: store the original Xero type so outbound sync re-uses it verbatim
+        # rather than re-deriving through the lossy ERPNext->Xero map.
+        "xero_account_type": xero_type,
         "xero_sync_status": "Synced",
     }
     
@@ -652,16 +685,28 @@ def process_xero_account(xero_account_data, company):
             # If matched by name, be more conservative
             if match_type in ["id", "code"]:
                 doc.account_number = erpnext_data["account_number"]
-                doc.currency = erpnext_data["currency"]
+                # ME-3(b): NEVER overwrite the currency of an account that already
+                # has GL entries — ERPNext forbids changing an account's currency
+                # once it is in use, and doing so would either raise or corrupt
+                # reporting. Only set currency when the account has no GL Entries.
+                has_gl_entries = frappe.db.exists(
+                    "GL Entry", {"account": erpnext_doc_name, "is_cancelled": 0}
+                )
+                if not has_gl_entries:
+                    doc.currency = erpnext_data["currency"]
                 doc.disabled = erpnext_data["disabled"]
             
             # Always update the Xero ID if we found a match
             doc.xero_account_id = xero_account_id
+            doc.xero_account_type = xero_type  # ME-3: preserve original Xero type
             doc.xero_sync_status = "Synced"
             doc.xero_data_hash = compute_account_hash(doc)
             doc.xero_last_account_sync = now_datetime()
-            
+
             doc.flags.ignore_mandatory = True
+            # HI-4: suppress the outbound on_update->enqueue_sync_account hook for
+            # this inbound write so we don't loop the data straight back to Xero.
+            doc.flags.ignore_xero_sync = True
             doc.save(ignore_permissions=True)
             log_message = f"Updated Account {erpnext_doc_name} from Xero Account {xero_account_id} (matched by {match_type})"
         else:
@@ -692,6 +737,8 @@ def process_xero_account(xero_account_data, company):
             doc.xero_last_account_sync = now_datetime()
             doc.flags.ignore_mandatory = True
             doc.flags.ignore_permissions = True
+            # HI-4: suppress the outbound on_update->enqueue_sync_account hook (above).
+            doc.flags.ignore_xero_sync = True
             doc.insert(ignore_permissions=True)
             erpnext_doc_name = doc.name
             log_message = f"Created Account {erpnext_doc_name} from Xero Account {xero_account_id}"

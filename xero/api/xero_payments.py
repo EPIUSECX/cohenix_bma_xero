@@ -708,14 +708,51 @@ def process_xero_payment(xero_payment_data, settings):
         # Calculate amounts
         payment_amount = flt(xero_payment_data.get("Amount", 0))
 
-        # Parse date with fallback
+        # CR-5: Use the ACTUAL Xero payment date. parse_xero_date returns None
+        # (and logs) on a bad/missing date; only then do we fall back to today.
         try:
             posting_date = parse_xero_date(xero_payment_data.get("Date"))
         except Exception as date_error:
             frappe.logger().warning(
                 f"Failed to parse Xero payment date, using today: {date_error}"
             )
+            posting_date = None
+        if not posting_date:
             posting_date = getdate()
+
+        # HI-9 (FX): Xero's payment Amount is denominated in the bank account's
+        # currency. When that differs from the company currency, the PE is
+        # multi-currency and ERPNext must compute the exchange gain/loss itself.
+        # We surface this for manual review rather than silently assuming a
+        # 1:1 rate. We deliberately do NOT hardcode received_amount = paid_amount
+        # for cross-currency payments (see erpnext_data below).
+        company_currency = None
+        try:
+            company_currency = frappe.get_cached_value(
+                "Company", invoice_doc.company, "default_currency"
+            )
+        except Exception:
+            company_currency = None
+        is_multicurrency = bool(
+            company_currency and invoice_doc.currency != company_currency
+        )
+        if is_multicurrency:
+            log_xero_error(
+                message=(
+                    f"Multi-currency payment from Xero (PaymentID "
+                    f"{xero_payment_id}) for {invoice_doctype} {invoice_name}: "
+                    f"invoice currency {invoice_doc.currency} != company "
+                    f"currency {company_currency}. ERPNext will compute the "
+                    f"exchange gain/loss; Xero does not supply a separate "
+                    f"payment FX rate here, so verify the applied rate."
+                ),
+                status="Warning",
+                xero_entity_id=xero_payment_id,
+                xero_entity_type="Payment",
+                erpnext_doc_type="Payment Entry",
+                direction="Xero to ERPNext",
+                category="Validation Errors",
+            )
 
         # Set paid_from and paid_to correctly based on payment type
         if payment_type == "Receive":  # Sales Invoice - receiving money
@@ -734,6 +771,11 @@ def process_xero_payment(xero_payment_data, settings):
             else invoice_doc.supplier,
             "posting_date": posting_date,
             "paid_amount": payment_amount,
+            # HI-9: For single-currency payments paid == received. For
+            # multi-currency, leave received_amount equal to the source amount
+            # and let ERPNext recompute base_* via exchange rates / gain-loss on
+            # validate; do NOT assume the two legs are numerically identical
+            # across currencies. The Warning above flags these for review.
             "received_amount": payment_amount,
             "paid_from": paid_from,
             "paid_to": paid_to,

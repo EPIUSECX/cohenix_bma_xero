@@ -270,13 +270,16 @@ def get_inventory_account(doc):
                     if stock_account:
                         return stock_account
 
-    # Fallback to company's default stock account
+    # HI-12: Fall back to the company's DEFAULT INVENTORY account, not the
+    # stock_adjustment_account. Using stock_adjustment_account here made the
+    # Inventory and COGS resolvers return the same account, so tracked items got
+    # identical Inventory/COGS codes in Xero.
     if company:
-        stock_account = frappe.get_cached_value(
-            "Company", company, "stock_adjustment_account"
+        inventory_account = frappe.get_cached_value(
+            "Company", company, "default_inventory_account"
         )
-        if stock_account:
-            return stock_account
+        if inventory_account:
+            return inventory_account
 
     return None
 
@@ -300,11 +303,12 @@ def get_cogs_account(doc):
                 if id_row.expense_account:
                     return id_row.expense_account
 
-    # Fallback to company's default COGS account
+    # HI-12: Fall back to the company's DEFAULT COST OF GOODS SOLD account, not
+    # the stock_adjustment_account (which is the inventory fallback). This keeps
+    # Inventory and COGS distinct for tracked items.
     if company:
-        # Try stock_adjustment_account as fallback for COGS
         cogs_account = frappe.get_cached_value(
-            "Company", company, "stock_adjustment_account"
+            "Company", company, "default_cost_of_goods_sold_account"
         )
         if cogs_account:
             return cogs_account
@@ -466,15 +470,21 @@ def enqueue_sync_item(doc, method=None):
         )
         return
 
-    # Check per-entity directional toggle for outbound sync
-    if not settings.get("sync_items_to_xero"):
+    # HI-4: inbound (Xero -> ERPNext) creation/updates set this flag before
+    # saving the Item so this on_update hook does not bounce the data straight
+    # back out to Xero in a loop.
+    if not isinstance(doc, str) and getattr(doc.flags, "ignore_xero_sync", False):
         return
 
-    # Double-trigger guard - skip if already synced
-    # This prevents infinite loops when sync updates xero_item_id
-    xero_status = frappe.db.get_value("Item", item_code, "xero_sync_status")
-    if xero_status == "Synced":
-        return  # Already synced, skip re-trigger
+    # HI-5: Gate the enqueue on whether the item data has ACTUALLY changed rather
+    # than on status == "Synced". The old status-only guard meant a later edit to
+    # an already-synced item never re-synced (the change was silently dropped).
+    # This mirrors the contacts/accounts behaviour. The hash short-circuit in
+    # sync_item_to_xero remains the backstop against redundant API calls.
+    if isinstance(doc, str):
+        doc = frappe.get_doc("Item", item_code)
+    if not item_data_changed(doc):
+        return
 
     frappe.enqueue(
         "xero.api.xero_items.sync_item_to_xero",
@@ -590,8 +600,14 @@ def sync_item_to_xero(item_code, **kwargs):
             item_payload["ItemID"] = xero_item_id
             response = xero_request("POST", "Items", data={"Items": [item_payload]})
         else:
-            # CREATE new item - use PUT
-            response = xero_request("PUT", "Items", data={"Items": [item_payload]})
+            # CREATE new item - use PUT. Pass a stable idempotency key so a retry
+            # after a network timeout does not create a duplicate item in Xero.
+            response = xero_request(
+                "PUT",
+                "Items",
+                data={"Items": [item_payload]},
+                idempotency_key=f"Item:{item_code}:create",
+            )
 
         # --- Handle Response ---
         if response and response.get("Items"):
@@ -812,6 +828,30 @@ def build_xero_item_payload(doc, settings):
         inventory_account = get_inventory_account(doc)
         cogs_account = get_cogs_account(doc)
 
+        # HI-12: Xero requires DISTINCT Inventory and COGS accounts for a tracked
+        # item. If resolution collapses to the same account (e.g. company defaults
+        # not configured), do NOT sync as tracked — log a Warning and fall through
+        # to untracked treatment so we never push an invalid identical Inventory ==
+        # COGS pairing to Xero.
+        if (
+            inventory_account
+            and cogs_account
+            and inventory_account == cogs_account
+        ):
+            log_xero_error(
+                message=f"Item {doc.name}: resolved Inventory account and COGS account are identical "
+                f"('{inventory_account}'). Xero requires distinct accounts for tracked items. "
+                f"Syncing as untracked. Configure the company's Default Inventory Account and "
+                f"Default Cost of Goods Sold Account (or the item's defaults) to enable tracking.",
+                status="Warning",
+                erpnext_doc_type="Item",
+                erpnext_doc_name=doc.name,
+                category="Mapping Errors",
+            )
+            payload["IsTrackedAsInventory"] = False
+            payload = clean_item_payload(payload)
+            return payload
+
         inventory_code = None
         cogs_code = None
 
@@ -1020,6 +1060,9 @@ def process_xero_item(xero_item_data, settings):
                     "xero_data_hash": compute_item_hash(doc),
                 }
             )
+            # HI-4: suppress the outbound on_update->enqueue_sync_item hook for
+            # this inbound write so we don't loop the data straight back to Xero.
+            doc.flags.ignore_xero_sync = True
             doc.save(ignore_permissions=True)
             log_message = (
                 f"Updated Item {erpnext_doc_name} from Xero Item {xero_item_id}"
@@ -1028,6 +1071,8 @@ def process_xero_item(xero_item_data, settings):
             # Create new item
             doc = frappe.new_doc("Item")
             doc.update(erpnext_data)
+            # HI-4: suppress the outbound on_update->enqueue_sync_item hook (above).
+            doc.flags.ignore_xero_sync = True
             doc.insert(ignore_permissions=True)
             erpnext_doc_name = doc.name
             log_message = (

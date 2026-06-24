@@ -3,7 +3,7 @@
 
 import frappe
 from frappe import _
-from frappe.utils import getdate, nowdate, add_days
+from frappe.utils import getdate, nowdate, add_days, flt
 from ..utils.xero_client import xero_request, get_xero_settings
 from ..utils.logging import log_xero_error
 from ..utils.retry_handler import retry_with_exponential_backoff
@@ -13,8 +13,10 @@ from ..utils.retry_handler import retry_with_exponential_backoff
 @retry_with_exponential_backoff(max_retries=2, base_delay=3)
 def sync_trial_balance_from_xero(date=None):
     """
-    Fetches Trial Balance from Xero and creates/updates GL Entry records in ERPNext.
-    
+    Fetches the Trial Balance from Xero and stores it as Xero Trial Balance
+    summary records in ERPNext. This does NOT create or update GL Entry records;
+    it only mirrors Xero's report figures into a read-only summary doctype.
+
     Args:
         date: Date for the trial balance (defaults to today)
     """
@@ -71,8 +73,9 @@ def process_trial_balance_data(trial_balance_data, date):
                 cells = row["Cells"]
                 if len(cells) >= 3:
                     account_name = cells[0].get("Value", "")
-                    debit_amount = float(cells[1].get("Value", 0) or 0)
-                    credit_amount = float(cells[2].get("Value", 0) or 0)
+                    # flt tolerates blank cells and thousands separators
+                    debit_amount = flt(cells[1].get("Value"))
+                    credit_amount = flt(cells[2].get("Value"))
                     
                     if account_name and (debit_amount != 0 or credit_amount != 0):
                         # Find corresponding ERPNext account
@@ -131,8 +134,10 @@ def create_trial_balance_entry(date, account, xero_account_name, debit, credit, 
 @retry_with_exponential_backoff(max_retries=2, base_delay=3)
 def sync_profit_loss_from_xero(from_date=None, to_date=None):
     """
-    Fetches Profit & Loss report from Xero.
-    
+    Fetches the Profit & Loss report from Xero and stores it as Xero Profit Loss
+    summary records in ERPNext. This does NOT create or update GL Entry records;
+    it only mirrors Xero's report figures into a read-only summary doctype.
+
     Args:
         from_date: Start date for the report
         to_date: End date for the report
@@ -192,12 +197,13 @@ def process_profit_loss_data(pl_data, from_date, to_date):
                 cells = row["Cells"]
                 if len(cells) >= 2:
                     account_name = cells[0].get("Value", "")
-                    amount = float(cells[1].get("Value", 0) or 0)
-                    
+                    # flt tolerates blank cells and thousands separators
+                    amount = flt(cells[1].get("Value"))
+
                     if account_name and amount != 0:
                         # Find corresponding ERPNext account
                         erpnext_account = find_erpnext_account_by_name(account_name, company)
-                        
+
                         if erpnext_account:
                             create_pl_entry(
                                 from_date, to_date, erpnext_account, 
@@ -251,8 +257,10 @@ def create_pl_entry(from_date, to_date, account, xero_account_name, amount, comp
 @retry_with_exponential_backoff(max_retries=2, base_delay=3)
 def sync_balance_sheet_from_xero(date=None):
     """
-    Fetches Balance Sheet from Xero.
-    
+    Fetches the Balance Sheet from Xero and stores it as Xero Balance Sheet
+    summary records in ERPNext. This does NOT create or update GL Entry records;
+    it only mirrors Xero's report figures into a read-only summary doctype.
+
     Args:
         date: Date for the balance sheet (defaults to today)
     """
@@ -306,12 +314,13 @@ def process_balance_sheet_data(bs_data, date):
                 cells = row["Cells"]
                 if len(cells) >= 2:
                     account_name = cells[0].get("Value", "")
-                    amount = float(cells[1].get("Value", 0) or 0)
-                    
+                    # flt tolerates blank cells and thousands separators
+                    amount = flt(cells[1].get("Value"))
+
                     if account_name and amount != 0:
                         # Find corresponding ERPNext account
                         erpnext_account = find_erpnext_account_by_name(account_name, company)
-                        
+
                         if erpnext_account:
                             create_balance_sheet_entry(
                                 date, erpnext_account, account_name, amount, company
@@ -359,39 +368,54 @@ def create_balance_sheet_entry(date, account, xero_account_name, amount, company
         )
 
 
-def find_erpnext_account_by_name(xero_account_name, company):
-    """Find ERPNext account by matching with Xero account name."""
-    # First try exact match with account name
+def find_erpnext_account_by_name(xero_account_name, company, xero_account_id=None):
+    """Find the ERPNext account that corresponds to a Xero report row.
+
+    Matching is EXACT ONLY. Fuzzy substring matching was removed because it
+    silently mapped report figures onto the wrong account (e.g. "Sales" matching
+    "Sales Tax"), which corrupts the mirrored summary. Resolution order:
+      1. Stored Xero account id (xero_account_id custom field), if supplied.
+      2. account_number == the Xero account code (report rows sometimes expose
+         the code as the row value, e.g. "200").
+      3. Exact account_name match.
+    If none match exactly we log a Warning and return None so the caller SKIPS
+    the row rather than guessing.
+    """
+    # 1. Exact match on the stored Xero account id, when the caller has one.
+    if xero_account_id:
+        account = frappe.db.get_value("Account", {
+            "xero_account_id": xero_account_id,
+            "company": company
+        }, "name")
+        if account:
+            return account
+
+    # 2. Exact match on the Xero account code stored in account_number.
+    account = frappe.db.get_value("Account", {
+        "account_number": xero_account_name,
+        "company": company
+    }, "name")
+    if account:
+        return account
+
+    # 3. Exact match on the account name.
     account = frappe.db.get_value("Account", {
         "account_name": xero_account_name,
         "company": company
     }, "name")
-    
     if account:
         return account
-    
-    # Try matching with xero_account_id custom field
-    account = frappe.db.get_value("Account", {
-        "xero_account_name": xero_account_name,
-        "company": company
-    }, "name")
-    
-    if account:
-        return account
-    
-    # Try partial match
-    accounts = frappe.get_all("Account", 
-        filters={
-            "company": company,
-            "is_group": 0
-        },
-        fields=["name", "account_name"]
+
+    # No exact match: skip rather than guess a wrong account.
+    log_xero_error(
+        message=(
+            f"No exact ERPNext Account match for Xero account "
+            f"'{xero_account_name}' (company {company}); skipping this report row."
+        ),
+        status="Warning",
+        category="Validation Errors",
+        direction="Xero to ERPNext"
     )
-    
-    for acc in accounts:
-        if xero_account_name.lower() in acc.account_name.lower() or acc.account_name.lower() in xero_account_name.lower():
-            return acc.name
-    
     return None
 
 
@@ -463,11 +487,12 @@ def process_aged_receivables_data(aged_data, report_date, contact_id=None):
                 cells = row["Cells"]
                 if len(cells) >= 6:  # Contact, Current, 1-30, 31-60, 61-90, 90+
                     contact_name = cells[0].get("Value", "")
-                    current = float(cells[1].get("Value", 0) or 0)
-                    days_1_30 = float(cells[2].get("Value", 0) or 0)
-                    days_31_60 = float(cells[3].get("Value", 0) or 0)
-                    days_61_90 = float(cells[4].get("Value", 0) or 0)
-                    days_90_plus = float(cells[5].get("Value", 0) or 0)
+                    # flt tolerates blank cells and thousands separators
+                    current = flt(cells[1].get("Value"))
+                    days_1_30 = flt(cells[2].get("Value"))
+                    days_31_60 = flt(cells[3].get("Value"))
+                    days_61_90 = flt(cells[4].get("Value"))
+                    days_90_plus = flt(cells[5].get("Value"))
                     
                     total_outstanding = current + days_1_30 + days_31_60 + days_61_90 + days_90_plus
                     

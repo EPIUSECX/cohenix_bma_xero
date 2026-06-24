@@ -58,6 +58,8 @@ def retry_with_exponential_backoff(max_retries=3, base_delay=1, max_delay=60, ba
 
 @frappe.whitelist()
 def retry_failed_sync(log_name):
+    from .xero_client import require_xero_manager
+    require_xero_manager()
     """
     Retry a failed sync operation based on the Xero Log entry.
     
@@ -76,9 +78,17 @@ def retry_failed_sync(log_name):
         if not sync_function:
             frappe.throw(f"No sync function found for {log_doc.erpnext_doc_type} -> {log_doc.xero_entity_type}")
         
-        # Call the sync function
+        # Call the sync function (ME-6: match each function's real signature).
         if log_doc.direction == "ERPNext to Xero":
-            sync_function(log_doc.erpnext_doc_name, log_doc.erpnext_doc_type)
+            if log_doc.erpnext_doc_type == "Item":
+                # sync_item_to_xero(item_code, **kwargs)
+                sync_function(log_doc.erpnext_doc_name)
+            else:
+                # All other outbound sync fns are (doc_name, doc_type, **kwargs)
+                sync_function(
+                    doc_name=log_doc.erpnext_doc_name,
+                    doc_type=log_doc.erpnext_doc_type,
+                )
         else:
             # Handle Xero to ERPNext sync if needed
             frappe.throw("Xero to ERPNext retry not implemented yet")
@@ -129,6 +139,8 @@ def get_sync_function(erpnext_doc_type, xero_entity_type, direction):
 
 @frappe.whitelist()
 def bulk_retry_failed_syncs(filters=None):
+    from .xero_client import require_xero_manager
+    require_xero_manager()
     """
     Retry multiple failed sync operations in bulk.
     

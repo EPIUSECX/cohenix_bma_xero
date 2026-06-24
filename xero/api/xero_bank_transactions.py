@@ -260,9 +260,11 @@ def process_xero_bank_transaction(xero_transaction_data, settings):
 
 @frappe.whitelist()
 def reconcile_bank_transactions(bank_account, from_date=None, to_date=None):
+    from ..utils.xero_client import require_xero_manager
+    require_xero_manager()
     """
     Reconcile bank transactions between ERPNext and Xero for a specific bank account.
-    
+
     Args:
         bank_account: ERPNext bank account name
         from_date: Start date for reconciliation

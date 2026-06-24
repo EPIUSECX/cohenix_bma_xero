@@ -1,9 +1,8 @@
-# Copyright (c) 2024, Your Name and contributors
+# Copyright (c) 2024, EPI-USE Global Services and contributors
 # For license information, please see license.txt
 
-"""Prompt - Write me a migration script to add the directional sync toggle 
-fields I built to the existing Xero Settings. Set default values to maintain current 
-behavior (both directions enabled)."""
+"""Migration: add directional sync toggle fields to existing Xero Settings.
+Defaults preserve prior behaviour (both sync directions enabled)."""
 
 import frappe
 

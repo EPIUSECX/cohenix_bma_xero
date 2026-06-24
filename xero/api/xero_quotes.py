@@ -310,17 +310,38 @@ def process_xero_quote(xero_quote_data, settings):
 
         company = frappe.defaults.get_global_default("company") or frappe.get_all("Company", limit=1, pluck="name")[0]
 
+        # ME-5(a): default to the COMPANY base currency, not a hardcoded "USD",
+        # when Xero does not supply a CurrencyCode.
+        company_currency = frappe.get_cached_value("Company", company, "default_currency")
+        currency = xero_quote_data.get("CurrencyCode") or company_currency
+
+        transaction_date = parse_xero_date(xero_quote_data.get("Date"))
+
+        # ME-5(b): resolve the conversion rate from ERPNext when Xero omits it
+        # (or sends a falsy value) and the document currency differs from the
+        # company base currency. Only fall back to 1.0 when currencies match.
+        conversion_rate = frappe.utils.flt(xero_quote_data.get("CurrencyRate"))
+        if not conversion_rate:
+            if currency and currency != company_currency:
+                from erpnext.setup.utils import get_exchange_rate
+                conversion_rate = get_exchange_rate(
+                    currency, company_currency, transaction_date
+                )
+            else:
+                conversion_rate = 1.0
+
         # Map Xero Data to ERPNext Fields. Xero serialises dates as
         # /Date(ms+offset)/ — use the shared parser, NOT getdate().
         erpnext_data = {
             "quotation_to": "Customer",
             "party_name": customer_name,
             "company": company,
-            "transaction_date": parse_xero_date(xero_quote_data.get("Date")),
+            "transaction_date": transaction_date,
             "valid_till": parse_xero_date(xero_quote_data.get("ExpiryDate")),
             "title": xero_quote_data.get("Title"),
             "terms": xero_quote_data.get("Summary"),
-            "currency": xero_quote_data.get("CurrencyCode", "USD"),
+            "currency": currency,
+            "conversion_rate": conversion_rate,
             "xero_quote_id": xero_quote_id,
             "xero_sync_status": "Synced",
         }

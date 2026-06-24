@@ -70,6 +70,8 @@ SIMILARITY_THRESHOLD = 0.80   # Minimum SequenceMatcher ratio for Medium confide
 
 @frappe.whitelist()
 def run_auto_mapping(dry_run=True):
+    from .xero_client import require_xero_manager
+    require_xero_manager()
     """
     Analyse-and-optionally-apply entry point.
 
@@ -125,6 +127,8 @@ def run_auto_mapping(dry_run=True):
 
 @frappe.whitelist()
 def run_full_auto_map():
+    from .xero_client import require_xero_manager
+    require_xero_manager()
     """
     One-shot full mapping for Topology A (Xero as Source).
 
@@ -217,6 +221,8 @@ def run_full_auto_map():
 
 @frappe.whitelist()
 def confirm_mapping(suggestions):
+    from .xero_client import require_xero_manager
+    require_xero_manager()
     """
     Write confirmed mapping rows to the Xero Settings account_mapping table.
 
@@ -265,6 +271,8 @@ def confirm_mapping(suggestions):
 
 @frappe.whitelist()
 def push_accounts_to_xero(account_names):
+    from .xero_client import require_xero_manager
+    require_xero_manager()
     """
     Topology B helper: create unmatched ERPNext accounts in Xero.
     account_names: JSON list of ERPNext account names.

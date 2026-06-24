@@ -3,7 +3,7 @@
 
 import frappe
 import requests
-from frappe.utils import get_site_url, now_datetime, add_to_date
+from frappe.utils import get_site_url, now_datetime, add_to_date, get_datetime
 from json import dumps, loads
 from urllib.parse import urlencode
 
@@ -12,11 +12,38 @@ XERO_TOKEN_URL = "https://identity.xero.com/connect/token"
 XERO_CONNECTIONS_URL = "https://api.xero.com/connections"
 XERO_API_BASE_URL = "https://api.xero.com/api.xro/2.0"
 
+# Timeout (seconds) applied to every outbound HTTP call to Xero so a hung
+# endpoint can never block a worker indefinitely.
+XERO_HTTP_TIMEOUT = 30
+
+# HTTP status codes that are safe to retry (transient server-side failures).
+RETRYABLE_STATUS_CODES = {500, 502, 503, 504}
+
 
 def get_xero_settings():
     """Returns the Xero Settings document."""
     # Consider multi-company scenarios if applicable
     return frappe.get_single("Xero Settings")
+
+
+# Roles permitted to manage the Xero integration (trigger syncs, change the
+# connected organisation, edit mappings, reconcile). System Manager and the
+# app's own manager role; Administrator always passes.
+XERO_MANAGER_ROLES = ("System Manager", "Xero Integration Manager")
+
+
+def require_xero_manager():
+    """ME-8: Guard whitelisted, state-changing endpoints so any logged-in user
+    cannot trigger Xero syncs, switch the connected organisation, or rewrite
+    account mappings. Raises PermissionError unless the caller holds a Xero
+    management role."""
+    if frappe.session.user == "Administrator":
+        return
+    if not set(XERO_MANAGER_ROLES) & set(frappe.get_roles()):
+        frappe.throw(
+            "You are not permitted to perform Xero integration actions.",
+            frappe.PermissionError,
+        )
 
 
 def get_redirect_uri():
@@ -31,6 +58,7 @@ def get_redirect_uri():
 @frappe.whitelist()
 def get_auth_url():
     """Generates the Xero authorization URL."""
+    require_xero_manager()
     settings = get_xero_settings()
     if not settings.client_id:
         frappe.throw("Xero Client ID not set in Xero Settings.")
@@ -117,7 +145,9 @@ def handle_oauth_callback(code=None, state=None, error=None):
             "redirect_uri": get_redirect_uri(),
         }
 
-        response = requests.post(XERO_TOKEN_URL, headers=headers, data=data)
+        response = requests.post(
+            XERO_TOKEN_URL, headers=headers, data=data, timeout=XERO_HTTP_TIMEOUT
+        )
         response.raise_for_status()
         token_data = response.json()
 
@@ -158,7 +188,9 @@ def get_available_connections(access_token):
         "Content-Type": "application/json",
     }
     try:
-        response = requests.get(XERO_CONNECTIONS_URL, headers=headers)
+        response = requests.get(
+            XERO_CONNECTIONS_URL, headers=headers, timeout=XERO_HTTP_TIMEOUT
+        )
         response.raise_for_status()
         return response.json() or []
     except requests.exceptions.RequestException as e:
@@ -192,6 +224,7 @@ def get_tenant_id(access_token):
 @frappe.whitelist()
 def get_available_tenants():
     """Returns the list of Xero tenants connected to the current OAuth token."""
+    require_xero_manager()
     tenants = frappe.cache().get_value("xero_available_tenants")
     if tenants:
         return tenants
@@ -200,13 +233,14 @@ def get_available_tenants():
     settings = get_xero_settings()
     if not settings.access_token:
         return []
-    connections = get_available_connections(settings.access_token)
+    connections = get_available_connections(settings.get_password("access_token"))
     return [{"id": c["tenantId"], "name": c.get("tenantName", c["tenantId"])} for c in connections]
 
 
 @frappe.whitelist()
 def select_tenant(tenant_id):
     """Allows the user to pick which Xero organisation to sync with."""
+    require_xero_manager()
     tenants = get_available_tenants()
     match = next((t for t in tenants if t["id"] == tenant_id), None)
     if not match:
@@ -221,22 +255,76 @@ def select_tenant(tenant_id):
     return {"tenant_id": match["id"], "tenant_name": match["name"]}
 
 
+def _token_is_fresh(settings, buffer_minutes=5):
+    """True if the stored access token is still valid beyond the safety buffer."""
+    if not settings.access_token or not settings.token_expiry:
+        return False
+    expiry = get_datetime(settings.token_expiry)
+    return now_datetime() < add_to_date(expiry, minutes=-buffer_minutes)
+
+
 def refresh_access_token():
-    """Refreshes the Xero access token using the refresh token with retry logic."""
+    """Refreshes the Xero access token using the refresh token.
+
+    CR-3: Xero rotates (and invalidates) the refresh token on every use, so two
+    workers refreshing concurrently would revoke each other's token and take the
+    whole integration offline. We serialise refresh with a short-lived Redis lock
+    (SET NX EX) and re-read settings inside the lock — if another worker already
+    refreshed, we return the fresh token instead of burning the rotated one.
+    Fails open (proceeds without the lock) only if the cache is unavailable.
+    """
     import time
     from ..utils.logging import log_xero_error
 
-    settings = get_xero_settings()
-    if not settings.refresh_token:
-        notify_admins_token_failure("No refresh token found")
-        frappe.throw("Xero Refresh Token not found. Please re-authenticate.")
+    cache = frappe.cache()
+    site = getattr(frappe.local, "site", "site")
+    lock_key = f"xero_token_refresh_lock:{site}"
+    lock_ttl = 60  # seconds; longer than the worst-case refresh (3 retries w/ backoff)
 
+    acquired = False
+    # Wait up to ~30s for an in-flight refresh by another worker to finish.
+    for _ in range(60):
+        try:
+            acquired = bool(cache.set(lock_key, "1", nx=True, ex=lock_ttl))
+        except Exception:
+            acquired = True  # cache unavailable -> proceed without coordination
+        if acquired:
+            break
+        time.sleep(0.5)
+        fresh = get_xero_settings()
+        if _token_is_fresh(fresh):
+            return fresh.get_password("access_token")
+
+    try:
+        # Re-read the latest token state now that we hold the lock. Another worker
+        # may have refreshed in the window between our expiry check and acquiring
+        # the lock — if so, reuse its token rather than rotating again.
+        settings = get_xero_settings()
+        if _token_is_fresh(settings):
+            return settings.get_password("access_token")
+
+        if not settings.refresh_token:
+            notify_admins_token_failure("No refresh token found")
+            frappe.throw("Xero Refresh Token not found. Please re-authenticate.")
+
+        return _do_refresh(settings, log_xero_error, time)
+    finally:
+        if acquired:
+            try:
+                cache.delete(lock_key)
+            except Exception:
+                pass
+
+
+def _do_refresh(settings, log_xero_error, time):
+    """Performs the actual token refresh request with bounded retries.
+    Must be called while holding the refresh lock."""
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
     data = {
         "grant_type": "refresh_token",
         "client_id": settings.client_id,
         "client_secret": settings.get_password("client_secret"),
-        "refresh_token": settings.refresh_token,
+        "refresh_token": settings.get_password("refresh_token"),
     }
 
     max_retries = 3
@@ -245,15 +333,16 @@ def refresh_access_token():
     while retry_count < max_retries:
         try:
             response = requests.post(
-                XERO_TOKEN_URL, headers=headers, data=data, timeout=30
+                XERO_TOKEN_URL, headers=headers, data=data, timeout=XERO_HTTP_TIMEOUT
             )
             response.raise_for_status()
             token_data = response.json()
 
-            settings.access_token = token_data["access_token"]
+            new_access_token = token_data["access_token"]
+            settings.access_token = new_access_token
             settings.refresh_token = token_data[
                 "refresh_token"
-            ]  # Xero might issue a new refresh token
+            ]  # Xero rotates the refresh token on every use
             settings.token_expiry = add_to_date(
                 now_datetime(), seconds=token_data["expires_in"]
             )
@@ -267,7 +356,9 @@ def refresh_access_token():
                 category="Authentication Issues",
             )
 
-            return settings.access_token
+            # Return the plaintext token directly — after save() the in-memory
+            # attribute holds the encrypted Password value, not the bearer token.
+            return new_access_token
 
         except requests.exceptions.RequestException as e:
             retry_count += 1
@@ -401,19 +492,11 @@ def get_xero_client():
             "Xero connection not configured or access token missing. Please connect in Xero Settings."
         )
 
-    # Check if token is expired or close to expiring (e.g., within 5 minutes)
-    from frappe.utils import get_datetime
-
-    token_expiry_dt = (
-        get_datetime(settings.token_expiry) if settings.token_expiry else None
-    )
-
-    if not token_expiry_dt or now_datetime() >= add_to_date(
-        token_expiry_dt, minutes=-5
-    ):
-        access_token = refresh_access_token()
+    # Refresh if the token is missing/expired or within the 5-minute safety buffer.
+    if _token_is_fresh(settings):
+        access_token = settings.get_password("access_token")
     else:
-        access_token = settings.access_token
+        access_token = refresh_access_token()
 
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -449,7 +532,7 @@ def _throttle_xero_call(settings):
     cache = frappe.cache()
     tenant = settings.tenant_id or "default"
     site = getattr(frappe.local, "site", "site")
-    deadline = time.time() + 90  # never block a single call here for >90s
+    deadline = time.time() + 30  # never block a single call here for >30s (ME-7)
 
     while time.time() < deadline:
         bucket = int(time.time() // 60)
@@ -466,13 +549,28 @@ def _throttle_xero_call(settings):
         time.sleep(min(2.0, max(0.2, 60 - (time.time() % 60))))
 
 
-def xero_request(method, endpoint, data=None, params=None):
-    """Makes a request to the Xero API, handling authentication and errors."""
+def xero_request(method, endpoint, data=None, params=None, idempotency_key=None):
+    """Makes a request to the Xero API, handling authentication and errors.
+
+    :param idempotency_key: Optional stable key sent as the ``Idempotency-Key``
+        header. Xero deduplicates mutating requests (POST/PUT) carrying the same
+        key for 24h, so a retry after a timeout where Xero actually succeeded
+        will NOT create a duplicate record. Callers creating financial documents
+        (invoices, payments, credit notes, journals) should always pass one
+        (HI-7). When supplied, network/timeout retries on POST/PUT are safe.
+    """
     import time
 
     settings = get_xero_settings()
-    headers = get_xero_client()  # Gets headers with valid token
+    headers = dict(get_xero_client())  # Gets headers with valid token (copy to mutate)
+    if idempotency_key:
+        headers["Idempotency-Key"] = str(idempotency_key)
     url = f"{XERO_API_BASE_URL}/{endpoint}"
+
+    method_upper = method.upper()
+    # GET is idempotent by definition; mutating calls are only safe to retry on a
+    # network/timeout failure when an Idempotency-Key guarantees server-side dedup.
+    safe_to_retry_on_network = method_upper == "GET" or bool(idempotency_key)
 
     # Get configurable settings
     max_retries = getattr(settings, "max_retry_attempts", 5)
@@ -567,8 +665,29 @@ def xero_request(method, endpoint, data=None, params=None):
                     title="Xero API Rate Limit",
                 )
                 time.sleep(wait_time)
+            elif e.response.status_code in RETRYABLE_STATUS_CODES:
+                # HI-6: transient server-side failure (500/502/503/504) — retry
+                # with capped exponential backoff before giving up.
+                retry_count += 1
+                if retry_count >= max_retries:
+                    from ..utils.logging import log_xero_error
+
+                    log_xero_error(
+                        message=f"Xero API {e.response.status_code} on {method} {endpoint} after {max_retries} retries",
+                        status="Error",
+                        category="Connection Issues",
+                        error_details=(e.response.text or "")[:1000],
+                        retry_count=retry_count,
+                    )
+                    raise e
+                wait_time = min(backoff_base**retry_count, max_delay)
+                frappe.log_error(
+                    message=f"Xero {e.response.status_code} on {method} {endpoint}. Retrying in {wait_time}s (attempt {retry_count}/{max_retries}).",
+                    title="Xero API Transient Error",
+                )
+                time.sleep(wait_time)
             else:
-                # For other HTTP errors, log details and re-raise
+                # For other HTTP errors (4xx), log details and re-raise
                 error_details = ""
                 try:
                     error_data = e.response.json()
@@ -598,7 +717,20 @@ def xero_request(method, endpoint, data=None, params=None):
                 )
 
         except requests.exceptions.RequestException as e:
-            # Network errors, timeouts, etc.
+            # Network errors, timeouts, connection resets, etc. (HI-6)
+            retry_count += 1
+            can_retry = safe_to_retry_on_network and retry_count < max_retries
+            if can_retry:
+                wait_time = min(backoff_base**retry_count, max_delay)
+                frappe.log_error(
+                    message=f"Xero network error on {method} {endpoint}: {e}. Retrying in {wait_time}s (attempt {retry_count}/{max_retries}).",
+                    title="Xero Network Error",
+                )
+                time.sleep(wait_time)
+                continue
+
+            # Non-idempotent call with no idempotency key, or retries exhausted:
+            # do NOT silently retry a mutating call that may have already applied.
             frappe.log_error(
                 message=f"Xero Network Error on {method} {url}: {e}",
                 title="Xero Network Error",

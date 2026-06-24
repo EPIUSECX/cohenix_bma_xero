@@ -68,9 +68,41 @@ def compute_data_hash(doc):
     """Compute hash of relevant fields to detect changes.
 
     This is used to prevent unnecessary re-syncs when data hasn't changed.
+
+    HI-3: The hash MUST cover every field the outbound sync actually pushes to
+    Xero, otherwise an edit to (for example) email or address is silently
+    skipped by enqueue_sync_contact's hash short-circuit. We therefore include
+    the primary contact email/phone/mobile, the primary contact person name and
+    the primary address fields, resolved via the SAME getter helpers the sync
+    uses. The components are normalised (stripped) and assembled in a stable,
+    sorted order so the digest is deterministic.
     """
     name_field = "customer_name" if doc.doctype == "Customer" else "supplier_name"
-    data = f"{doc.get(name_field) or ''}|{doc.get('tax_id') or ''}|{doc.get('website') or ''}|{doc.get('disabled') or 0}"
+
+    # Primary contact person details (email, phone, mobile, name) — same source
+    # the outbound payload uses.
+    contact_details = get_primary_contact_details(doc.doctype, doc.name) or {}
+    # Primary address fields — same source the outbound payload uses.
+    address = get_primary_address(doc.doctype, doc.name) or {}
+
+    components = {
+        "name": str(doc.get(name_field) or "").strip(),
+        "tax_id": str(doc.get("tax_id") or "").strip(),
+        "website": str(doc.get("website") or "").strip(),
+        "disabled": str(doc.get("disabled") or 0),
+        "email": str(contact_details.get("email_id") or "").strip(),
+        "phone": str(contact_details.get("phone") or "").strip(),
+        "mobile_no": str(contact_details.get("mobile_no") or "").strip(),
+        "contact_first_name": str(contact_details.get("first_name") or "").strip(),
+        "contact_last_name": str(contact_details.get("last_name") or "").strip(),
+        "addr_line1": str(address.get("AddressLine1") or "").strip(),
+        "addr_city": str(address.get("City") or "").strip(),
+        "addr_state": str(address.get("Region") or "").strip(),
+        "addr_pincode": str(address.get("PostalCode") or "").strip(),
+        "addr_country": str(address.get("Country") or "").strip(),
+    }
+    # Sorted items -> stable, order-independent serialisation.
+    data = "|".join(f"{k}={components[k]}" for k in sorted(components))
     return hashlib.md5(data.encode()).hexdigest()
 
 
@@ -118,6 +150,11 @@ def enqueue_sync_contact(doc_name, doc_type=None):
     # When called from Frappe hook: (doc, method) with doc = Customer/Supplier document
     if hasattr(doc_name, "name") and hasattr(doc_name, "doctype"):
         doc = doc_name
+        # HI-4: The inbound (Xero -> ERPNext) sync sets this flag before saving the
+        # Customer/Supplier so the on_update hook does NOT re-fire an outbound sync,
+        # which would otherwise loop indefinitely.
+        if getattr(doc.flags, "ignore_xero_sync", False):
+            return
         doc_name = doc.name
         doc_type = doc.doctype
     elif not doc_type or doc_type in ("on_update", "manual_trigger"):
@@ -366,8 +403,16 @@ def sync_contact_to_xero(doc_name, doc_type, **kwargs):
         # CRITICAL: Use POST for updates (when ContactID is known), PUT for creates only.
         # PUT errors if ContactName matches an existing contact, POST creates or updates.
         method = "POST" if xero_contact_id else "PUT"
+        # Pass a stable idempotency key on CREATE (PUT) so a retry after a network
+        # timeout where Xero actually created the contact does not duplicate it.
+        idempotency_key = (
+            None if xero_contact_id else f"{doc_type}:{doc_name}:create"
+        )
         response = xero_request(
-            method, "Contacts", data={"Contacts": [contact_payload]}
+            method,
+            "Contacts",
+            data={"Contacts": [contact_payload]},
+            idempotency_key=idempotency_key,
         )
 
         if response and response.get("Contacts"):
@@ -845,6 +890,9 @@ def sync_xero_contact_to_erpnext(xero_contact_data, target_doctype):
             # Update existing document
             doc = frappe.get_doc(target_doctype, erpnext_doc_name)
             doc.update(erpnext_data)
+            # HI-4: suppress the outbound on_update->enqueue hook for this
+            # inbound write so we don't bounce the same data straight back to Xero.
+            doc.flags.ignore_xero_sync = True
             # TODO: Update addresses and contact persons if needed
             doc.save(ignore_permissions=True)  # Use ignore_permissions carefully
             log_message = f"Updated {target_doctype} {erpnext_doc_name} from Xero Contact {xero_contact_id}"
@@ -852,10 +900,35 @@ def sync_xero_contact_to_erpnext(xero_contact_data, target_doctype):
             # Create new document
             doc = frappe.new_doc(target_doctype)
             doc.update(erpnext_data)
+            # HI-4: suppress the outbound on_update->enqueue hook (see above).
+            doc.flags.ignore_xero_sync = True
             # TODO: Create addresses and contact persons if needed
             doc.insert(ignore_permissions=True)  # Use ignore_permissions carefully
             erpnext_doc_name = doc.name
             log_message = f"Created {target_doctype} {erpnext_doc_name} from Xero Contact {xero_contact_id}"
+
+        # HI-4: persist the freshly-computed data hash on the inbound path so a
+        # LATER genuine ERPNext edit is correctly detected (and not short-circuited
+        # by enqueue_sync_contact comparing against a stale/empty hash). Computed
+        # after save so address/contact relations resolved above are reflected.
+        try:
+            frappe.db.set_value(
+                target_doctype,
+                erpnext_doc_name,
+                "xero_data_hash",
+                compute_data_hash(doc),
+                update_modified=False,
+            )
+        except Exception:
+            # Hash is an optimisation only; never let it break the inbound sync.
+            log_xero_error(
+                message=f"Could not store xero_data_hash for {target_doctype} {erpnext_doc_name}",
+                status="Warning",
+                erpnext_doc_type=target_doctype,
+                erpnext_doc_name=erpnext_doc_name,
+                category="System Monitoring",
+                error_details=frappe.get_traceback(),
+            )
 
         frappe.db.commit()
         log_xero_error(
@@ -1007,9 +1080,26 @@ def sync_contact_person_to_erpnext(
     # Try to find existing contact
     contact_name = None
 
-    # Strategy 1: Find by email if available (most reliable unique identifier)
+    # Strategy 1: Find by email, but SCOPED to this party's own linked Contacts
+    # only (LO-2). A global email lookup cross-links unrelated Customers/Suppliers
+    # that happen to share a mailbox (e.g. info@). We therefore require the Contact
+    # to already carry a Dynamic Link to this parent Customer/Supplier.
     if email:
-        contact_name = frappe.db.get_value("Contact", {"email_id": email}, "name")
+        scoped = frappe.db.sql(
+            """
+            SELECT c.name
+            FROM `tabContact` c
+            INNER JOIN `tabContact Email` ce ON ce.parent = c.name AND ce.parenttype = 'Contact'
+            INNER JOIN `tabDynamic Link` dl ON dl.parent = c.name AND dl.parenttype = 'Contact'
+            WHERE ce.email_id = %s
+            AND dl.link_doctype = %s AND dl.link_name = %s
+            LIMIT 1
+        """,
+            (email, parent_doctype, parent_name),
+            as_dict=True,
+        )
+        if scoped:
+            contact_name = scoped[0].name
 
     # Strategy 2: Find by name linked to this specific customer/supplier
     if not contact_name and first_name and last_name:
@@ -1090,9 +1180,12 @@ def sync_contact_person_to_erpnext(
                                         else 0,
                                     },
                                 )
-                        except:
-                            # Skip invalid phone numbers silently
-                            pass
+                        except Exception:
+                            # Skip invalid phone numbers but log for visibility (LO-2).
+                            frappe.log_error(
+                                message=f"Skipping invalid phone '{phone_number}' on Contact {contact_name} (Xero {xero_contact_id})",
+                                title="Xero Sync: Invalid Phone Skipped",
+                            )
 
             # Ensure link to parent exists
             link_exists = False
@@ -1143,9 +1236,12 @@ def sync_contact_person_to_erpnext(
                                     else 0,
                                 },
                             )
-                        except:
-                            # Skip invalid phone numbers
-                            pass
+                        except Exception:
+                            # Skip invalid phone numbers but log for visibility (LO-2).
+                            frappe.log_error(
+                                message=f"Skipping invalid phone '{phone_number}' for new Contact linked to {parent_doctype} {parent_name} (Xero {xero_contact_id})",
+                                title="Xero Sync: Invalid Phone Skipped",
+                            )
 
             # Link to parent Customer/Supplier
             contact.append(

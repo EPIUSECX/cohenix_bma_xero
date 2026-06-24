@@ -16,11 +16,12 @@ class XeroSettings(Document):
         from .xero_account_mapping import XeroAccountMapping
         from .xero_tax_mapping import XeroTaxMapping
 
-        access_token: DF.SmallText | None
+        access_token: DF.Password | None
         account_mapping: DF.Table[XeroAccountMapping]
         mapping_status: DF.Literal["Not Started", "In Progress", "Review Required", "Complete"] | None
         setup_mode: DF.Literal["Manual", "Xero as Source", "ERPNext as Source"] | None
         api_timeout: DF.Int
+        auto_submit_inbound: DF.Check
         backoff_base: DF.Int  # alias kept for compatibility
         client_id: DF.Data | None
         client_secret: DF.Password | None
@@ -40,7 +41,7 @@ class XeroSettings(Document):
         rate_limit_backoff_base: DF.Int
         rate_limit_max_delay: DF.Int
         redirect_url: DF.Data | None
-        refresh_token: DF.SmallText | None
+        refresh_token: DF.Password | None
         sync_bank_transactions: DF.Check
         sync_bills_from_xero: DF.Check
         sync_bills_to_xero: DF.Check

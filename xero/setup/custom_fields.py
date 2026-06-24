@@ -2,83 +2,20 @@ import frappe
 from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
 def setup_custom_fields():
-    """Setup custom fields for Xero integration"""
-    
-    # List of fields to delete if they exist (for clean re-runs)
-    fields_to_delete_if_exist = [
-        # Sales Invoice fields
-        "xero_invoice_id",
-        "xero_sync_status",
-        "xero_credit_note_id",
-        # Purchase Invoice fields - same field names
-        # Payment Entry fields
-        "xero_payment_id",
-        "xero_bank_transaction_id",
-        "xero_last_sync",
-        "xero_payment_data",
-        # Journal Entry fields
-        "xero_manual_journal_id",
-        # Customer fields
-        "xero_contact_id",
-        "xero_sync_status",
-        "xero_data_hash",
-        "xero_last_contact_sync",
-        # Supplier fields - same field names as Customer
-        # Item fields
-        "xero_item_id",
-        "xero_sync_status",
-        "xero_last_item_sync",
-        # Account fields
-        "xero_account_id",
-        "xero_sync_status",
-        "xero_last_account_sync",
-        # Quotation fields
-        "xero_quote_id",
-        "xero_sync_status",
-        "xero_last_quote_sync",
-        # Cost Center fields
-        "xero_tracking_category_id",
-        "xero_tracking_option_id",
-        # Project fields - same field names as Cost Center
-        # Bank Transaction fields
-        "xero_bank_transaction_id",
-        "xero_sync_status",
-        "xero_last_bank_sync",
-        # Sales Order fields
-        "xero_sales_order_id",
-        "xero_sync_status",
-        "xero_last_sales_order_sync",
-        # Purchase Order fields
-        "xero_purchase_order_id",
-        "xero_sync_status",
-        "xero_last_purchase_order_sync",
-        # Delivery Note fields
-        "xero_delivery_note_id",
-        "xero_sync_status",
-        "xero_last_delivery_note_sync",
-        # Purchase Receipt fields
-        "xero_purchase_receipt_id",
-        "xero_sync_status",
-        "xero_last_purchase_receipt_sync",
-    ]
+    """Setup (install/upgrade) custom fields for the Xero integration.
 
-    # Delete existing custom fields for clean setup
-    doctypes_to_clean = [
-        "Sales Invoice", "Purchase Invoice", "Payment Entry", "Journal Entry",
-        "Customer", "Supplier", "Item", "Account", "Quotation",
-        "Bank Transaction", "Purchase Order"
-    ]
-    
-    for doctype in doctypes_to_clean:
-        for fieldname in fields_to_delete_if_exist:
-            custom_field_name = f"{doctype}-{fieldname}"
-            if frappe.db.exists("Custom Field", custom_field_name):
-                try:
-                    frappe.delete_doc("Custom Field", custom_field_name, ignore_permissions=True, force=True)
-                    frappe.db.commit()
-                    print(f"Deleted existing custom field: {custom_field_name}")
-                except Exception as e:
-                    print(f"Error deleting custom field {custom_field_name}: {e}")
+    CR-1: This runs on BOTH after_install and after_migrate. It must be
+    idempotent and MUST NOT delete existing fields — `frappe.delete_doc` on a
+    Custom Field drops the underlying column, which on `bench migrate` would
+    wipe the sync-tracking values (xero_invoice_id, xero_payment_id,
+    xero_contact_id, xero_data_hash, ...). Losing those makes the integration
+    forget what it already synced and re-create duplicate records in Xero.
+
+    `create_custom_fields(..., update=True)` is an idempotent upsert: it creates
+    missing fields and updates the definition of existing ones in place, without
+    dropping columns or data. Field removal, if ever needed, is an explicit,
+    manually invoked operation (see `remove_custom_fields`), never part of migrate.
+    """
 
     # Define all custom fields
     custom_fields = {
@@ -472,6 +409,19 @@ def setup_custom_fields():
                 "read_only": 1,
                 "print_hide": 1,
                 "insert_after": "xero_data_hash"
+            },
+            {
+                # ME-3: original Xero account Type (e.g. PREPAYMENT, CURRENT),
+                # captured on inbound sync so outbound sync can re-use it verbatim
+                # instead of re-deriving it through the lossy ERPNext->Xero map.
+                "fieldname": "xero_account_type",
+                "fieldtype": "Data",
+                "label": "Xero Account Type",
+                "no_copy": 1,
+                "read_only": 1,
+                "print_hide": 1,
+                "report_hide": 1,
+                "insert_after": "xero_last_account_sync"
             }
         ],
         "Quotation": [
@@ -582,7 +532,8 @@ def setup_custom_fields():
     }
     
     # Create the custom fields
-    create_custom_fields(custom_fields)
+    # update=True: idempotent upsert; never drops columns/data (CR-1).
+    create_custom_fields(custom_fields, update=True)
     print("Xero custom fields created successfully!")
 
 def remove_custom_fields():

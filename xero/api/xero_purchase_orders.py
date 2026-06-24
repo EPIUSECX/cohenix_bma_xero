@@ -259,7 +259,27 @@ def process_xero_purchase_order(xero_order_data, settings):
         company = frappe.defaults.get_global_default("company")
         if not company:
             company = frappe.get_all("Company", limit=1, pluck="name")[0]
-        
+
+        # ME-5(a): default to the COMPANY base currency, not a hardcoded "USD",
+        # when Xero does not supply a CurrencyCode.
+        company_currency = frappe.get_cached_value("Company", company, "default_currency")
+        currency = xero_order_data.get("CurrencyCode") or company_currency
+
+        transaction_date = parse_xero_date(xero_order_data.get("Date"))
+
+        # ME-5(b): resolve the conversion rate from ERPNext when Xero omits it
+        # (or sends a falsy value) and the document currency differs from the
+        # company base currency. Only fall back to 1.0 when currencies match.
+        conversion_rate = frappe.utils.flt(xero_order_data.get("CurrencyRate"))
+        if not conversion_rate:
+            if currency and currency != company_currency:
+                from erpnext.setup.utils import get_exchange_rate
+                conversion_rate = get_exchange_rate(
+                    currency, company_currency, transaction_date
+                )
+            else:
+                conversion_rate = 1.0
+
         # Map header fields
         erpnext_data = {
             "xero_purchase_order_id": xero_order_id,
@@ -267,12 +287,12 @@ def process_xero_purchase_order(xero_order_data, settings):
             "supplier": supplier_name,
             "supplier_name": xero_order_data.get("Contact", {}).get("Name"),
             "company": company,
-            "transaction_date": parse_xero_date(xero_order_data.get("Date")),
+            "transaction_date": transaction_date,
             # PO (and its rows) require a Required-By date; Xero POs often have no
             # DeliveryDate, so fall back to the order date.
-            "schedule_date": parse_xero_date(xero_order_data.get("DeliveryDate")) or parse_xero_date(xero_order_data.get("Date")),
-            "currency": xero_order_data.get("CurrencyCode", "USD"),
-            "conversion_rate": frappe.utils.flt(xero_order_data.get("CurrencyRate", 1.0)),
+            "schedule_date": parse_xero_date(xero_order_data.get("DeliveryDate")) or transaction_date,
+            "currency": currency,
+            "conversion_rate": conversion_rate,
         }
         
         # Store Xero order number in remarks

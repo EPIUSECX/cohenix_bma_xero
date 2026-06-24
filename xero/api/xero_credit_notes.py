@@ -70,6 +70,46 @@ def validate_credit_note_reference(reference):
     return reference or None
 
 
+def find_xero_credit_note_by_number(cn_number, cn_type):
+    """
+    HI-10: Self-healing lookup mirroring find_xero_invoice_by_number. Query
+    Xero for an existing credit note with the given CreditNoteNumber, excluding
+    VOIDED/DELETED. Returns the CreditNoteID for a SINGLE live match, else None.
+
+    Used to recover a lost xero_credit_note_id: if a previous outbound POST
+    succeeded on Xero but the local DB write crashed before committing the ID,
+    a naive re-sync would create a DUPLICATE credit note. ACCRECCREDIT numbers
+    are unique in Xero; ACCPAYCREDIT numbers are not, so matching is only safe
+    for ACCRECCREDIT.
+    """
+    if not cn_number or cn_type != "ACCRECCREDIT":
+        return None
+
+    try:
+        safe_number = str(cn_number).replace('"', "")
+        response = xero_request(
+            "GET",
+            "CreditNotes",
+            params={
+                "where": (
+                    f'CreditNoteNumber=="{safe_number}" '
+                    'AND Status!="VOIDED" AND Status!="DELETED"'
+                )
+            },
+        )
+    except Exception:
+        # Transient failure — treat as not found and let the create path run.
+        return None
+
+    credit_notes = (response or {}).get("CreditNotes") or []
+    if len(credit_notes) == 1:
+        matched = credit_notes[0]
+        if matched.get("Status") in ("AUTHORISED", "DRAFT", "SUBMITTED"):
+            return matched.get("CreditNoteID")
+        return None
+    return None
+
+
 # --- Hash Functions for Change Detection ---
 
 
@@ -359,10 +399,9 @@ def sync_return_to_xero(doc_name, doc_type, **kwargs):
                 if xero_item_id:
                     line_item["ItemCode"] = item.item_code
 
-            # Add discount if present
-            if item.discount_percentage and item.discount_percentage > 0:
-                line_item["DiscountRate"] = item.discount_percentage
-
+            # LO-1: Do NOT send DiscountRate. ERPNext's item.rate / item.amount
+            # are ALREADY net of the discount, so also sending DiscountRate
+            # makes Xero apply the discount a SECOND time. We send net rate only.
             line_items.append(line_item)
 
         # --- Map Taxes and Charges ---
@@ -391,6 +430,13 @@ def sync_return_to_xero(doc_name, doc_type, **kwargs):
             }
             line_items.append(tax_line_item)
 
+        # CR-7: Detect tax-inclusive ERPNext docs via included_in_print_rate on
+        # the tax rows (the line rate already contains tax). If any row is
+        # inclusive, tell Xero "Inclusive" so it does not add tax on top.
+        line_amount_types = "Exclusive"
+        if any(flt(tax.get("included_in_print_rate")) for tax in doc.taxes):
+            line_amount_types = "Inclusive"
+
         # --- Construct Credit Note Payload ---
         cn_payload = {
             "Type": cn_type,
@@ -399,8 +445,48 @@ def sync_return_to_xero(doc_name, doc_type, **kwargs):
             "LineItems": line_items,
             "CreditNoteNumber": validate_credit_note_number(doc.name),
             "Status": "AUTHORISED",
-            "LineAmountTypes": "Exclusive",  # ERPNext default
+            # CR-7: derived from ERPNext tax config rather than hardcoded.
+            "LineAmountTypes": line_amount_types,
         }
+
+        # --- CR-7: Tax reconciliation guard ---
+        # Compare ERPNext's tax total against the tax represented in the Xero
+        # payload. When has_line_tax is True, percentage tax rows are dropped
+        # (encoded into line TaxTypes for Xero to recompute); otherwise every
+        # tax row was sent explicitly. Warn (do not silently proceed) on any
+        # divergence beyond a 0.02 tolerance.
+        erpnext_tax_total = sum(
+            flt(
+                tax.base_tax_amount_after_discount_amount
+                or tax.tax_amount_after_discount_amount
+            )
+            for tax in doc.taxes
+        )
+        if has_line_tax:
+            sent_tax_total = sum(
+                flt(tax.tax_amount_after_discount_amount)
+                for tax in doc.taxes
+                if flt(tax.rate)
+            )
+        else:
+            sent_tax_total = sum(
+                flt(tax.tax_amount_after_discount_amount) for tax in doc.taxes
+            )
+        if abs(flt(erpnext_tax_total) - flt(sent_tax_total)) > 0.02:
+            log_xero_error(
+                message=(
+                    f"Tax mismatch on outbound credit note {doc_type} "
+                    f"{doc_name}: ERPNext tax total {erpnext_tax_total} vs tax "
+                    f"represented in Xero payload {sent_tax_total} "
+                    f"(LineAmountTypes={line_amount_types}, has_line_tax="
+                    f"{has_line_tax}). Verify tax mapping."
+                ),
+                status="Warning",
+                erpnext_doc_type=doc_type,
+                erpnext_doc_name=doc_name,
+                direction="ERPNext to Xero",
+                category="Validation Errors",
+            )
 
         # Add Reference field for ACCRECCREDIT only
         if cn_type == "ACCRECCREDIT":
@@ -410,14 +496,59 @@ def sync_return_to_xero(doc_name, doc_type, **kwargs):
             if reference:
                 cn_payload["Reference"] = reference
 
+        # --- HI-10: Self-healing recovery of a lost xero_credit_note_id ---
+        # If we have no stored ID, ask Xero whether a credit note with this
+        # CreditNoteNumber already exists (ACCRECCREDIT only). If so, attach it
+        # so this becomes an UPDATE not a CREATE, preventing a duplicate when a
+        # prior POST succeeded on Xero but failed to commit the ID locally.
+        if not xero_cn_id and cn_type == "ACCRECCREDIT":
+            recovered_id = find_xero_credit_note_by_number(
+                cn_payload["CreditNoteNumber"], cn_type
+            )
+            if recovered_id:
+                xero_cn_id = recovered_id
+                # Persist immediately so any retry sees it.
+                frappe.db.set_value(
+                    doc_type,
+                    doc_name,
+                    {"xero_credit_note_id": recovered_id},
+                    update_modified=False,
+                )
+                frappe.db.commit()
+                log_xero_error(
+                    message=(
+                        f"Recovered Xero CreditNoteID {recovered_id} for "
+                        f"{doc_type} {doc_name} via CreditNoteNumber lookup. "
+                        f"Switching from CREATE to UPDATE to avoid duplicating "
+                        f"the credit note in Xero."
+                    ),
+                    status="Info",
+                    erpnext_doc_type=doc_type,
+                    erpnext_doc_name=doc_name,
+                    xero_entity_id=recovered_id,
+                    xero_entity_type="CreditNote",
+                    direction="ERPNext to Xero",
+                    category="Duplicate Entity",
+                )
+
         # If updating, include the Xero Credit Note ID
         if xero_cn_id:
             cn_payload["CreditNoteID"] = xero_cn_id
 
         # --- Make API Call (POST for both create and update) ---
         # Xero API: POST creates OR updates (if CreditNoteID provided, updates; otherwise creates)
+        # idempotency: pass a stable key only when CREATING. On UPDATE the
+        # CreditNoteID already targets the existing record; reusing a create key
+        # across edits would wrongly dedup legitimate edits within Xero's 24h
+        # window.
+        idempotency_key = None
+        if not xero_cn_id:
+            idempotency_key = f"{doc_type}:{doc_name}:create-credit-note"
         response = xero_request(
-            "POST", "CreditNotes", data={"CreditNotes": [cn_payload]}
+            "POST",
+            "CreditNotes",
+            data={"CreditNotes": [cn_payload]},
+            idempotency_key=idempotency_key,
         )
 
         # --- Process Response ---
@@ -426,6 +557,19 @@ def sync_return_to_xero(doc_name, doc_type, **kwargs):
             new_xero_id = updated_cn.get("CreditNoteID")
 
             if new_xero_id:
+                # HI-10: id-first commit ordering. Commit xero_credit_note_id to
+                # the DB FIRST and unconditionally, BEFORE computing/writing the
+                # data hash. If a later step raises, a retry will see the ID
+                # already present, send it as CreditNoteID, and Xero will UPDATE
+                # the existing credit note rather than CREATE a duplicate.
+                frappe.db.set_value(
+                    doc_type,
+                    doc_name,
+                    {"xero_credit_note_id": new_xero_id},
+                    update_modified=False,
+                )
+                frappe.db.commit()
+
                 # Compute hash for change detection
                 data_hash = compute_credit_note_hash(doc)
 
@@ -692,6 +836,123 @@ def sync_credit_notes_from_xero(modified_since=None):
         )
 
 
+def _apply_credit_note_allocations(
+    xero_cn_data, erpnext_doctype, erpnext_doc_name, cn_number, xero_cn_id
+):
+    """
+    HI-13: Apply a Xero credit note's Allocations against the referenced
+    ERPNext invoice(s) so outstanding balances do not drift.
+
+    Previously the allocation data was only stringified into the credit note's
+    remarks; the credit was never applied to the original invoice, so the
+    invoice's outstanding_amount stayed too high forever.
+
+    Approach (partial, by design — see LIMITATION below):
+      - For each Xero Allocation, resolve the referenced Xero invoice to its
+        ERPNext document via xero_invoice_id.
+      - When found, record the linkage on the credit-note doc's remarks in a
+        machine-parseable form AND emit an explicit, actionable log row naming
+        the ERPNext invoice, the credit note, and the amount to apply.
+
+    LIMITATION (needs human follow-up): full reconciliation (creating the
+    Journal Entry / running reconcile_against_document, or appending the credit
+    note to the invoice's references) requires BOTH the credit note return doc
+    AND the target invoice to be SUBMITTED in ERPNext. Inbound docs are created
+    as DRAFT (HI-8) and are not auto-submitted, so we cannot post the
+    allocation here without violating that policy. We therefore create the
+    linkage data + a clear operator instruction; an operator (or a future
+    submit-time hook) must perform the actual reconciliation. If the referenced
+    invoice is not yet in ERPNext, we log a Warning so it is not lost.
+    """
+    allocations = xero_cn_data.get("Allocations") or []
+    if not allocations:
+        return
+
+    invoice_doctype = (
+        "Sales Invoice" if erpnext_doctype == "Sales Invoice" else "Purchase Invoice"
+    )
+
+    linkages = []
+    for alloc in allocations:
+        alloc_invoice = (alloc or {}).get("Invoice", {}) or {}
+        alloc_amount = flt(alloc.get("Amount", 0))
+        xero_inv_id = alloc_invoice.get("InvoiceID")
+        xero_inv_number = alloc_invoice.get("InvoiceNumber", "Unknown")
+
+        target_invoice = None
+        if xero_inv_id:
+            target_invoice = frappe.db.get_value(
+                invoice_doctype, {"xero_invoice_id": xero_inv_id}, "name"
+            )
+
+        if not target_invoice:
+            log_xero_error(
+                message=(
+                    f"Credit note {cn_number} allocates {alloc_amount} to Xero "
+                    f"invoice {xero_inv_number} ({xero_inv_id}), but that "
+                    f"invoice is not yet in ERPNext. The credit cannot be "
+                    f"applied; sync the invoice and reconcile manually so the "
+                    f"outstanding balance is correct."
+                ),
+                status="Warning",
+                xero_entity_id=xero_cn_id,
+                xero_entity_type="CreditNote",
+                erpnext_doc_type=erpnext_doctype,
+                erpnext_doc_name=erpnext_doc_name,
+                direction="Xero to ERPNext",
+                category="Missing Prerequisites",
+            )
+            continue
+
+        linkages.append(
+            {
+                "erpnext_invoice": target_invoice,
+                "amount": alloc_amount,
+                "xero_invoice_number": xero_inv_number,
+            }
+        )
+        log_xero_error(
+            message=(
+                f"Credit note {cn_number} ({erpnext_doctype} "
+                f"{erpnext_doc_name}) should apply {alloc_amount} against "
+                f"{invoice_doctype} {target_invoice} (Xero invoice "
+                f"{xero_inv_number}). Linkage recorded; submit both documents "
+                f"and reconcile to clear the outstanding balance (HI-13: full "
+                f"auto-reconciliation not yet implemented)."
+            ),
+            status="Warning",
+            xero_entity_id=xero_cn_id,
+            xero_entity_type="CreditNote",
+            erpnext_doc_type=erpnext_doctype,
+            erpnext_doc_name=erpnext_doc_name,
+            direction="Xero to ERPNext",
+            category="Validation Errors",
+        )
+
+    # Persist a machine-parseable linkage record on the doc so a later
+    # submit-time hook (or operator) can act on it. We store it as JSON inside
+    # remarks alongside the human-readable summary already written above.
+    if linkages:
+        try:
+            existing_remarks = (
+                frappe.db.get_value(erpnext_doctype, erpnext_doc_name, "remarks")
+                or ""
+            )
+            linkage_blob = json.dumps({"xero_credit_allocations": linkages})
+            new_remarks = f"{existing_remarks}\n[XERO_CREDIT_LINKAGE] {linkage_blob}"
+            frappe.db.set_value(
+                erpnext_doctype,
+                erpnext_doc_name,
+                "remarks",
+                new_remarks,
+                update_modified=False,
+            )
+        except Exception:
+            # Linkage persistence is best-effort; the explicit Warning logs
+            # above are the authoritative operator signal.
+            pass
+
+
 def process_xero_credit_note(xero_cn_data, settings):
     """
     Creates or updates an ERPNext return invoice from Xero credit note data.
@@ -786,17 +1047,58 @@ def process_xero_credit_note(xero_cn_data, settings):
             remarks_parts.append(f"Allocations: {alloc_info}")
         remarks = " | ".join(remarks_parts)
 
-        # Map header fields
+        # HI-13: resolve the original ERPNext invoice this credit note returns
+        # against (ERPNext's structural link for returns). We use the first Xero
+        # allocation whose invoice exists and is already submitted in ERPNext —
+        # return_against must point to a submitted invoice. When set and the
+        # credit note is later submitted (manually, or via auto_submit_inbound),
+        # ERPNext posts the credit and adjusts the original's outstanding.
+        return_against = None
+        for alloc in allocations:
+            _inv = (alloc or {}).get("Invoice", {}) or {}
+            _xinv_id = _inv.get("InvoiceID")
+            if _xinv_id:
+                _cand = frappe.db.get_value(
+                    erpnext_doctype,
+                    {"xero_invoice_id": _xinv_id, "docstatus": 1},
+                    "name",
+                )
+                if _cand:
+                    return_against = _cand
+                    break
+
+        # ME-5 consistency: default currency to the company base currency, not a
+        # hardcoded "USD", and only force rate 1.0 when currencies actually match.
+        company_currency = frappe.get_cached_value("Company", company, "default_currency")
+        cn_currency = xero_cn_data.get("CurrencyCode") or company_currency
+        cn_rate = flt(xero_cn_data.get("CurrencyRate")) or None
+        if not cn_rate:
+            if cn_currency == company_currency:
+                cn_rate = 1.0
+            else:
+                from erpnext.setup.utils import get_exchange_rate
+                cn_rate = get_exchange_rate(
+                    cn_currency, company_currency, parse_xero_date(xero_cn_data.get("Date"))
+                )
+
+        # Map header fields.
+        # HI-8: Inbound credit notes are created as DRAFT (docstatus=0). When
+        # auto_submit_inbound is OFF (default) they stay Draft for manual review
+        # (status "Pending"); when ON they are submitted below. xero_sync_status
+        # is a Select (Pending/Synced/Error/Skipped); "Pending" means "imported,
+        # awaiting submission".
         erpnext_data = {
             "xero_credit_note_id": xero_cn_id,
-            "xero_sync_status": "Synced",
+            "xero_sync_status": "Pending",
             "is_return": 1,  # Mark as return invoice
             "company": company,
             "posting_date": parse_xero_date(xero_cn_data.get("Date")),
-            "currency": xero_cn_data.get("CurrencyCode", "USD"),
-            "conversion_rate": flt(xero_cn_data.get("CurrencyRate", 1.0)),
+            "currency": cn_currency,
+            "conversion_rate": cn_rate,
             "remarks": remarks,
         }
+        if return_against:
+            erpnext_data["return_against"] = return_against
 
         # Add party-specific fields
         if erpnext_doctype == "Sales Invoice":
@@ -892,7 +1194,49 @@ def process_xero_credit_note(xero_cn_data, settings):
             erpnext_doc_name = doc.name
             log_message = f"Created {erpnext_doctype} (Return) {erpnext_doc_name} from Xero Credit Note {xero_cn_id} ({cn_number})"
 
+        # ME-12: Verify the ERPNext document total matches the Xero Total.
+        # Credit notes carry Total as a positive figure in Xero; the ERPNext
+        # return doc grand_total is negative, so compare magnitudes. Warn (do
+        # not block) on divergence beyond a 0.02 tolerance.
+        xero_total = flt(xero_cn_data.get("Total", 0))
+        erpnext_total = abs(flt(doc.get("grand_total")))
+        if xero_total and abs(erpnext_total - abs(xero_total)) > 0.02:
+            log_xero_error(
+                message=(
+                    f"Total mismatch on inbound credit note {erpnext_doctype} "
+                    f"{erpnext_doc_name} (Xero CN {cn_number}): ERPNext "
+                    f"|grand_total| {erpnext_total} vs Xero |Total| "
+                    f"{abs(xero_total)}. Review before submitting."
+                ),
+                status="Warning",
+                xero_entity_id=xero_cn_id,
+                xero_entity_type="CreditNote",
+                erpnext_doc_type=erpnext_doctype,
+                erpnext_doc_name=erpnext_doc_name,
+                direction="Xero to ERPNext",
+                category="Validation Errors",
+            )
+
+        # HI-13: Apply the Xero credit-note Allocations against the referenced
+        # ERPNext invoice(s) so outstanding balances do not drift.
+        _apply_credit_note_allocations(
+            xero_cn_data,
+            erpnext_doctype,
+            erpnext_doc_name,
+            cn_number,
+            xero_cn_id,
+        )
+
         frappe.db.commit()
+
+        # Opt-in: post the imported credit note to the GL when auto-submit is
+        # enabled. With return_against set above, submitting reconciles the
+        # credit against the original invoice. Draft is already committed, so a
+        # failed submit leaves it as Draft for manual review.
+        from .xero_invoices import maybe_submit_inbound
+
+        maybe_submit_inbound(doc, settings, xero_cn_id, "CreditNote")
+
         log_xero_error(
             message=log_message,
             status="Success",

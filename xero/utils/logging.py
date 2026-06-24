@@ -48,7 +48,15 @@ def log_xero_error(message, status="Error", erpnext_doc_type=None, erpnext_doc_n
 
         log_doc.flags.ignore_permissions = True # Allow system to log errors
         log_doc.insert()
-        frappe.db.commit() # Commit log entry immediately
+
+        # ME-1: Do NOT commit on every log entry. An unconditional commit here
+        # flushes the caller's pending (possibly partial) writes mid-sync,
+        # defeating per-document atomicity. The surrounding request/background
+        # job commits normally on success. We only force a commit for terminal
+        # Error/Warning entries, so a failure that is about to abort and roll
+        # back the transaction still leaves an audit trail in the Xero Log.
+        if status in ("Error", "Warning"):
+            frappe.db.commit()
 
     except Exception as e:
         # If logging itself fails, print to stderr and Frappe error log

@@ -5,7 +5,7 @@
 
 This is a comprehensive, enterprise-grade ERPNext–Xero integration providing bidirectional synchronization between ERPNext and Xero accounting systems. The integration has been enhanced to production-ready standards with advanced features, professional monitoring, robust error handling, and a complete sync dashboard.
 
-**Integration Maturity: 10/10 - Production Ready**
+**Status: Beta — verify against the Xero Demo Company before production use.** Run `bench migrate` and `bench run-tests --app xero` after install; review the integration's findings/remediation notes before go-live.
 
 This release adds full bidirectional sync support via manual-, periodic- and all supported* webhook triggers. 
 *Note: Xero currently only emits webhook triggers for updates to Billing subscriptions, Invoices and Contacts — the integration leverages these webhooks for near-real-time updates where available and combines them with the extensive polling/queued syncs for other entity changes.
@@ -323,11 +323,11 @@ scheduler_events = {
 **Symptoms**: "Failed to connect to Xero API"
 **Solutions**:
 ```bash
-# Test connection
-bench execute xero.utils.xero_client.test_connection --site your-site
+# Test connection (runs the Xero Settings connectivity check)
+bench execute "frappe.client.get_value" --kwargs "{'doctype':'Xero Settings','fieldname':'connection_status'}" --site your-site
 
-# Refresh token
-bench execute xero.utils.xero_client.refresh_token --site your-site
+# Force an access-token refresh
+bench execute xero.utils.xero_client.refresh_access_token --site your-site
 ```
 
 #### 2. Authentication Errors  
@@ -587,29 +587,25 @@ def custom_sync_function(doc):
 
 ### Testing
 
-#### Unit Tests
+#### Automated unit tests (offline, HTTP mocked)
 ```bash
-# Run all tests
+# Run the app's unit tests (no live Xero connection required)
 bench run-tests --app xero --site your-site
 
-# Run specific test
-bench run-tests --app xero --module xero.tests.test_invoices --site your-site
+# Run a single module
+bench run-tests --app xero --module xero.tests.test_xero_client --site your-site
 ```
 
-#### Integration Tests
-```bash
-# Test Xero connection
-bench execute xero.tests.test_connection --site your-site
+`xero/tests/test_xero_client.py` covers the auth- and money-critical paths with
+the Xero HTTP layer mocked: token refresh (success, rotation, 400/401
+invalidation, concurrent-lock reuse), webhook HMAC signature accept/reject, the
+429 / 5xx retry and backoff behaviour, and idempotency-key propagation.
 
-# Test sync operations
-bench execute xero.tests.test_sync_operations --site your-site
-```
-
-#### Dashboard Testing
-```bash
-# Test dashboard functionality
-bench execute xero.tests.test_dashboard --site your-site
-```
+#### Data-creation / manual scenario scripts
+The other files under `xero/tests/` (e.g. the `test_data/` and `sync_test_data/`
+scripts) are **manual, connection-dependent fixtures**, not part of the
+automated suite. They require a configured Xero connection and write real data;
+run them only against a developer site, via `bench execute`.
 
 ## Changelog
 
@@ -700,6 +696,6 @@ This ERPNext-Xero integration provides **enterprise-grade functionality** with:
 - ✅ **Security & Compliance** - OAuth2, encryption, and audit trails
 - ✅ **Developer Friendly** - Extensible architecture with comprehensive API
 
-**Integration Maturity: 10/10 - Production Ready**
+**Status: Beta — verify against the Xero Demo Company before production use.** Run `bench migrate` and `bench run-tests --app xero` after install; review the integration's findings/remediation notes before go-live.
 
 The dashboard provides complete visibility and control over all sync operations, making it suitable for enterprise deployments with professional monitoring and management capabilities.

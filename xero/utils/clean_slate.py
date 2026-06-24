@@ -1,10 +1,32 @@
 """
-Clean Slate Script - Remove all test data and stale Xero IDs
-Run: bench --site cohenix.localhost execute xero.utils.clean_slate.run
+Clean Slate Script - Remove ALL transactional/master data and stale Xero IDs.
+
+DANGER: This wipes invoices, payments, journals, items, customers, suppliers and
+Xero logs/mappings for the WHOLE site, not just test rows. It is a developer-only
+utility and must never run against production data.
+
+Run: bench --site <dev-site> execute xero.utils.clean_slate.run --kwargs "{'confirm': 'WIPE'}"
 """
 import frappe
 
-def run():
+
+def _guard_destructive(confirm):
+    """CR-4: Refuse to run destructive wipes unless the site is in developer
+    mode AND the caller passes the explicit confirmation token."""
+    if not frappe.conf.get("developer_mode"):
+        frappe.throw(
+            "clean_slate is a developer-only utility and is blocked because "
+            "developer_mode is not enabled on this site. Refusing to wipe data."
+        )
+    if confirm != "WIPE":
+        frappe.throw(
+            "Refusing to run a destructive wipe without explicit confirmation. "
+            "Pass confirm='WIPE' to proceed (developer sites only)."
+        )
+
+
+def run(confirm=None):
+    _guard_destructive(confirm)
     print("=" * 80)
     print("CLEAN SLATE - Removing all test data and stale Xero IDs")
     print("=" * 80)

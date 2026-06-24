@@ -7,7 +7,6 @@ import hashlib
 import hmac
 import base64
 from .logging import log_xero_error
-from .logging import log_xero_error
 from .xero_client import get_xero_settings, xero_request
 # Import necessary API functions
 from ..api.xero_invoices import create_payment_entry_for_xero_payment
@@ -71,6 +70,11 @@ def handle_webhook():
 
         # Process each event - run in background
         for event in events:
+            # ME-2: Skip events we've already seen. Xero can redeliver a valid,
+            # correctly-signed payload (at-least-once delivery), which would
+            # otherwise re-fetch and potentially re-create downstream records.
+            if _webhook_event_already_seen(event):
+                continue
             # Enqueue processing to avoid holding up the webhook response
             frappe.enqueue(
                 "xero.utils.webhook_handler.process_webhook_event",
@@ -101,6 +105,29 @@ def handle_webhook():
         )
         frappe.response.status_code = 500 # Internal Server Error
         return {"status": "error", "message": "Internal server error"}
+
+
+def _webhook_event_identity(event):
+    """Stable identity for a single Xero webhook event, used for dedup."""
+    return ":".join(
+        str(event.get(k, ""))
+        for k in ("tenantId", "eventCategory", "eventType", "resourceId", "eventDateUtc")
+    )
+
+
+def _webhook_event_already_seen(event, ttl_seconds=86400):
+    """True if this exact event was processed recently (ME-2 replay guard).
+    Uses an atomic Redis SET NX so concurrent deliveries can't both pass.
+    Fails open (returns False) if the cache is unavailable."""
+    try:
+        cache = frappe.cache()
+        site = getattr(frappe.local, "site", "site")
+        key = f"xero_wh_seen:{site}:{_webhook_event_identity(event)}"
+        # set returns True only if the key was newly created.
+        is_new = bool(cache.set(key, "1", nx=True, ex=ttl_seconds))
+        return not is_new
+    except Exception:
+        return False
 
 
 def get_webhook_key():
@@ -146,7 +173,20 @@ def process_webhook_event(event_data):
     # Route event to specific handlers based on category and type
     try:
         settings = get_xero_settings() # Get settings once for the event
-        
+
+        # ME-2: Reject events for a tenant we are not connected to. A correctly
+        # signed payload for a different organisation should never mutate this
+        # site's data.
+        if tenant_id and settings.tenant_id and tenant_id != settings.tenant_id:
+            log_xero_error(
+                message=f"Ignoring webhook event for unrecognised tenant {tenant_id} (connected tenant: {settings.tenant_id}).",
+                status="Warning",
+                category="Authentication Issues",
+                xero_entity_type=event_category,
+                xero_entity_id=resource_id,
+            )
+            return
+
         # Check directional toggle for inbound sync (webhooks are inbound)
         if not settings.enable_sync_from_xero:
             log_xero_error(

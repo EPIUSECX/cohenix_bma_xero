@@ -141,13 +141,13 @@
   },
   {
    "fieldname": "access_token",
-   "fieldtype": "Small Text",
+   "fieldtype": "Password",
    "label": "Access Token",
    "read_only": 1
   },
   {
    "fieldname": "refresh_token",
-   "fieldtype": "Small Text",
+   "fieldtype": "Password",
    "label": "Refresh Token",
    "read_only": 1
   },
@@ -395,6 +395,13 @@
    "fieldname": "create_payment_entry_on_sync",
    "fieldtype": "Check",
    "label": "Create Payment Entry in ERPNext when Invoice is Paid in Xero"
+  },
+  {
+   "default": "0",
+   "description": "When ON, invoices, bills and credit notes imported FROM Xero are automatically submitted (posted to the GL) and credit notes are reconciled against their original invoice. When OFF (recommended), imported documents are left as Draft for manual review before posting.",
+   "fieldname": "auto_submit_inbound",
+   "fieldtype": "Check",
+   "label": "Auto-submit documents imported from Xero"
   },
   {
    "depends_on": "eval:doc.create_payment_entry_on_sync",

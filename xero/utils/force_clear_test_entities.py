@@ -1,10 +1,27 @@
-"""Force clear all test entities from ERPNext."""
+"""Force clear all test entities from ERPNext.
 
-def force_clear_test_entities():
+DANGER (developer-only): issues raw DELETE FROM tabGL Entry / tabPayment Ledger
+Entry and other ledger tables. Running this against production corrupts the
+general ledger irreparably.
+"""
+
+def force_clear_test_entities(confirm=None):
     import frappe
-    
+
+    # CR-4: hard guard — developer mode + explicit confirmation token only.
+    if not frappe.conf.get("developer_mode"):
+        frappe.throw(
+            "force_clear_test_entities is blocked: developer_mode is not enabled. "
+            "Refusing to delete ledger data."
+        )
+    if confirm != "WIPE":
+        frappe.throw(
+            "Refusing to delete ledger data without explicit confirmation. "
+            "Pass confirm='WIPE' to proceed (developer sites only)."
+        )
+
     print("Force clearing test entities from ERPNext...")
-    
+
     frappe.db.auto_commit_on_many_writes = 1
     
     # First, delete Payment Ledger Entries for test invoices

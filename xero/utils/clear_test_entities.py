@@ -1,8 +1,19 @@
-"""Clear all test entities from ERPNext."""
+"""Clear all test entities from ERPNext (developer-only utility)."""
 
-def clear_test_entities():
+def clear_test_entities(confirm=None):
     import frappe
-    
+
+    # CR-4: developer mode + explicit confirmation required.
+    if not frappe.conf.get("developer_mode"):
+        frappe.throw(
+            "clear_test_entities is blocked: developer_mode is not enabled on this site."
+        )
+    if confirm != "WIPE":
+        frappe.throw(
+            "Refusing to delete data without explicit confirmation. "
+            "Pass confirm='WIPE' to proceed (developer sites only)."
+        )
+
     print("Clearing test entities from ERPNext...")
     
     # Delete test Sales Invoices
