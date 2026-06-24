@@ -291,7 +291,12 @@ def push_accounts_to_xero(account_names):
         try:
             doc = frappe.get_doc("Account", acc_name)
             payload = build_xero_account_payload(doc, settings)
-            response = xero_request("POST", "Accounts", data={"Accounts": [payload]})
+            payload.pop("AccountID", None)
+            response = xero_request(
+                "PUT", "Accounts",
+                data={"Accounts": [payload]},
+                idempotency_key=f"Account:{acc_name}:create",
+            )
 
             if response and response.get("Accounts"):
                 xero_acc  = response["Accounts"][0]
@@ -400,12 +405,12 @@ def get_unmapped_accounts_for_resolution():
 @frappe.whitelist()
 def resolve_unmapped_accounts(resolutions):
     """
-    Apply the picker's decisions. For each resolution:
-      action="create" → POST the account to Xero, then write the mapping row.
-      action="map"     → write the mapping row pointing at the chosen Xero code.
-    Both paths write the `account_mapping` row the sync actually reads
-    (Settings.get_account_map), and store xero_account_id on the ERPNext account
-    for round-trip matching.
+    Apply the picker's decisions (create-in-Xero or map-to-existing).
+
+    Map-only batches run inline for instant feedback. Any batch that creates
+    accounts in Xero is handed to a background job (queue="long") so it does not
+    block the request and so the shared rate limiter can pace the POSTs; on
+    completion the job fires a `xero_resolve_done` realtime event with the summary.
 
     resolutions: JSON list of
       {erpnext_account, action: "create"|"map"|"skip",
@@ -414,16 +419,56 @@ def resolve_unmapped_accounts(resolutions):
     from .xero_client import require_xero_manager
     require_xero_manager()
     import json
-    from ..api.xero_accounts import build_xero_account_payload
 
     if isinstance(resolutions, str):
         resolutions = json.loads(resolutions)
 
+    resolutions = [
+        r for r in resolutions
+        if r.get("erpnext_account") and r.get("action") in ("create", "map")
+    ]
+    if not resolutions:
+        return {"queued": False, "created": [], "mapped": [], "errors": [], "total_mapped": None}
+
+    has_create = any(r["action"] == "create" for r in resolutions)
+
+    # Creating accounts writes to Xero, so it must respect the outbound master
+    # gate. Mapping/skip are local-only and always allowed.
+    if has_create and not get_xero_settings().enable_sync_to_xero:
+        frappe.throw(
+            "Outbound sync to Xero is disabled (Xero Settings → Enable Sync TO Xero). "
+            "Enable it before creating accounts in Xero, or choose Map/Skip instead."
+        )
+
+    if not has_create:
+        # Pure remap — no external calls, return the result immediately.
+        return _process_resolutions(resolutions)
+
+    frappe.enqueue(
+        "xero.utils.account_mapper._process_resolutions",
+        queue="long",
+        timeout=2400,
+        job_name="xero_resolve_unmapped_accounts",
+        resolutions=resolutions,
+        user=frappe.session.user,
+    )
+    return {"queued": True, "count": len(resolutions)}
+
+
+def _process_resolutions(resolutions, user=None):
+    """Worker: create-or-link / map each resolution, write mapping rows, report a summary."""
     settings = get_xero_settings()
     existing_erpnext = {r.erpnext_account for r in settings.account_mapping if r.erpnext_account}
-    existing_codes   = {r.xero_account_code for r in settings.account_mapping if r.xero_account_code}
 
     created, mapped, errors = [], [], []
+
+    # Build the full Xero account index ONCE (active + archived + system) so we can
+    # link onto existing accounts and guarantee unique codes for genuine creates.
+    has_create = any(r.get("action") == "create" for r in resolutions)
+    xindex, used_codes = None, None
+    if has_create:
+        xindex = _build_xero_index(_fetch_xero_accounts_raw(include_system=True))
+        used_codes = set(xindex["by_code"].keys())
 
     for r in resolutions:
         ea     = r.get("erpnext_account")
@@ -431,23 +476,21 @@ def resolve_unmapped_accounts(resolutions):
         if not ea or action not in ("create", "map"):
             continue
         if ea in existing_erpnext:
+            errors.append(f"{ea}: already mapped — skipped")
             continue
         try:
             if action == "create":
-                doc = frappe.get_doc("Account", ea)
-                payload = build_xero_account_payload(doc, settings)
-                response = xero_request("POST", "Accounts", data={"Accounts": [payload]})
-                if not (response and response.get("Accounts")):
-                    errors.append(f"{ea}: no valid response from Xero (account may already exist — try Map instead)")
+                if not settings.enable_sync_to_xero:
+                    errors.append(f"{ea}: skipped — outbound sync to Xero is disabled")
                     continue
-                xa   = response["Accounts"][0]
-                code = xa.get("Code")
-                xid  = xa.get("AccountID")
-                name = xa.get("Name")
-                if xid:
-                    frappe.db.set_value("Account", ea, "xero_account_id", xid, update_modified=False)
-                _append_mapping_row(settings, ea, code, name, existing_erpnext, existing_codes)
-                created.append({"erpnext_account": ea, "xero_code": code, "xero_name": name})
+                outcome = _create_or_link_to_xero(
+                    ea, settings, xindex, used_codes, existing_erpnext)
+                if outcome["status"] == "created":
+                    created.append(outcome["row"])
+                elif outcome["status"] == "linked":
+                    mapped.append(outcome["row"])
+                else:
+                    errors.append(outcome["error"])
             else:  # map
                 code = r.get("xero_account_code")
                 name = r.get("xero_account_name") or ""
@@ -455,7 +498,7 @@ def resolve_unmapped_accounts(resolutions):
                 if not code:
                     errors.append(f"{ea}: no Xero account selected to map to")
                     continue
-                _append_mapping_row(settings, ea, code, name, existing_erpnext, existing_codes)
+                _append_mapping_row(settings, ea, code, name, existing_erpnext)
                 if xid:
                     frappe.db.set_value("Account", ea, "xero_account_id", xid, update_modified=False)
                 mapped.append({"erpnext_account": ea, "xero_code": code, "xero_name": name})
@@ -466,13 +509,435 @@ def resolve_unmapped_accounts(resolutions):
     settings.save(ignore_permissions=True)
     frappe.db.commit()
     _refresh_mapping_status(settings)
+    # Bust the cached single so any read later (e.g. a manual sync triggered
+    # right after) sees the new mapping rows immediately.
+    frappe.clear_document_cache("Xero Settings", "Xero Settings")
 
-    return {
+    result = {
         "created":      created,
         "mapped":       mapped,
         "errors":       errors,
         "total_mapped": len(settings.account_mapping),
     }
+    if user:
+        frappe.publish_realtime("xero_resolve_done", result, user=user)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Reconciliation engine — create-or-link, idempotent, collision-free
+# ---------------------------------------------------------------------------
+
+def _normalize_name(s):
+    import re as _re
+    return _re.sub(r"\s+", " ", (s or "").strip()).lower()
+
+
+def _fetch_xero_accounts_raw(include_system=True):
+    """
+    Fetch the FULL Xero chart for indexing — active + archived + (optionally)
+    system accounts. Unlike _fetch_xero_accounts this does NOT filter system
+    accounts or non-mappable types, so we can both link onto and avoid colliding
+    with accounts like the built-in VAT.
+    """
+    response = xero_request("GET", "Accounts")
+    if not response or not response.get("Accounts"):
+        return []
+    out = []
+    for acc in response["Accounts"]:
+        if not include_system and acc.get("SystemAccount") in XERO_SYSTEM_ACCOUNTS:
+            continue
+        out.append(acc)
+    return out
+
+
+def _build_xero_index(raw_accounts):
+    """Index raw Xero accounts by Code and by normalized Name (first wins)."""
+    by_code, by_name = {}, {}
+    for a in raw_accounts:
+        code = (a.get("Code") or "").strip()
+        if code:
+            by_code.setdefault(code, a)
+        name = _normalize_name(a.get("Name"))
+        if name:
+            by_name.setdefault(name, a)
+    return {"by_code": by_code, "by_name": by_name}
+
+
+def _existing_xero_match(doc, xindex):
+    """Return the existing Xero account dict to link onto, or None.
+    Matches by account_number == Code, then by exact normalized Name."""
+    num = str(doc.get("account_number") or "").strip()
+    if num and num in xindex["by_code"]:
+        return xindex["by_code"][num]
+    nm = _normalize_name(doc.get("account_name"))
+    if nm and nm in xindex["by_name"]:
+        return xindex["by_name"][nm]
+    return None
+
+
+def _xero_code_for(doc, used_codes):
+    """
+    A unique Xero account code (<=10 alphanumerics). Prefers the ERPNext
+    account_number; otherwise derives from the name. Appends a numeric suffix on
+    collision with codes already in Xero or reserved earlier in this batch.
+    """
+    from ..api.xero_accounts import validate_account_code
+    base = doc.get("account_number") or doc.get("account_name") or doc.name
+    try:
+        code = validate_account_code(base)
+    except ValueError:
+        code = validate_account_code(doc.name)
+    if code not in used_codes:
+        return code
+    for i in range(2, 1000):
+        suffix = str(i)
+        cand = code[:10 - len(suffix)] + suffix
+        if cand not in used_codes:
+            return cand
+    return code  # extremely unlikely
+
+
+def _create_or_link_to_xero(ea, settings, xindex, used_codes, existing_erpnext):
+    """
+    Reconcile one ERPNext account to Xero (never blind-create):
+      1. exact Code/Name already in Xero  → LINK onto it
+      2. account_type == "Tax"            → refuse (belongs in Tax mapping)
+      3. otherwise                        → CREATE with a unique code
+      4. if the create still hits a uniqueness error → self-heal by linking
+    Returns {"status": "created"|"linked"|"error", "row"/"error": ...}.
+    """
+    from ..api.xero_accounts import build_xero_account_payload
+
+    doc = frappe.get_doc("Account", ea)
+
+    # 1. Link onto an existing Xero account (e.g. VAT → Xero's built-in VAT).
+    #    This is what protects VAT-style accounts from duplicate-name errors. We
+    #    deliberately do NOT hard-refuse account_type == "Tax" here: ZA statutory
+    #    liabilities (UIF/SDL/PAYE) are often typed "Tax" yet are real GL accounts
+    #    that must exist in Xero. The UI steers genuine VAT control accounts to
+    #    Skip (defaulted) so nothing tax-like is created blindly.
+    existing = _existing_xero_match(doc, xindex)
+    if existing:
+        return _link(ea, existing, settings, existing_erpnext)
+
+    # 2. Create with a guaranteed-unique code
+    payload = build_xero_account_payload(doc, settings)
+    payload.pop("AccountID", None)
+    code = _xero_code_for(doc, used_codes)
+    payload["Code"] = code
+    used_codes.add(code)
+    try:
+        response = xero_request(
+            "PUT", "Accounts",
+            data={"Accounts": [payload]},
+            idempotency_key=f"Account:{ea}:create",
+        )
+    except Exception as put_err:
+        # 4. Self-heal: a uniqueness clash means it already exists → link to it
+        match = _existing_xero_match(doc, _build_xero_index(_fetch_xero_accounts_raw(include_system=True)))
+        if match:
+            return _link(ea, match, settings, existing_erpnext)
+        return {"status": "error", "error": f"{ea}: {put_err}"}
+
+    if not (response and response.get("Accounts")):
+        return {"status": "error", "error": f"{ea}: no valid response from Xero"}
+    xa = response["Accounts"][0]
+    if xa.get("AccountID"):
+        frappe.db.set_value("Account", ea, "xero_account_id", xa["AccountID"], update_modified=False)
+        xindex["by_code"][xa.get("Code", "")] = xa
+        xindex["by_name"][_normalize_name(xa.get("Name"))] = xa
+    _append_mapping_row(settings, ea, xa.get("Code"), xa.get("Name"), existing_erpnext)
+    return {"status": "created",
+            "row": {"erpnext_account": ea, "xero_code": xa.get("Code"), "xero_name": xa.get("Name")}}
+
+
+def _link(ea, xero_acc, settings, existing_erpnext):
+    """Link an ERPNext account onto an existing Xero account (no create)."""
+    if xero_acc.get("AccountID"):
+        frappe.db.set_value("Account", ea, "xero_account_id", xero_acc["AccountID"], update_modified=False)
+    _append_mapping_row(settings, ea, xero_acc.get("Code"), xero_acc.get("Name"), existing_erpnext)
+    return {"status": "linked",
+            "row": {"erpnext_account": ea, "xero_code": xero_acc.get("Code"),
+                    "xero_name": xero_acc.get("Name"), "linked": True}}
+
+
+# ===========================================================================
+# Unified mapping workspace — one wizard over both directions + tax
+# ===========================================================================
+
+@frappe.whitelist()
+def get_mapping_workspace():
+    """
+    One payload powering the unified "Account & Tax Mapping" wizard.
+
+    Includes only the sections whose sync direction is enabled:
+      • accounts_from_xero  (Xero → ERPNext)  when enable_sync_from_xero
+      • accounts_to_xero    (ERPNext → Xero)  when enable_sync_to_xero
+      • tax                 (always)          unmapped ERPNext Item Tax Templates
+    plus the dropdown lists (xero_accounts, erpnext_accounts, xero_tax_rates)
+    and a summary. Reuses the existing inbound/outbound matchers.
+    """
+    from .xero_client import require_xero_manager
+    require_xero_manager()
+
+    settings = get_xero_settings()
+    if not settings.access_token or not settings.tenant_id:
+        frappe.throw("Xero connection not configured. Connect to Xero first.")
+
+    company = frappe.db.get_default("company") or frappe.get_all("Company", limit=1, pluck="name")[0]
+    to_xero   = bool(settings.enable_sync_to_xero)
+    from_xero = bool(settings.enable_sync_from_xero)
+
+    xero_accounts    = _fetch_xero_accounts(include_archived=False)
+    erpnext_accounts = _fetch_erpnext_accounts(company)
+    mapped_codes, mapped_erpnext, _rows = _load_existing_mappings(settings)
+
+    # Full Xero index (incl. system/archived) for exact-match / link detection.
+    xindex = _build_xero_index(_fetch_xero_accounts_raw(include_system=True))
+
+    # ---- Section B: ERPNext → Xero (reconciled) ----
+    accounts_to_xero = []
+    if to_xero:
+        error_accounts = _recent_mapping_error_accounts()
+        for acc in erpnext_accounts:
+            if acc["name"] in mapped_erpnext:
+                continue
+            doc_like = {
+                "account_number": acc.get("account_number"),
+                "account_name":   acc.get("account_name") or acc["name"],
+            }
+            is_tax = acc.get("account_type") == "Tax"
+            exact  = _existing_xero_match(doc_like, xindex)
+            # Status drives the page's default action:
+            #   exact → link (auto)  | tax → skip (opt-in)  | fuzzy → review  | else → create
+            # Tax takes precedence over a fuzzy match so a VAT/tax account is never
+            # suggested onto an unrelated GL account (e.g. a bank).
+            if exact:
+                status, fuzzy = "exact", None
+            elif is_tax:
+                status, fuzzy = "tax", None
+            else:
+                fuzzy = _find_best_xero_match(acc, xero_accounts)
+                status = "fuzzy" if fuzzy else "create"
+            accounts_to_xero.append({
+                "erpnext_account":  acc["name"],
+                "account_name":     acc.get("account_name") or acc["name"],
+                "root_type":        acc.get("root_type", ""),
+                "account_type":     acc.get("account_type", ""),
+                "is_tax":           1 if is_tax else 0,
+                "has_recent_error": 1 if acc["name"] in error_accounts else 0,
+                "status":           status,
+                "exact":            ({"code": exact.get("Code"), "name": exact.get("Name"),
+                                      "account_id": exact.get("AccountID")} if exact else None),
+                "suggested":        fuzzy,
+            })
+        # exact matches first (easy wins), then failing, then by type/name
+        _order = {"exact": 0, "fuzzy": 1, "create": 2, "tax": 3}
+        accounts_to_xero.sort(key=lambda x: (_order.get(x["status"], 9), -x["has_recent_error"],
+                                             x["root_type"], x["account_name"]))
+
+    # ---- Section A: Xero → ERPNext (unmapped Xero accounts) ----
+    accounts_from_xero = []
+    if from_xero:
+        claimed = set(mapped_erpnext)
+        for x in xero_accounts:
+            code = x.get("Code", "")
+            if code and code in mapped_codes:
+                continue
+            ename, conf = _find_best_erpnext_match(
+                x.get("AccountID", ""), code, x.get("Name", ""), x.get("Type", ""),
+                erpnext_accounts, claimed, company,
+            )
+            if ename:
+                claimed.add(ename)
+            accounts_from_xero.append({
+                "xero_account_id":   x.get("AccountID", ""),
+                "xero_code":         code,
+                "xero_name":         x.get("Name", ""),
+                "xero_type":         x.get("Type", ""),
+                "suggested_erpnext": ename,
+                "confidence":        conf,
+            })
+        accounts_from_xero.sort(key=lambda r: (r["xero_code"] or ""))
+
+    # ---- Section C: tax (unmapped ERPNext Item Tax Templates) ----
+    xero_tax_rates = _fetch_xero_tax_rates()
+    mapped_tax = {r.erpnext_tax_template for r in settings.tax_mapping if r.erpnext_tax_template}
+    tax = []
+    for tmpl in frappe.get_all("Item Tax Template", pluck="name"):
+        if tmpl in mapped_tax:
+            continue
+        tax.append({
+            "erpnext_tax_template": tmpl,
+            "erpnext_rate":         _erpnext_tax_template_rate(tmpl),
+            "suggested":            _find_best_xero_tax_match(tmpl, xero_tax_rates),
+        })
+
+    return {
+        "directions":         {"to_xero": to_xero, "from_xero": from_xero},
+        "accounts_to_xero":   accounts_to_xero,
+        "accounts_from_xero": accounts_from_xero,
+        "tax":                tax,
+        "xero_accounts":      sorted(
+            [{"code": a.get("Code", ""), "name": a.get("Name", ""),
+              "type": a.get("Type", ""), "account_id": a.get("AccountID", "")}
+             for a in xero_accounts if a.get("Code")],
+            key=lambda x: (x["code"] or "")),
+        "erpnext_accounts":   [{"name": a["name"], "label": a.get("account_name") or a["name"]}
+                               for a in erpnext_accounts],
+        "xero_tax_rates":     xero_tax_rates,
+        "summary": {
+            "mapped_accounts":  len([r for r in settings.account_mapping
+                                     if r.erpnext_account and r.xero_account_code]),
+            "mapped_tax":       len(mapped_tax),
+            "need_to_xero":     len(accounts_to_xero),
+            "need_from_xero":   len(accounts_from_xero),
+            "need_tax":         len(tax),
+        },
+    }
+
+
+@frappe.whitelist()
+def apply_mapping_workspace(decisions):
+    """
+    Apply all wizard decisions in one pass.
+
+    decisions: JSON {
+      "to_xero":   [ {erpnext_account, action: create|map|skip, xero_account_code?, ...} ],
+      "from_xero": [ {xero_account_id, xero_code, xero_name, xero_type,
+                      action: create|map|skip, erpnext_account?} ],
+      "tax":       [ {erpnext_tax_template, action: map|skip,
+                      xero_tax_type_code?, xero_tax_type_name?, xero_tax_rate?} ]
+    }
+
+    - ERPNext→Xero creates reuse _process_resolutions (background enqueue, gate,
+      PUT-create). Everything else (maps, ERPNext-side creates, tax) is local and
+      applied inline. Returns a unified summary; if any outbound create was
+      queued, its result arrives later via the `xero_resolve_done` realtime event.
+    """
+    from .xero_client import require_xero_manager
+    require_xero_manager()
+    import json
+
+    if isinstance(decisions, str):
+        decisions = json.loads(decisions)
+
+    to_xero_d   = decisions.get("to_xero", []) or []
+    from_xero_d = decisions.get("from_xero", []) or []
+    tax_d       = decisions.get("tax", []) or []
+
+    settings = get_xero_settings()
+    company = frappe.db.get_default("company") or frappe.get_all("Company", limit=1, pluck="name")[0]
+    existing_erpnext = {r.erpnext_account for r in settings.account_mapping if r.erpnext_account}
+    existing_tax     = {r.erpnext_tax_template for r in settings.tax_mapping if r.erpnext_tax_template}
+
+    created_erpnext, mapped, tax_mapped, errors = [], [], [], []
+
+    # ---- Inbound (Xero → ERPNext): create-in-ERPNext or map ----
+    for d in from_xero_d:
+        action = d.get("action")
+        if action not in ("create", "map"):
+            continue
+        try:
+            if action == "create":
+                ename = _create_erpnext_account_from_xero(d, company)
+                if not ename:
+                    errors.append(f"{d.get('xero_name')}: could not create ERPNext account")
+                    continue
+                if _append_mapping_row(settings, ename, d.get("xero_code"), d.get("xero_name"), existing_erpnext):
+                    created_erpnext.append({"erpnext_account": ename, "xero_code": d.get("xero_code")})
+            else:  # map to an existing ERPNext account the user picked
+                ename = d.get("erpnext_account")
+                if not ename:
+                    errors.append(f"{d.get('xero_name')}: no ERPNext account selected")
+                    continue
+                if _append_mapping_row(settings, ename, d.get("xero_code"), d.get("xero_name"), existing_erpnext):
+                    mapped.append({"erpnext_account": ename, "xero_code": d.get("xero_code")})
+        except Exception as e:
+            errors.append(f"{d.get('xero_name')}: {e}")
+
+    # ---- Tax: map ERPNext Item Tax Template → Xero tax type ----
+    for d in tax_d:
+        if d.get("action") != "map":
+            continue
+        tmpl = d.get("erpnext_tax_template")
+        code = d.get("xero_tax_type_code")
+        if not tmpl or not code or tmpl in existing_tax:
+            continue
+        settings.append("tax_mapping", {
+            "erpnext_tax_template": tmpl,
+            "xero_tax_type_code":   code,
+            "xero_tax_type_name":   d.get("xero_tax_type_name") or "",
+            "xero_tax_rate":        d.get("xero_tax_rate") or 0,
+        })
+        existing_tax.add(tmpl)
+        tax_mapped.append({"erpnext_tax_template": tmpl, "xero_tax_type_code": code})
+
+    settings.flags.ignore_version = True
+    settings.save(ignore_permissions=True)
+    frappe.db.commit()
+    _refresh_mapping_status(settings)
+    frappe.clear_document_cache("Xero Settings", "Xero Settings")
+
+    # ---- Outbound (ERPNext → Xero): hand to the existing resolver ----
+    outbound = [d for d in to_xero_d if d.get("action") in ("create", "map")]
+    outbound_result = None
+    if outbound:
+        outbound_result = resolve_unmapped_accounts(json.dumps(outbound))
+
+    return {
+        "created_erpnext": created_erpnext,
+        "mapped":          mapped,
+        "tax_mapped":      tax_mapped,
+        "errors":          errors,
+        "outbound":        outbound_result,
+    }
+
+
+def _fetch_xero_tax_rates():
+    """Active Xero tax rates → [{tax_type, name, rate}], rate = summed components."""
+    response = xero_request("GET", "TaxRates")
+    if not response or not response.get("TaxRates"):
+        return []
+    rates = []
+    for tr in response["TaxRates"]:
+        if tr.get("Status") != "ACTIVE":
+            continue
+        total = sum(float(c.get("Rate", 0)) for c in tr.get("TaxComponents", []))
+        rates.append({
+            "tax_type": tr.get("TaxType", ""),
+            "name":     tr.get("Name", ""),
+            "rate":     total,
+        })
+    return rates
+
+
+def _erpnext_tax_template_rate(template_name):
+    """Representative rate for an ERPNext Item Tax Template (max child rate)."""
+    try:
+        rows = frappe.get_all(
+            "Item Tax Template Detail",
+            filters={"parent": template_name}, fields=["tax_rate"])
+        return max([float(r.tax_rate) for r in rows], default=0.0)
+    except Exception:
+        return 0.0
+
+
+def _find_best_xero_tax_match(template_name, xero_tax_rates):
+    """Best Xero tax rate for an ERPNext Item Tax Template. {tax_type,name,rate,confidence} or None."""
+    name = (template_name or "").lower()
+    erate = _erpnext_tax_template_rate(template_name)
+    best, best_sim = None, 0.0
+    for tr in xero_tax_rates:
+        # Exact rate match is a strong signal
+        if erate and abs(float(tr["rate"]) - erate) < 0.01:
+            return {**tr, "confidence": CONFIDENCE_HIGH}
+        sim = SequenceMatcher(None, name, (tr["name"] or "").lower()).ratio()
+        if sim >= SIMILARITY_THRESHOLD and sim > best_sim:
+            best_sim = sim
+            best = {**tr, "confidence": CONFIDENCE_MEDIUM}
+    return best
 
 
 # ---------------------------------------------------------------------------
@@ -706,10 +1171,15 @@ def _find_best_xero_match(erpnext_acc, xero_accounts):
     return best
 
 
-def _append_mapping_row(settings, ea, code, name, existing_erpnext, existing_codes):
-    """Append an account_mapping row (idempotent on erpnext_account / xero code)."""
-    if ea in existing_erpnext or (code and code in existing_codes):
-        return
+def _append_mapping_row(settings, ea, code, name, existing_erpnext):
+    """
+    Append an account_mapping row. Idempotent on erpnext_account ONLY — several
+    ERPNext accounts may legitimately map to the same Xero code (e.g. all payroll
+    expense accounts → one Xero "Wages" account), so we do not dedupe on code.
+    Returns True if a row was appended, False if it already existed.
+    """
+    if ea in existing_erpnext:
+        return False
     xero_account_doc = frappe.db.get_value("Xero Account", {"account_code": code}, "name")
     settings.append("account_mapping", {
         "erpnext_account":   ea,
@@ -718,8 +1188,7 @@ def _append_mapping_row(settings, ea, code, name, existing_erpnext, existing_cod
         "xero_account_name": name or "",
     })
     existing_erpnext.add(ea)
-    if code:
-        existing_codes.add(code)
+    return True
 
 
 def _recent_mapping_error_accounts(days=30):

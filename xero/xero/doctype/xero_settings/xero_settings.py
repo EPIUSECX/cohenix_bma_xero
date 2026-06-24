@@ -604,3 +604,19 @@ def resolve_unmapped_accounts(resolutions):
     from xero.utils.account_mapper import resolve_unmapped_accounts as _impl
 
     return _impl(resolutions)
+
+
+@frappe.whitelist()
+def get_mapping_workspace():
+    """Unified Account & Tax Mapping wizard payload (both directions + tax)."""
+    from xero.utils.account_mapper import get_mapping_workspace as _impl
+
+    return _impl()
+
+
+@frappe.whitelist()
+def apply_mapping_workspace(decisions):
+    """Apply all wizard decisions (inbound create/map, outbound create/map, tax map)."""
+    from xero.utils.account_mapper import apply_mapping_workspace as _impl
+
+    return _impl(decisions)

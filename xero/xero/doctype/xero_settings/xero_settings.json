@@ -362,7 +362,8 @@
    "fieldname": "setup_mode",
    "fieldtype": "Select",
    "label": "Setup Mode",
-   "options": "\nManual\nXero as Source\nERPNext as Source"
+   "options": "\nManual\nXero as Source\nERPNext as Source",
+   "hidden": 1
   },
   {
    "default": "Not Started",

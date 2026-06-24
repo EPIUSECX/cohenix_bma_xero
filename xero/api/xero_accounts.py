@@ -96,16 +96,15 @@ def validate_account_code(code):
     """
     if not code:
         raise ValueError("Account code is required for Xero sync")
-    
-    # Convert to string and truncate to 10 chars
-    code = str(code)[:10]
-    
-    # Remove invalid characters (keep alphanumeric)
-    code = re.sub(r'[^a-zA-Z0-9]', '', code)
-    
+
+    # Strip invalid characters FIRST, then truncate to Xero's 10-char limit.
+    # (Truncating first would throw away usable characters when a space/dash sits
+    # within the first 10 chars, e.g. "VAT - CX" -> "VAT CX" -> "VATCX".)
+    code = re.sub(r'[^a-zA-Z0-9]', '', str(code))[:10]
+
     if not code:
         raise ValueError("Account code must contain alphanumeric characters after sanitization")
-    
+
     return code
 
 
