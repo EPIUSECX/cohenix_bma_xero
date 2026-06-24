@@ -197,7 +197,8 @@ scheduler_events = {
     # Weekly tasks
     "weekly": [
         "xero.tasks.reconcile_all_entities",
-        "xero.tasks.cleanup_old_logs"
+        "xero.tasks.cleanup_old_logs",
+        "xero.tasks.purge_resolved_logs"
     ]
 }
 

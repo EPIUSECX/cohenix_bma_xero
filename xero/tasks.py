@@ -214,6 +214,52 @@ def cleanup_old_logs():
         )
 
 
+@frappe.whitelist()
+def purge_resolved_logs():
+    """Delete Error/Warning Xero Log rows that have since been RESOLVED — i.e. a
+    later Success exists for the same entity (erpnext_doc_type + erpnext_doc_name).
+
+    Keeps the Success/Info history and any still-outstanding errors. Complements
+    the time-based cleanup_old_logs. Idempotent and safe to run repeatedly or on
+    a schedule. Returns the number of rows removed.
+    """
+    try:
+        before = frappe.db.count("Xero Log")
+        # Multi-table DELETE with a materialised "latest success per entity"
+        # derived table (avoids the self-referencing-subquery restriction).
+        frappe.db.sql(
+            """
+            DELETE l FROM `tabXero Log` l
+            JOIN (
+                SELECT erpnext_doc_type, erpnext_doc_name, MAX(timestamp) AS last_success
+                FROM `tabXero Log`
+                WHERE status = 'Success'
+                  AND erpnext_doc_type IS NOT NULL
+                  AND erpnext_doc_name IS NOT NULL AND erpnext_doc_name <> 'Unknown'
+                GROUP BY erpnext_doc_type, erpnext_doc_name
+            ) ls ON ls.erpnext_doc_type = l.erpnext_doc_type
+                 AND ls.erpnext_doc_name = l.erpnext_doc_name
+            WHERE l.status IN ('Error', 'Warning')
+              AND l.timestamp < ls.last_success
+            """
+        )
+        frappe.db.commit()
+        after = frappe.db.count("Xero Log")
+        removed = before - after
+        log_xero_error(
+            message=f"Purged {removed} resolved (superseded) Xero Log error/warning row(s); {after} remain.",
+            status="Info",
+            category="System Monitoring",
+        )
+        return {"removed": removed, "remaining": after}
+    except Exception:
+        log_xero_error(
+            message="Error during purge_resolved_logs",
+            error_details=frappe.get_traceback(),
+        )
+        return {"error": True}
+
+
 def monitor_sync_health():
     """
     Hourly task to monitor sync health and send alerts if needed.

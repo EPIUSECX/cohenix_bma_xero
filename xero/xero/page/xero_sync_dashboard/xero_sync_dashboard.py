@@ -4,7 +4,7 @@
 import frappe
 import json
 from datetime import datetime, timedelta
-from frappe.utils import now_datetime, add_days, add_to_date, get_datetime, flt
+from frappe.utils import now_datetime, add_days, add_to_date, get_datetime, flt, cint
 from frappe import _
 
 @frappe.whitelist()
@@ -270,22 +270,58 @@ def get_entity_sync_status():
 
 @frappe.whitelist()
 def get_recent_errors(limit=10):
-    """Get recent error logs with details"""
+    """Get currently-OUTSTANDING error logs (resolved errors are excluded).
+
+    An error is "outstanding" only if the entity's latest real sync outcome
+    (Success/Error) is still Error — i.e. it has not since been re-synced
+    successfully. So an entity that errored and was later fixed/re-synced drops
+    off automatically, instead of lingering in the panel forever. Errors with no
+    entity document (e.g. connection/token failures) are shown only if recent
+    (last 24h), since there is no entity state to check them against.
+    """
+    limit = cint(limit) or 10
+    cutoff = add_days(now_datetime(), -1)
     errors = frappe.db.sql("""
-        SELECT
-            name,
-            COALESCE(message, 'No message available') as message,
-            COALESCE(erpnext_doc_type, 'Unknown') as erpnext_doc_type,
-            COALESCE(erpnext_doc_name, 'Unknown') as erpnext_doc_name,
-            timestamp,
-            COALESCE(error_details, '') as error_details,
-            COALESCE(xero_entity_id, '') as xero_entity_id,
-            COALESCE(direction, 'Unknown') as direction
-        FROM `tabXero Log`
-        WHERE status = 'Error'
+        (
+            SELECT name,
+                   COALESCE(message, 'No message available') AS message,
+                   COALESCE(erpnext_doc_type, 'Unknown') AS erpnext_doc_type,
+                   COALESCE(erpnext_doc_name, 'Unknown') AS erpnext_doc_name,
+                   timestamp,
+                   COALESCE(error_details, '') AS error_details,
+                   COALESCE(xero_entity_id, '') AS xero_entity_id,
+                   COALESCE(direction, 'Unknown') AS direction
+            FROM (
+                SELECT *,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY erpnext_doc_type, erpnext_doc_name
+                           ORDER BY timestamp DESC, name DESC
+                       ) AS rn
+                FROM `tabXero Log`
+                WHERE status IN ('Success', 'Error')
+                  AND erpnext_doc_type IS NOT NULL
+                  AND erpnext_doc_name IS NOT NULL AND erpnext_doc_name != 'Unknown'
+            ) latest
+            WHERE rn = 1 AND status = 'Error'
+        )
+        UNION ALL
+        (
+            SELECT name,
+                   COALESCE(message, 'No message available') AS message,
+                   'Unknown' AS erpnext_doc_type,
+                   'Unknown' AS erpnext_doc_name,
+                   timestamp,
+                   COALESCE(error_details, '') AS error_details,
+                   COALESCE(xero_entity_id, '') AS xero_entity_id,
+                   COALESCE(direction, 'Unknown') AS direction
+            FROM `tabXero Log`
+            WHERE status = 'Error'
+              AND (erpnext_doc_type IS NULL OR erpnext_doc_name IS NULL OR erpnext_doc_name = 'Unknown')
+              AND timestamp >= %s
+        )
         ORDER BY timestamp DESC
         LIMIT %s
-    """, (limit,), as_dict=True)
+    """, (cutoff, limit), as_dict=True)
     
     # Categorize errors and clean up data
     error_categories = {}
