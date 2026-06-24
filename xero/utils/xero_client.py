@@ -6,6 +6,7 @@ import requests
 from frappe.utils import get_site_url, now_datetime, add_to_date, get_datetime
 from json import dumps, loads
 from urllib.parse import urlencode
+from datetime import datetime, timezone, timedelta
 
 XERO_AUTH_URL = "https://login.xero.com/identity/connect/authorize"
 XERO_TOKEN_URL = "https://identity.xero.com/connect/token"
@@ -44,6 +45,88 @@ def require_xero_manager():
             "You are not permitted to perform Xero integration actions.",
             frappe.PermissionError,
         )
+
+
+# ---------------------------------------------------------------------------
+# Incremental sync (If-Modified-Since watermarks)
+# ---------------------------------------------------------------------------
+# Full sweeps of every entity on each run burn through Xero's daily API quota
+# (5000/day/tenant) and don't scale to larger orgs. Incremental sync fetches
+# only records changed since the last successful run, using Xero's
+# `If-Modified-Since` request header (UTC, ISO 8601). We persist a per-entity
+# UTC watermark in the Xero Settings `sync_watermarks` JSON field.
+
+# Re-fetch a small overlap window before the last run start to tolerate clock
+# skew and records modified mid-run. Cheap insurance against missed updates;
+# re-processing an unchanged record is idempotent.
+WATERMARK_OVERLAP_MINUTES = 5
+
+# Xero's documented If-Modified-Since format (UTC, no offset suffix).
+_IMS_FMT = "%Y-%m-%dT%H:%M:%S"
+
+
+def _utcnow():
+    return datetime.now(timezone.utc)
+
+
+def _load_watermarks(settings=None):
+    raw = (settings or get_xero_settings()).get("sync_watermarks")
+    if not raw:
+        return {}
+    try:
+        data = loads(raw)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def get_sync_watermark(entity_key, settings=None):
+    """Return the stored UTC If-Modified-Since string for an entity, or None."""
+    return _load_watermarks(settings).get(entity_key)
+
+
+def set_sync_watermark(entity_key, value):
+    """Persist a watermark for an entity (durably, on the Single doc)."""
+    data = _load_watermarks()
+    data[entity_key] = value
+    frappe.db.set_single_value("Xero Settings", "sync_watermarks", dumps(data))
+    frappe.db.commit()
+
+
+def incremental_since(entity_key):
+    """The If-Modified-Since value to send for this entity's list fetch, or None
+    for a full sync (incremental disabled, or first run with no watermark)."""
+    settings = get_xero_settings()
+    if not settings.get("enable_incremental_sync"):
+        return None
+    return get_sync_watermark(entity_key, settings)
+
+
+def start_incremental_run():
+    """Capture the run-start instant (UTC) to base the next watermark on.
+    Call at the top of an inbound sync, BEFORE fetching."""
+    return _utcnow()
+
+
+def commit_watermark(entity_key, run_started_at):
+    """Advance an entity's watermark after a SUCCESSFUL sync. Stores
+    (run_start - overlap) so the next run re-checks a small safety window."""
+    if not run_started_at:
+        return
+    if not get_xero_settings().get("enable_incremental_sync"):
+        return
+    value = (run_started_at - timedelta(minutes=WATERMARK_OVERLAP_MINUTES)).strftime(_IMS_FMT)
+    set_sync_watermark(entity_key, value)
+
+
+@frappe.whitelist()
+def reset_xero_sync_watermarks():
+    """Clear all incremental watermarks so the next run does a full sync.
+    Use after a mapping change or to backfill historical records."""
+    require_xero_manager()
+    frappe.db.set_single_value("Xero Settings", "sync_watermarks", "")
+    frappe.db.commit()
+    return {"status": "ok", "message": "Xero sync watermarks cleared; next sync will be a full sweep."}
 
 
 def get_redirect_uri():
@@ -549,7 +632,7 @@ def _throttle_xero_call(settings):
         time.sleep(min(2.0, max(0.2, 60 - (time.time() % 60))))
 
 
-def xero_request(method, endpoint, data=None, params=None, idempotency_key=None):
+def xero_request(method, endpoint, data=None, params=None, idempotency_key=None, modified_since=None):
     """Makes a request to the Xero API, handling authentication and errors.
 
     :param idempotency_key: Optional stable key sent as the ``Idempotency-Key``
@@ -558,6 +641,11 @@ def xero_request(method, endpoint, data=None, params=None, idempotency_key=None)
         will NOT create a duplicate record. Callers creating financial documents
         (invoices, payments, credit notes, journals) should always pass one
         (HI-7). When supplied, network/timeout retries on POST/PUT are safe.
+    :param modified_since: Optional UTC ISO-8601 string (``YYYY-MM-DDTHH:MM:SS``)
+        sent as the ``If-Modified-Since`` header so Xero returns only records
+        changed since then (incremental sync). NOTE: this is a HEADER, not a
+        query param — the old ``params['ModifiedSince']`` approach was ignored
+        by Xero.
     """
     import time
 
@@ -565,6 +653,8 @@ def xero_request(method, endpoint, data=None, params=None, idempotency_key=None)
     headers = dict(get_xero_client())  # Gets headers with valid token (copy to mutate)
     if idempotency_key:
         headers["Idempotency-Key"] = str(idempotency_key)
+    if modified_since:
+        headers["If-Modified-Since"] = str(modified_since)
     url = f"{XERO_API_BASE_URL}/{endpoint}"
 
     method_upper = method.upper()
@@ -621,29 +711,48 @@ def xero_request(method, endpoint, data=None, params=None, idempotency_key=None)
             if e.response.status_code == 429:  # Rate limit error
                 retry_count += 1
 
-                # Extract rate limit headers if available
-                rate_limit_remaining = e.response.headers.get(
-                    "X-Rate-Limit-Remaining", "unknown"
-                )
-                rate_limit_reset = e.response.headers.get(
-                    "X-Rate-Limit-Reset", "unknown"
-                )
+                # Xero sends X-Rate-Limit-Problem on a 429 telling you WHICH
+                # limit tripped (Minute / Daily / Concurrent). X-Rate-Limit-
+                # Remaining is only on successful responses, so it's absent here
+                # — that's why it always logged "unknown". Retry-After (seconds)
+                # is the authoritative wait.
+                problem = (e.response.headers.get("X-Rate-Limit-Problem") or "unknown").strip()
+                retry_after = e.response.headers.get("Retry-After")
 
                 if track_rate_limits:
                     from ..utils.logging import log_xero_error
 
                     log_xero_error(
-                        message=f"Rate limit hit on {method} {endpoint}. Remaining: {rate_limit_remaining}, Reset: {rate_limit_reset}",
+                        message=f"Rate limit hit on {method} {endpoint}. Problem: {problem}, Retry-After: {retry_after or 'n/a'}s",
                         status="Warning",
                         category="Rate Limiting",
                         direction="Xero to ERPNext" if method == "GET" else "ERPNext to Xero",
                         retry_count=retry_count,
                     )
 
+                # Daily limit (5000/day/tenant): retrying within this run is
+                # futile — Retry-After can be hours. Abort fast with a clear,
+                # actionable error instead of burning every retry slot.
+                if "day" in problem.lower():
+                    from ..utils.logging import log_xero_error
+
+                    log_xero_error(
+                        message=(
+                            f"Xero DAILY API limit reached on {method} {endpoint}. "
+                            f"Sync cannot continue until the daily quota resets "
+                            f"(~{retry_after}s). Re-run after reset."
+                        ),
+                        status="Error",
+                        category="Rate Limiting",
+                        direction="Xero to ERPNext" if method == "GET" else "ERPNext to Xero",
+                        retry_count=retry_count,
+                    )
+                    raise e
+
                 if retry_count >= max_retries:
                     # Log final failure and re-raise
                     frappe.log_error(
-                        f"Xero API rate limit exceeded after {max_retries} retries. Remaining: {rate_limit_remaining}",
+                        f"Xero API rate limit exceeded after {max_retries} retries on {method} {endpoint}. Problem: {problem}",
                         "Xero API Error",
                     )
                     raise e
@@ -651,8 +760,7 @@ def xero_request(method, endpoint, data=None, params=None, idempotency_key=None)
                 # Honor Xero's Retry-After header when present (it tells you
                 # exactly how long the limit lasts); otherwise fall back to
                 # exponential backoff. Cap at max_delay so a worker is never
-                # blocked indefinitely (e.g. on a daily-limit Retry-After).
-                retry_after = e.response.headers.get("Retry-After")
+                # blocked indefinitely.
                 if retry_after:
                     try:
                         wait_time = min(float(retry_after), max_delay)
@@ -661,7 +769,7 @@ def xero_request(method, endpoint, data=None, params=None, idempotency_key=None)
                 else:
                     wait_time = min(backoff_base**retry_count, max_delay)
                 frappe.log_error(
-                    message=f"Xero rate limit hit. Retrying in {wait_time}s (attempt {retry_count}/{max_retries}).",
+                    message=f"Xero rate limit ({problem}). Retrying in {wait_time}s (attempt {retry_count}/{max_retries}).",
                     title="Xero API Rate Limit",
                 )
                 time.sleep(wait_time)

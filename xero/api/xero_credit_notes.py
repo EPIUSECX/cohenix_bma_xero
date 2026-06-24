@@ -791,16 +791,29 @@ def sync_credit_notes_from_xero(modified_since=None):
     if not settings.get("sync_credit_notes"):
         return
 
+    # Incremental sync: fetch only credit notes changed since the last
+    # successful run. An explicit modified_since argument overrides the stored
+    # watermark. Xero ignores a ModifiedSince query param — the value must go in
+    # the If-Modified-Since header via modified_since= on the GET.
+    from ..utils.xero_client import (
+        incremental_since,
+        commit_watermark,
+        start_incremental_run,
+    )
+
+    watermark_key = "credit_notes"
+    run_started_at = start_incremental_run()
+    if_modified_since = modified_since or incremental_since(watermark_key)
+
     try:
         page = 1
         params = {"page": page}
 
-        if modified_since:
-            params["ModifiedSince"] = modified_since
-
         while True:
             frappe.logger().info(f"Fetching Xero Credit Notes page {page}", "Xero Sync")
-            response = xero_request("GET", "CreditNotes", params=params)
+            response = xero_request(
+                "GET", "CreditNotes", params=params, modified_since=if_modified_since
+            )
 
             if not response or not response.get("CreditNotes"):
                 break
@@ -825,6 +838,10 @@ def sync_credit_notes_from_xero(modified_since=None):
             page += 1
             params["page"] = page
 
+        # Only advance the watermark after a fully successful sweep — if an
+        # exception aborted the loop, the next run re-fetches from the old
+        # watermark so nothing is missed.
+        commit_watermark(watermark_key, run_started_at)
         log_xero_error(
             message="Finished syncing credit notes from Xero.", status="Info"
         )

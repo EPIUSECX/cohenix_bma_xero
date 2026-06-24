@@ -159,17 +159,30 @@ def sync_purchase_orders_from_xero(modified_since=None):
         return
     
     if not settings.get("sync_purchase_orders"): return
-    
+
+    # Incremental sync: fetch only purchase orders changed since the last
+    # successful run. An explicit modified_since argument overrides the stored
+    # watermark. Xero ignores a ModifiedSince query param — the value must go in
+    # the If-Modified-Since header via modified_since= on the GET.
+    from ..utils.xero_client import (
+        incremental_since,
+        commit_watermark,
+        start_incremental_run,
+    )
+
+    watermark_key = "purchase_orders"
+    run_started_at = start_incremental_run()
+    if_modified_since = modified_since or incremental_since(watermark_key)
+
     try:
         page = 1
         params = {"page": page}
-        
-        if modified_since:
-            params["ModifiedSince"] = modified_since
-        
+
         while True:
             frappe.logger().info(f"Fetching Xero Purchase Orders page {page}", "Xero Sync")
-            response = xero_request("GET", "PurchaseOrders", params=params)
+            response = xero_request(
+                "GET", "PurchaseOrders", params=params, modified_since=if_modified_since
+            )
             
             if not response or not response.get("PurchaseOrders"):
                 break
@@ -200,7 +213,11 @@ def sync_purchase_orders_from_xero(modified_since=None):
                 break
             page += 1
             params["page"] = page
-        
+
+        # Only advance the watermark after a fully successful sweep — if an
+        # exception aborted the loop, the next run re-fetches from the old
+        # watermark so nothing is missed.
+        commit_watermark(watermark_key, run_started_at)
         log_xero_error(message="Finished syncing purchase orders from Xero.", status="Info")
     
     except Exception as e:

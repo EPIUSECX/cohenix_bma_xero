@@ -517,19 +517,33 @@ def sync_accounts_from_xero():
     
     if not settings.sync_chart_of_accounts:
         return
-    
+
     company = frappe.defaults.get_user_default("company")
     if not company:
         frappe.throw(_("Default Company not set for user {0}").format(frappe.session.user))
-    
+
+    from ..utils.xero_client import (
+        incremental_since,
+        commit_watermark,
+        start_incremental_run,
+    )
+
+    watermark_key = "accounts"
+    run_started_at = start_incremental_run()
+    if_modified_since = incremental_since(watermark_key)
+
     try:
         frappe.logger().info("Starting Chart of Accounts sync from Xero", "Xero Sync")
-        response = xero_request("GET", "Accounts")
+        response = xero_request("GET", "Accounts", modified_since=if_modified_since)
         
         if not response or not response.get("Accounts"):
+            # With If-Modified-Since this legitimately means "no accounts
+            # changed since the last run" — advance the watermark so the next
+            # run continues from here rather than re-fetching the old window.
+            commit_watermark(watermark_key, run_started_at)
             log_xero_error(message="No accounts found or error fetching accounts from Xero.", status="Info")
             return
-        
+
         accounts = response["Accounts"]
         processed_count = 0
         
@@ -557,7 +571,11 @@ def sync_accounts_from_xero():
                     xero_entity_type="Account",
                     error_details=frappe.get_traceback()
                 )
-        
+
+        # Only advance the watermark after a fully successful sweep — if an
+        # exception aborted processing, the next run re-fetches from the old
+        # watermark so nothing is missed.
+        commit_watermark(watermark_key, run_started_at)
         log_xero_error(
             message=f"Finished syncing Chart of Accounts from Xero. Processed {processed_count} accounts.",
             status="Info"

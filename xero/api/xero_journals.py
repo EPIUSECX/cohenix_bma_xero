@@ -343,16 +343,34 @@ def sync_manual_journals_from_xero(from_date=None, to_date=None):
     
     if not settings.get("sync_journal_entries"): return
 
+    # Incremental sync: fetch only manual journals changed since the last
+    # successful run. An explicit from_date overrides the stored watermark.
+    # Xero filters ManualJournals by the If-Modified-Since header, NOT a
+    # `modifiedAfter` query param (which it ignores), so the value goes through
+    # modified_since= on the GET.
+    from ..utils.xero_client import (
+        incremental_since,
+        commit_watermark,
+        start_incremental_run,
+    )
+
+    watermark_key = "manual_journals"
+    run_started_at = start_incremental_run()
+    if_modified_since = from_date or incremental_since(watermark_key)
+
     try:
         page = 1
         while True:
             frappe.logger().info(f"Fetching Xero Manual Journals page {page}", "Xero Sync")
-            
+
             params = {"page": page}
-            if from_date:
-                params["modifiedAfter"] = from_date
-                
-            response = xero_request("GET", "ManualJournals", params=params)
+
+            response = xero_request(
+                "GET",
+                "ManualJournals",
+                params=params,
+                modified_since=if_modified_since,
+            )
 
             if not response or not response.get("ManualJournals"):
                 break
@@ -377,6 +395,10 @@ def sync_manual_journals_from_xero(from_date=None, to_date=None):
                 break
             page += 1
 
+        # Only advance the watermark after a fully successful sweep — if an
+        # exception aborted the loop, the next run re-fetches from the old
+        # watermark so nothing is missed.
+        commit_watermark(watermark_key, run_started_at)
         log_xero_error(message="Finished syncing manual journals from Xero.", status="Info")
 
     except Exception as e:

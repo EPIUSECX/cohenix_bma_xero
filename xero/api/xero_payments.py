@@ -510,6 +510,24 @@ def sync_payments_from_xero(invoice_id=None):
         )
         return
 
+    # Incremental sync only applies to the FULL sweep. When invoice_id is set
+    # this is a targeted lookup for one invoice's payments, so we must NOT apply
+    # an If-Modified-Since window (it would hide older-but-unsynced payments) and
+    # must NOT advance the global watermark off a filtered fetch.
+    incremental = not invoice_id
+    if_modified_since = None
+    watermark_key = "payments"
+    run_started_at = None
+    if incremental:
+        from ..utils.xero_client import (
+            incremental_since,
+            commit_watermark,
+            start_incremental_run,
+        )
+
+        run_started_at = start_incremental_run()
+        if_modified_since = incremental_since(watermark_key)
+
     try:
         page = 1
         while True:
@@ -519,7 +537,9 @@ def sync_payments_from_xero(invoice_id=None):
             if invoice_id:
                 params["InvoiceID"] = invoice_id
 
-            response = xero_request("GET", "Payments", params=params)
+            response = xero_request(
+                "GET", "Payments", params=params, modified_since=if_modified_since
+            )
 
             if not response or not response.get("Payments"):
                 break
@@ -544,6 +564,12 @@ def sync_payments_from_xero(invoice_id=None):
                 break
             page += 1
 
+        # Only advance the watermark after a fully successful FULL sweep — if an
+        # exception aborted the loop, the next run re-fetches from the old
+        # watermark so nothing is missed. Targeted (invoice_id) runs never touch
+        # the watermark.
+        if incremental:
+            commit_watermark(watermark_key, run_started_at)
         log_xero_error(message="Finished syncing payments from Xero.", status="Info")
 
     except Exception as e:

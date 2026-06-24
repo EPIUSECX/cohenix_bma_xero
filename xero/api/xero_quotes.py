@@ -236,11 +236,23 @@ def sync_quotes_from_xero():
     
     if not settings.get("sync_quotes"): return
 
+    from ..utils.xero_client import (
+        incremental_since,
+        commit_watermark,
+        start_incremental_run,
+    )
+
+    watermark_key = "quotes"
+    run_started_at = start_incremental_run()
+    if_modified_since = incremental_since(watermark_key)
+
     try:
         page = 1
         while True:
             frappe.logger().info(f"Fetching Xero Quotes page {page}", "Xero Sync")
-            response = xero_request("GET", "Quotes", params={"page": page})
+            response = xero_request(
+                "GET", "Quotes", params={"page": page}, modified_since=if_modified_since
+            )
 
             if not response or not response.get("Quotes"):
                 break
@@ -265,6 +277,10 @@ def sync_quotes_from_xero():
                 break
             page += 1
 
+        # Only advance the watermark after a fully successful sweep — if an
+        # exception aborted the loop, the next run re-fetches from the old
+        # watermark so nothing is missed.
+        commit_watermark(watermark_key, run_started_at)
         log_xero_error(message="Finished syncing quotes from Xero.", status="Info")
 
     except Exception as e:

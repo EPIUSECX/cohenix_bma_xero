@@ -327,6 +327,154 @@ def get_mapping_status():
     }
 
 
+@frappe.whitelist()
+def get_unmapped_accounts_for_resolution():
+    """
+    Power the "Resolve Unmapped Accounts" picker.
+
+    Returns every ERPNext leaf account that has NO mapping row yet, each with a
+    suggested *existing* Xero account (best fuzzy match, if any) so the user can
+    decide map-vs-create with full information, plus the full live Xero chart for
+    the dropdown. Accounts referenced by recent mapping-error logs are flagged
+    and sorted first so the failing ones are immediately actionable.
+
+    Shape:
+      {
+        "unmapped": [{erpnext_account, account_name, root_type, account_type,
+                      account_number, is_tax, has_recent_error,
+                      suggested: {code, name, confidence} | None}, ...],
+        "xero_accounts": [{code, name, type, account_id}, ...],
+        "company": str,
+      }
+    """
+    from .xero_client import require_xero_manager
+    require_xero_manager()
+
+    settings = get_xero_settings()
+    if not settings.access_token or not settings.tenant_id:
+        frappe.throw("Xero connection not configured. Connect to Xero first.")
+
+    company = frappe.db.get_default("company") or frappe.get_all("Company", limit=1, pluck="name")[0]
+
+    # Only ACTIVE Xero accounts are valid map targets / creation duplicates check
+    xero_accounts = _fetch_xero_accounts(include_archived=False)
+    erpnext_accounts = _fetch_erpnext_accounts(company)
+    _mapped_codes, mapped_erpnext, _rows = _load_existing_mappings(settings)
+
+    xero_list = sorted(
+        [
+            {
+                "code":       a.get("Code", ""),
+                "name":       a.get("Name", ""),
+                "type":       a.get("Type", ""),
+                "account_id": a.get("AccountID", ""),
+            }
+            for a in xero_accounts if a.get("Code")
+        ],
+        key=lambda x: (x["code"] or ""),
+    )
+
+    error_accounts = _recent_mapping_error_accounts()
+
+    unmapped = []
+    for acc in erpnext_accounts:
+        if acc["name"] in mapped_erpnext:
+            continue
+        suggestion = _find_best_xero_match(acc, xero_accounts)
+        unmapped.append({
+            "erpnext_account":  acc["name"],
+            "account_name":     acc.get("account_name") or acc["name"],
+            "root_type":        acc.get("root_type", ""),
+            "account_type":     acc.get("account_type", ""),
+            "account_number":   acc.get("account_number", ""),
+            "is_tax":           1 if acc.get("account_type") == "Tax" else 0,
+            "has_recent_error": 1 if acc["name"] in error_accounts else 0,
+            "suggested":        suggestion,
+        })
+
+    # Failing accounts first, then by type/name
+    unmapped.sort(key=lambda x: (-x["has_recent_error"], x["root_type"], x["account_name"]))
+    return {"unmapped": unmapped, "xero_accounts": xero_list, "company": company}
+
+
+@frappe.whitelist()
+def resolve_unmapped_accounts(resolutions):
+    """
+    Apply the picker's decisions. For each resolution:
+      action="create" → POST the account to Xero, then write the mapping row.
+      action="map"     → write the mapping row pointing at the chosen Xero code.
+    Both paths write the `account_mapping` row the sync actually reads
+    (Settings.get_account_map), and store xero_account_id on the ERPNext account
+    for round-trip matching.
+
+    resolutions: JSON list of
+      {erpnext_account, action: "create"|"map"|"skip",
+       xero_account_code?, xero_account_name?, xero_account_id?}
+    """
+    from .xero_client import require_xero_manager
+    require_xero_manager()
+    import json
+    from ..api.xero_accounts import build_xero_account_payload
+
+    if isinstance(resolutions, str):
+        resolutions = json.loads(resolutions)
+
+    settings = get_xero_settings()
+    existing_erpnext = {r.erpnext_account for r in settings.account_mapping if r.erpnext_account}
+    existing_codes   = {r.xero_account_code for r in settings.account_mapping if r.xero_account_code}
+
+    created, mapped, errors = [], [], []
+
+    for r in resolutions:
+        ea     = r.get("erpnext_account")
+        action = r.get("action")
+        if not ea or action not in ("create", "map"):
+            continue
+        if ea in existing_erpnext:
+            continue
+        try:
+            if action == "create":
+                doc = frappe.get_doc("Account", ea)
+                payload = build_xero_account_payload(doc, settings)
+                response = xero_request("POST", "Accounts", data={"Accounts": [payload]})
+                if not (response and response.get("Accounts")):
+                    errors.append(f"{ea}: no valid response from Xero (account may already exist — try Map instead)")
+                    continue
+                xa   = response["Accounts"][0]
+                code = xa.get("Code")
+                xid  = xa.get("AccountID")
+                name = xa.get("Name")
+                if xid:
+                    frappe.db.set_value("Account", ea, "xero_account_id", xid, update_modified=False)
+                _append_mapping_row(settings, ea, code, name, existing_erpnext, existing_codes)
+                created.append({"erpnext_account": ea, "xero_code": code, "xero_name": name})
+            else:  # map
+                code = r.get("xero_account_code")
+                name = r.get("xero_account_name") or ""
+                xid  = r.get("xero_account_id") or None
+                if not code:
+                    errors.append(f"{ea}: no Xero account selected to map to")
+                    continue
+                _append_mapping_row(settings, ea, code, name, existing_erpnext, existing_codes)
+                if xid:
+                    frappe.db.set_value("Account", ea, "xero_account_id", xid, update_modified=False)
+                mapped.append({"erpnext_account": ea, "xero_code": code, "xero_name": name})
+        except Exception as e:
+            errors.append(f"{ea}: {e}")
+
+    settings.flags.ignore_version = True
+    settings.save(ignore_permissions=True)
+    frappe.db.commit()
+    _refresh_mapping_status(settings)
+
+    return {
+        "created":      created,
+        "mapped":       mapped,
+        "errors":       errors,
+        "total_mapped": len(settings.account_mapping),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers — data fetching
 # ---------------------------------------------------------------------------
@@ -510,6 +658,98 @@ def _find_best_erpnext_match(xero_id, xero_code, xero_name, xero_type,
                     best_confidence = CONFIDENCE_LOW
 
     return best_name, best_confidence
+
+
+def _find_best_xero_match(erpnext_acc, xero_accounts):
+    """
+    Reverse of _find_best_erpnext_match: given an ERPNext account, find the best
+    *existing* Xero account to map it to. Returns {code, name, confidence} or None.
+    Only High/Medium suggestions are returned — a Low (type-only) guess would be
+    misleading in a picker, so we leave those for the user to choose.
+    """
+    ea_number = str(erpnext_acc.get("account_number") or "").strip()
+    ea_name   = (erpnext_acc.get("account_name") or "").lower().strip()
+    ea_root   = erpnext_acc.get("root_type", "")
+    ea_xid    = erpnext_acc.get("xero_account_id")
+
+    best     = None
+    best_sim = 0.0
+
+    for x in xero_accounts:
+        x_code = x.get("Code", "")
+        x_name = x.get("Name", "") or ""
+        x_type = x.get("Type", "")
+        x_id   = x.get("AccountID", "")
+        x_root = XERO_ACCOUNT_TYPE_MAP.get(x_type, {}).get("root_type", "")
+        x_name_l = x_name.lower().strip()
+        x_leaf   = x_name.split(":")[-1].strip().lower()
+
+        # 1. xero_account_id already stored on the ERPNext account
+        if ea_xid and x_id == ea_xid:
+            return {"code": x_code, "name": x_name, "confidence": CONFIDENCE_HIGH}
+        # 2. account_number == Xero code
+        if ea_number and x_code and ea_number == str(x_code).strip():
+            return {"code": x_code, "name": x_name, "confidence": CONFIDENCE_HIGH}
+        # 3. Exact name match (full or leaf segment)
+        if ea_name and (ea_name == x_name_l or ea_name == x_leaf):
+            return {"code": x_code, "name": x_name, "confidence": CONFIDENCE_HIGH}
+        # 4. Same root_type + fuzzy name
+        if ea_root and x_root == ea_root and ea_name:
+            sim = max(
+                SequenceMatcher(None, ea_name, x_name_l).ratio(),
+                SequenceMatcher(None, ea_name, x_leaf).ratio(),
+            )
+            if sim >= SIMILARITY_THRESHOLD and sim > best_sim:
+                best_sim = sim
+                best = {"code": x_code, "name": x_name, "confidence": CONFIDENCE_MEDIUM}
+
+    return best
+
+
+def _append_mapping_row(settings, ea, code, name, existing_erpnext, existing_codes):
+    """Append an account_mapping row (idempotent on erpnext_account / xero code)."""
+    if ea in existing_erpnext or (code and code in existing_codes):
+        return
+    xero_account_doc = frappe.db.get_value("Xero Account", {"account_code": code}, "name")
+    settings.append("account_mapping", {
+        "erpnext_account":   ea,
+        "xero_account":      xero_account_doc or None,
+        "xero_account_code": code,
+        "xero_account_name": name or "",
+    })
+    existing_erpnext.add(ea)
+    if code:
+        existing_codes.add(code)
+
+
+def _recent_mapping_error_accounts(days=30):
+    """
+    Return a set of ERPNext account names referenced by recent mapping-error logs,
+    parsed from the log message text ("... for ERPNext Account: X" /
+    "... for Tax/Charge Account: X"). Best-effort — used only to flag/sort.
+    """
+    import re
+    accounts = set()
+    try:
+        rows = frappe.get_all(
+            "Xero Log",
+            filters={
+                "status": "Error",
+                "category": "Mapping Errors",
+                "timestamp": [">=", frappe.utils.add_days(frappe.utils.nowdate(), -days)],
+            },
+            fields=["message"],
+            limit=2000,
+        )
+    except Exception:
+        return accounts
+
+    pattern = re.compile(r"(?:ERPNext Account|Tax/Charge Account):\s*([^(]+?)(?:\s*\(|\.\s*Add it|$)")
+    for row in rows:
+        m = pattern.search(row.get("message") or "")
+        if m:
+            accounts.add(m.group(1).strip())
+    return accounts
 
 
 # ---------------------------------------------------------------------------

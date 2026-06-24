@@ -22,6 +22,8 @@ class XeroSettings(Document):
         setup_mode: DF.Literal["Manual", "Xero as Source", "ERPNext as Source"] | None
         api_timeout: DF.Int
         auto_submit_inbound: DF.Check
+        enable_incremental_sync: DF.Check
+        sync_watermarks: DF.LongText | None
         backoff_base: DF.Int  # alias kept for compatibility
         client_id: DF.Data | None
         client_secret: DF.Password | None
@@ -586,3 +588,19 @@ def run_full_account_auto_map():
     from xero.utils.account_mapper import run_full_auto_map
 
     return run_full_auto_map()
+
+
+@frappe.whitelist()
+def get_unmapped_accounts_for_resolution():
+    """List ERPNext-only accounts (with suggested Xero matches) for the resolve picker."""
+    from xero.utils.account_mapper import get_unmapped_accounts_for_resolution as _impl
+
+    return _impl()
+
+
+@frappe.whitelist()
+def resolve_unmapped_accounts(resolutions):
+    """Apply picker decisions: create-in-Xero or map-to-existing, then write mapping rows."""
+    from xero.utils.account_mapper import resolve_unmapped_accounts as _impl
+
+    return _impl(resolutions)

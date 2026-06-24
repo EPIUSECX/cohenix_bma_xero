@@ -1337,20 +1337,33 @@ def sync_invoices_from_xero(invoice_type=None, modified_since=None, status=None)
         )
         return
 
+    # Incremental sync: only fetch invoices changed since the last successful
+    # run for this invoice type (separate watermark per ACCREC/ACCPAY). An
+    # explicit modified_since argument overrides the stored watermark.
+    from ..utils.xero_client import (
+        incremental_since,
+        commit_watermark,
+        start_incremental_run,
+    )
+
+    watermark_key = f"invoices_{invoice_type or 'ALL'}"
+    run_started_at = start_incremental_run()
+    if_modified_since = modified_since or incremental_since(watermark_key)
+
     try:
         page = 1
         params = {"page": page}
 
         if invoice_type:
             params["Type"] = invoice_type
-        if modified_since:
-            params["ModifiedSince"] = modified_since
         if status:
             params["Status"] = status
 
         while True:
             frappe.logger().info(f"Fetching Xero Invoices page {page}", "Xero Sync")
-            response = xero_request("GET", "Invoices", params=params)
+            response = xero_request(
+                "GET", "Invoices", params=params, modified_since=if_modified_since
+            )
 
             if not response or not response.get("Invoices"):
                 break
@@ -1375,6 +1388,10 @@ def sync_invoices_from_xero(invoice_type=None, modified_since=None, status=None)
             page += 1
             params["page"] = page
 
+        # Only advance the watermark after a fully successful sweep — if an
+        # exception aborted the loop, the next run re-fetches from the old
+        # watermark so nothing is missed.
+        commit_watermark(watermark_key, run_started_at)
         log_xero_error(message="Finished syncing invoices from Xero.", status="Info")
 
     except Exception as e:

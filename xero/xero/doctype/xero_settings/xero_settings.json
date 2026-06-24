@@ -404,6 +404,22 @@
    "label": "Auto-submit documents imported from Xero"
   },
   {
+   "default": "1",
+   "description": "Fetch only records changed since the last successful sync (Xero If-Modified-Since). Strongly recommended for larger organisations to stay within Xero's daily API quota. Turn OFF to force full sweeps. Use 'Reset Sync Watermarks' to force a one-off full re-import.",
+   "fieldname": "enable_incremental_sync",
+   "fieldtype": "Check",
+   "label": "Incremental sync (only changed records)"
+  },
+  {
+   "description": "Internal: per-entity UTC watermarks (JSON) for incremental sync. Managed automatically.",
+   "fieldname": "sync_watermarks",
+   "fieldtype": "Long Text",
+   "label": "Sync Watermarks",
+   "read_only": 1,
+   "hidden": 1,
+   "no_copy": 1
+  },
+  {
    "depends_on": "eval:doc.create_payment_entry_on_sync",
    "description": "Default Bank or Cash account to use in automatically created Payment Entries.",
    "fieldname": "default_bank_account",
