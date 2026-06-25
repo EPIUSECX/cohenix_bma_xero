@@ -821,7 +821,7 @@ def xero_request(method, endpoint, data=None, params=None, idempotency_key=None,
 
                 # Include response body in the thrown error so callers can see it
                 frappe.throw(
-                    f"Xero API request failed: {e.response.reason} ({e.response.status_code})\nDetails: {error_details[:1000]}"
+                    f"Xero API request failed: {e.response.reason} ({e.response.status_code})\nDetails: {error_details[:3000]}"
                 )
 
         except requests.exceptions.RequestException as e:

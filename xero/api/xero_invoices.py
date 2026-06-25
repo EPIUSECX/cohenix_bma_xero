@@ -359,6 +359,13 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
             )
             return
 
+        # Return documents must go via xero_credit_notes, not here — Xero
+        # rejects negative quantities on Invoice endpoints.
+        if doc.get("is_return"):
+            from .xero_credit_notes import enqueue_sync_return
+            enqueue_sync_return(doc, "on_submit")
+            return
+
         # --- Check if data has changed (for already synced invoices) ---
         if xero_invoice_id:
             if not invoice_data_changed(doc):

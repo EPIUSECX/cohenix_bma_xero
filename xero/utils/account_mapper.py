@@ -774,11 +774,34 @@ def get_mapping_workspace():
             "suggested":            _find_best_xero_tax_match(tmpl, xero_tax_rates),
         })
 
+    # Already-configured mappings (for the collapsible "Mapped" section in the UI)
+    mapped_accounts = [
+        {
+            "erpnext_account":   r.erpnext_account,
+            "xero_account_code": r.xero_account_code,
+            "xero_account_name": r.xero_account_name,
+        }
+        for r in settings.account_mapping
+        if r.erpnext_account and r.xero_account_code
+    ]
+    mapped_tax_rows = [
+        {
+            "erpnext_tax_template": r.erpnext_tax_template,
+            "xero_tax_type_code":   r.xero_tax_type_code,
+            "xero_tax_type_name":   r.xero_tax_type_name,
+            "xero_tax_rate":        r.xero_tax_rate,
+        }
+        for r in settings.tax_mapping
+        if r.erpnext_tax_template
+    ]
+
     return {
         "directions":         {"to_xero": to_xero, "from_xero": from_xero},
         "accounts_to_xero":   accounts_to_xero,
         "accounts_from_xero": accounts_from_xero,
         "tax":                tax,
+        "mapped_accounts":    mapped_accounts,
+        "mapped_tax_rows":    mapped_tax_rows,
         "xero_accounts":      sorted(
             [{"code": a.get("Code", ""), "name": a.get("Name", ""),
               "type": a.get("Type", ""), "account_id": a.get("AccountID", "")}

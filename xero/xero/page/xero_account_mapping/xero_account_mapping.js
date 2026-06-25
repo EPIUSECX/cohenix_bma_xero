@@ -80,18 +80,42 @@ class XeroMapping {
                 <span class="xmap-progress" title="${pct}% mapped"><span style="width:${pct}%;"></span></span>
             </div>`;
 
-        if (dirs.to_xero) html += this.sectionAccounts('to', 'ERPNext → Xero', 'ERPNext accounts not yet in Xero', ws.accounts_to_xero || []);
-        if (dirs.from_xero) html += this.sectionFromXero(ws.accounts_from_xero || []);
-        html += this.sectionTax(ws.tax || []);
+        if (dirs.to_xero) html += this.sectionAccounts('to', 'ERPNext → Xero', 'ERPNext accounts not yet in Xero', ws.accounts_to_xero || [], ws.mapped_accounts || []);
+        if (dirs.from_xero) html += this.sectionFromXero(ws.accounts_from_xero || [], ws.mapped_accounts || []);
+        html += this.sectionTax(ws.tax || [], ws.mapped_tax_rows || []);
 
         this.content.html(html);
         this.bind();
     }
 
-    // ERPNext → Xero
-    sectionAccounts(sec, title, subtitle, rows) {
-        if (!rows.length) return this.doneCard(title, subtitle);
+    // Collapsible "Mapped (N)" drawer appended to any card
+    mappedDrawer(id, rows) {
+        if (!rows.length) return '';
+        const bodyRows = rows.map(r => {
+            const name = r.erpnext_account || r.xero_name || '';
+            const target = r.xero_account_code
+                ? `${_esc(r.xero_account_code)} — ${_esc(r.xero_account_name || '')}`
+                : (r.xero_tax_type_code ? `${_esc(r.xero_tax_type_code)} — ${_esc(r.xero_tax_type_name || '')}` : '');
+            return `<tr><td class="xmap-acct"><b>${_esc(name)}</b></td>
+                <td><span class="xmap-pill pill-exact">Mapped</span></td>
+                <td colspan="2" style="color:#6B7785;font-size:12px;">→ ${target}</td></tr>`;
+        }).join('');
+        return `
+            <div class="xmap-mapped-toggle" data-drawer="${id}">
+                <em class="xmap-mapped-ic">+</em> Show mapped accounts (${rows.length})
+            </div>
+            <div class="xmap-mapped-drawer" data-drawer="${id}">
+                <div class="xmap-body-scroll">
+                    <table class="xmap-table">
+                        <thead><tr><th>Account</th><th class="xmap-col-status">Status</th><th colspan="2">Linked to</th></tr></thead>
+                        <tbody>${bodyRows}</tbody>
+                    </table>
+                </div>
+            </div>`;
+    }
 
+    // ERPNext → Xero
+    sectionAccounts(sec, title, subtitle, rows, mappedRows) {
         const exact = rows.filter(r => r.status === 'exact');
         const review = rows.filter(r => r.status !== 'exact');
 
@@ -102,13 +126,25 @@ class XeroMapping {
                 <a data-toggle-exact="${sec}">Review</a></div>`;
         }
 
-        const reviewRows = review.map((u, i) => this.accountRow(sec, u, rows.indexOf(u))).join('');
+        const reviewRows = review.map((u) => this.accountRow(sec, u, rows.indexOf(u))).join('');
         const exactRows = exact.map((u) => this.accountRow(sec, u, rows.indexOf(u))).join('');
+        const drawer = this.mappedDrawer(`${sec}-mapped`, mappedRows);
+
+        if (!rows.length) {
+            return `
+                <div class="xmap-card" data-sec="${sec}">
+                    <div class="xmap-card-head">
+                        <div><div class="xmap-card-title">${title}</div><div class="xmap-card-sub">${subtitle} — nothing needs attention</div></div>
+                        ${mappedRows.length ? `<span class="xmap-count">${mappedRows.length} mapped</span>` : ''}
+                    </div>
+                    ${drawer || '<div class="xmap-done"><span class="ic">✓</span><span>All accounts mapped</span></div>'}
+                </div>`;
+        }
 
         return `
             <div class="xmap-card" data-sec="${sec}">
                 <div class="xmap-card-head">
-                    <div><div class="xmap-card-title">${title}</div><div class="xmap-card-sub">${subtitle} — “Create” writes to Xero</div></div>
+                    <div><div class="xmap-card-title">${title}</div><div class="xmap-card-sub">${subtitle} — "Create" writes to Xero</div></div>
                     <div class="xmap-tools">
                         <input class="xmap-search" data-sec="${sec}" placeholder="Search accounts…">
                         <button class="xmap-bulk" data-bulk="suggested" data-sec="${sec}">Accept suggestions</button>
@@ -126,6 +162,7 @@ class XeroMapping {
                         <tbody>${reviewRows || '<tr><td colspan="4" class="xmap-empty">All matched automatically — nothing to review.</td></tr>'}</tbody>
                     </table>
                 </div>
+                ${drawer}
             </div>`;
     }
 
@@ -155,8 +192,18 @@ class XeroMapping {
     }
 
     // Xero → ERPNext
-    sectionFromXero(rows) {
-        if (!rows.length) return this.doneCard('From Xero → ERPNext', 'Xero accounts not yet in ERPNext');
+    sectionFromXero(rows, mappedRows) {
+        if (!rows.length) {
+            const drawer = this.mappedDrawer('from-mapped', mappedRows);
+            return `
+                <div class="xmap-card" data-sec="from">
+                    <div class="xmap-card-head">
+                        <div><div class="xmap-card-title">From Xero → ERPNext</div><div class="xmap-card-sub">Xero accounts not yet in ERPNext — nothing needs attention</div></div>
+                        ${mappedRows.length ? `<span class="xmap-count">${mappedRows.length} mapped</span>` : ''}
+                    </div>
+                    ${drawer || '<div class="xmap-done"><span class="ic">✓</span><span>All accounts mapped</span></div>'}
+                </div>`;
+        }
         const body = rows.map((u, idx) => {
             const sug = u.suggested_erpnext;
             const def = sug ? 'map' : 'create';
@@ -173,6 +220,7 @@ class XeroMapping {
                         <div class="xmap-hint ${sug ? 'sug' : ''}">${sug ? 'Suggested: ' + _esc(sug) + ' (' + _esc(u.confidence) + ')' : 'No match — will create in ERPNext'}</div></td>
                 </tr>`;
         }).join('');
+        const drawer = this.mappedDrawer('from-mapped', mappedRows);
         return `
             <div class="xmap-card" data-sec="from">
                 <div class="xmap-card-head">
@@ -182,12 +230,27 @@ class XeroMapping {
                 <div class="xmap-body-scroll"><table class="xmap-table">
                     <thead><tr><th>Xero account</th><th class="xmap-col-status">Status</th><th class="xmap-col-action">Action</th><th>Target</th></tr></thead>
                     <tbody>${body}</tbody></table></div>
+                ${drawer}
             </div>`;
     }
 
     // Tax
-    sectionTax(rows) {
-        if (!rows.length) return this.doneCard('Tax rates', 'ERPNext item tax templates → Xero tax rates');
+    sectionTax(rows, mappedTaxRows) {
+        if (!rows.length) {
+            const drawer = this.mappedDrawer('tax-mapped', mappedTaxRows.map(r => ({
+                erpnext_account: r.erpnext_tax_template,
+                xero_tax_type_code: r.xero_tax_type_code,
+                xero_tax_type_name: r.xero_tax_type_name,
+            })));
+            return `
+                <div class="xmap-card" data-sec="tax">
+                    <div class="xmap-card-head">
+                        <div><div class="xmap-card-title">Tax rates</div><div class="xmap-card-sub">ERPNext item tax templates → Xero tax rates — nothing needs attention</div></div>
+                        ${mappedTaxRows.length ? `<span class="xmap-count">${mappedTaxRows.length} mapped</span>` : ''}
+                    </div>
+                    ${drawer || '<div class="xmap-done"><span class="ic">✓</span><span>All tax templates mapped</span></div>'}
+                </div>`;
+        }
         const body = rows.map((u, idx) => {
             const sug = u.suggested;
             const def = sug ? 'map' : 'skip';
@@ -203,6 +266,11 @@ class XeroMapping {
                         <div class="xmap-hint ${sug ? 'sug' : ''}">${sug ? 'Suggested (' + _esc(sug.confidence) + ')' : 'No suggested match'}</div></td>
                 </tr>`;
         }).join('');
+        const taxDrawer = this.mappedDrawer('tax-mapped', mappedTaxRows.map(r => ({
+            erpnext_account: r.erpnext_tax_template,
+            xero_tax_type_code: r.xero_tax_type_code,
+            xero_tax_type_name: r.xero_tax_type_name,
+        })));
         return `
             <div class="xmap-card" data-sec="tax">
                 <div class="xmap-card-head">
@@ -212,6 +280,7 @@ class XeroMapping {
                 <div class="xmap-body-scroll"><table class="xmap-table">
                     <thead><tr><th>Tax template</th><th class="xmap-col-status">Status</th><th class="xmap-col-action">Action</th><th>Target</th></tr></thead>
                     <tbody>${body}</tbody></table></div>
+                ${taxDrawer}
             </div>`;
     }
 
@@ -229,6 +298,15 @@ class XeroMapping {
             e.preventDefault();
             const sec = $(this).data('toggle-exact');
             root.find(`.xmap-exact-rows[data-sec="${sec}"]`).toggle();
+        });
+        root.on('click', '.xmap-mapped-toggle', function () {
+            const id = $(this).data('drawer');
+            const $drawer = root.find(`.xmap-mapped-drawer[data-drawer="${id}"]`);
+            const open = $drawer.hasClass('open');
+            $drawer.toggleClass('open', !open);
+            $(this).find('.xmap-mapped-ic').text(open ? '+' : '−');
+            $(this).contents().filter(function() { return this.nodeType === 3; }).last()
+                .replaceWith(open ? ` Show mapped accounts (${$drawer.find('tbody tr').length})` : ` Hide mapped accounts`);
         });
         root.on('input', '.xmap-search', function () {
             const sec = $(this).data('sec'), q = ($(this).val() || '').toLowerCase();
