@@ -1,0 +1,26 @@
+[
+ {
+  "dt": "Supplier",
+  "fieldname": "xero_contact_id",
+  "fieldtype": "Data",
+  "label": "Xero Contact ID",
+  "no_copy": 1,
+  "read_only": 1,
+  "print_hide": 1,
+  "report_hide": 1,
+  "search_index": 1,
+  "insert_after": "supplier_primary_address"
+ },
+ {
+  "dt": "Supplier",
+  "fieldname": "xero_sync_status",
+  "fieldtype": "Select",
+  "label": "Xero Sync Status",
+  "options": "\nNot Synced\nSynced\nError\nSkipped",
+  "default": "Not Synced",
+  "no_copy": 1,
+  "read_only": 1,
+  "print_hide": 1,
+  "insert_after": "xero_contact_id"
+ }
+]

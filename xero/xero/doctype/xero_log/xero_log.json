@@ -1,0 +1,136 @@
+{
+    "actions": [],
+    "creation": "2025-04-17 19:09:18.483560",
+    "default_view": "List",
+    "doctype": "DocType",
+    "editable_grid": 1,
+    "engine": "InnoDB",
+    "field_order": [
+  "timestamp",
+  "status",
+  "category",
+  "sync_batch_id",
+  "erpnext_doc_type",
+  "erpnext_doc_name",
+  "xero_entity_type",
+  "xero_entity_id",
+  "direction",
+  "message",
+  "error_details",
+  "retry_count",
+  "processing_time"
+ ],
+ "fields": [
+  {
+   "fieldname": "timestamp",
+   "fieldtype": "Datetime",
+   "label": "Timestamp",
+   "in_list_view": 1,
+   "reqd": 1,
+   "default": "Now"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Success\nError\nInfo\nWarning",
+   "in_list_view": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "category",
+   "fieldtype": "Select",
+   "label": "Category",
+   "options": "\nConnection Issues\nValidation Errors\nAuthentication Issues\nRate Limiting\nSystem Monitoring\nMapping Errors\nDuplicate Entity\nAccount Mapping\nConfiguration Error\nMissing Prerequisites\nSync Error\nSync Skipped\nOther Errors",
+   "description": "Classification of the log entry for easier filtering and analysis"
+  },
+  {
+   "fieldname": "sync_batch_id",
+   "fieldtype": "Data",
+   "label": "Sync Batch ID",
+   "description": "Unique identifier to group log entries from the same sync operation"
+  },
+  {
+   "fieldname": "erpnext_doc_type",
+   "fieldtype": "Link",
+   "label": "ERPNext DocType",
+   "options": "DocType",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "erpnext_doc_name",
+   "fieldtype": "Data",
+   "label": "ERPNext Document",
+   "in_list_view": 1,
+   "description": "Name of the linked ERPNext document (stored as text to allow deletion of source documents)"
+  },
+  {
+   "fieldname": "xero_entity_type",
+   "fieldtype": "Data",
+   "label": "Xero Entity Type",
+   "description": "e.g., Invoice, Contact, Account"
+  },
+  {
+   "fieldname": "xero_entity_id",
+   "fieldtype": "Data",
+   "label": "Xero Entity ID"
+  },
+  {
+   "fieldname": "direction",
+   "fieldtype": "Select",
+   "label": "Sync Direction",
+   "options": "ERPNext to Xero\nXero to ERPNext",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "message",
+   "fieldtype": "Text",
+   "label": "Message",
+   "reqd": 1
+  },
+  {
+   "fieldname": "error_details",
+   "fieldtype": "Long Text",
+   "label": "Error Details",
+   "description": "Full error traceback and details"
+  },
+  {
+   "fieldname": "retry_count",
+   "fieldtype": "Int",
+   "label": "Retry Count",
+   "default": 0,
+   "description": "Number of retry attempts for this operation"
+  },
+  {
+   "fieldname": "processing_time",
+   "fieldtype": "Float",
+   "label": "Processing Time (seconds)",
+   "precision": 3,
+   "description": "Time taken to process this operation in seconds"
+  }
+],
+"index_web_pages_for_search": 1,
+"issingle": 0,
+"links": [],
+"modified": "2025-10-25 12:00:00.000000",
+"modified_by": "Administrator",
+"module": "Xero",
+"name": "Xero Log",
+"owner": "Administrator",
+"permissions": [
+ {
+  "create": 1,
+  "delete": 1,
+  "email": 1,
+  "print": 1,
+  "read": 1,
+  "role": "System Manager",
+  "share": 1,
+  "write": 1
+ }
+],
+"row_format": "Dynamic",
+"sort_field": "modified",
+"sort_order": "DESC",
+"states": []
+}

@@ -1,0 +1,65 @@
+/* xero_dashboard.css — Global Xero-styled overrides for the Xero integration.
+   Scoped to xero-specific class names so they do not bleed into other desk pages.
+   Palette: #0078C8 action blue, #13B5EA accent cyan, navy ink #1F2D3D. */
+
+.xero-dashboard-stats .frappe-card {
+    padding: 20px 24px;
+    text-align: center;
+    border-radius: 8px;
+    border: 1px solid #E2E6EA;
+    box-shadow: 0 1px 2px rgba(9, 30, 66, 0.06);
+}
+
+.xero-dashboard-stats .frappe-card-value {
+    font-size: 28px;
+    font-weight: 700;
+    color: #1F2D3D;
+}
+
+.xero-dashboard-stats .frappe-card-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #6B7785;
+    font-weight: 600;
+}
+
+.xero-dashboard-filters .form-control,
+.xero-dashboard-filters select {
+    border: 1px solid #E2E6EA;
+    border-radius: 4px;
+    font-size: 13px;
+    padding: 7px 12px;
+    margin-bottom: 0;
+}
+
+.xero-dashboard-filters .form-control:focus,
+.xero-dashboard-filters select:focus {
+    border-color: #0078C8;
+    box-shadow: 0 0 0 3px #E8F6FC;
+}
+
+.xero-dashboard-filters .row {
+    align-items: center;
+    gap: 8px;
+}
+
+.xero-dashboard-list .table {
+    margin-top: 0;
+}
+
+.xero-dashboard-list .table thead th {
+    background: #F7F9FB;
+    color: #6B7785;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 600;
+    border-bottom: 1px solid #E2E6EA;
+}
+
+.xero-dashboard-list .table tbody td {
+    border-top: 1px solid #E2E6EA;
+    font-size: 13px;
+    color: #1F2D3D;
+}
