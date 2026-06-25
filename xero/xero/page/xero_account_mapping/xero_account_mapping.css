@@ -54,7 +54,7 @@
 .xmap-table tbody td { padding: 12px 20px; vertical-align: middle; border-top: 1px solid #EEF1F4; }
 .xmap-table tbody tr:hover td { background: #F7F9FB; }
 .xmap-acct b { font-weight: 600; } .xmap-acct .meta { font-size: 11px; color: #8a8a8a; }
-.xmap-col-status { width: 120px; } .xmap-col-action { width: 160px; }
+.xmap-col-status { width: 130px; } .xmap-col-action { width: 160px; }
 .xmap-body-scroll { max-height: 360px; overflow-y: auto; }
 
 /* Controls */
@@ -65,7 +65,7 @@
 .xmap-hint.sug { color: #0078C8; }
 
 /* Pills / badges */
-.xmap-pill { border-radius: 9999px; font-weight: 600; padding: 3px 10px; font-size: 11px; border: 1px solid transparent; display: inline-block; }
+.xmap-pill { border-radius: 9999px; font-weight: 600; padding: 3px 10px; font-size: 11px; border: 1px solid transparent; display: inline-block; white-space: nowrap; }
 .pill-exact { background: #E9F8F1; color: #1E7A52; border-color: #BFE9D4; }
 .pill-review { background: #FFF6E6; color: #E8910A; border-color: #FAE2B3; }
 .pill-create { background: #E8F6FC; color: #0078C8; border-color: #BFE3F5; }
