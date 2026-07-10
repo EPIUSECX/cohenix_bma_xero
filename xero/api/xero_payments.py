@@ -22,7 +22,6 @@ def enqueue_sync_payment(doc, method):
         "xero.api.xero_payments.sync_payment_to_xero",
         queue="short",
         timeout=600,
-        retry=1,
         doc_name=doc.name,
         doc_type=doc.doctype,
     )

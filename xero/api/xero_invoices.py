@@ -301,7 +301,6 @@ def enqueue_sync_invoice(doc, method):
         "xero.api.xero_invoices.sync_invoice_to_xero",
         queue="short",
         timeout=600,
-        retry=1,
         doc_name=doc.name,
         doc_type=doc.doctype,
     )
@@ -438,7 +437,6 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
                 "xero.api.xero_invoices.sync_invoice_to_xero",
                 queue="short",
                 timeout=600,
-                retry=1,
                 doc_name=doc_name,
                 doc_type=doc_type,
                 enqueue_after_commit=True,
