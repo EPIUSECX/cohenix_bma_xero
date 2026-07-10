@@ -490,7 +490,6 @@ def enqueue_sync_item(doc, method=None):
         "xero.api.xero_items.sync_item_to_xero",
         queue="short",
         timeout=600,
-        retry=1,
         item_code=item_code,
     )
 

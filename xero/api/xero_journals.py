@@ -21,7 +21,6 @@ def enqueue_sync_journal(doc, method):
         "xero.api.xero_journals.sync_journal_to_xero",
         queue="short",
         timeout=600,
-        retry=1,
         doc_name=doc.name,
         doc_type=doc.doctype
     )

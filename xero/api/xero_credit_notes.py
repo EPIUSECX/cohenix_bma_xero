@@ -229,7 +229,6 @@ def enqueue_sync_return(doc, method):
         "xero.api.xero_credit_notes.sync_return_to_xero",
         queue="short",
         timeout=600,
-        retry=1,
         doc_name=doc.name,
         doc_type=doc.doctype,
     )
@@ -346,7 +345,6 @@ def sync_return_to_xero(doc_name, doc_type, **kwargs):
                 "xero.api.xero_credit_notes.sync_return_to_xero",
                 queue="short",
                 timeout=600,
-                retry=1,
                 doc_name=doc_name,
                 doc_type=doc_type,
                 enqueue_after_commit=True,

@@ -186,7 +186,6 @@ def enqueue_sync_contact(doc_name, doc_type=None):
         "xero.api.xero_contacts.sync_contact_to_xero",
         queue="short",
         timeout=600,
-        retry=1,
         doc_name=doc_name,
         doc_type=doc_type,
     )
