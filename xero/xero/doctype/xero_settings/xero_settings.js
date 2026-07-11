@@ -14,9 +14,11 @@ frappe.ui.form.on('Xero Settings', {
         const urlParams = new URLSearchParams(window.location.search);
         const oauthError = urlParams.get('xero_oauth_error');
         if (oauthError) {
+            // Escape before injecting into msgprint (renders HTML) — the value comes
+            // straight from the URL and is attacker-controllable (reflected XSS).
             frappe.msgprint({
                 title: __('Xero Connection Failed'),
-                message: decodeURIComponent(oauthError),
+                message: frappe.utils.escape_html(decodeURIComponent(oauthError)),
                 indicator: 'red'
             });
             // Clean the URL so the message doesn't reappear on refresh
