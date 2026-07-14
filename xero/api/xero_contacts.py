@@ -6,7 +6,7 @@ from frappe import _
 from frappe.utils import get_fullname
 import hashlib
 import re
-from ..utils.xero_client import xero_request, get_xero_settings
+from ..utils.xero_client import xero_request, get_xero_settings, require_xero_manager
 from ..utils.logging import log_xero_error, get_leaf_doctype_value
 from ..utils.retry_handler import retry_with_exponential_backoff
 
@@ -1560,6 +1560,7 @@ def sync_contact_notes_from_xero(batch_size=50, refresh_days=7, call_delay=0.4):
 
     Gated by enable_sync_from_xero + the sync_contact_notes toggle.
     """
+    require_xero_manager()
     import time
     from datetime import datetime
 

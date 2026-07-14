@@ -2,6 +2,7 @@
 # For license information, please see license.txt
 
 import frappe
+from xero.utils.xero_client import require_xero_manager
 import json
 from datetime import datetime, timedelta
 from frappe.utils import now_datetime, add_days, add_to_date, get_datetime, flt, cint
@@ -10,6 +11,7 @@ from frappe import _
 @frappe.whitelist()
 def get_dashboard_overview():
     """Get comprehensive dashboard overview with all key metrics"""
+    require_xero_manager()
     try:
         # Get Xero connection status
         settings = frappe.get_single("Xero Settings")
@@ -53,6 +55,7 @@ def get_dashboard_overview():
 @frappe.whitelist()
 def get_sync_statistics(from_date=None, to_date=None):
     """Get detailed sync statistics for a date range"""
+    require_xero_manager()
     if not from_date:
         from_date = add_days(now_datetime(), -7)
     if not to_date:
@@ -155,6 +158,7 @@ def get_sync_statistics(from_date=None, to_date=None):
 @frappe.whitelist()
 def get_entity_sync_status():
     """Get sync status for all entity types"""
+    require_xero_manager()
     entities = [
         "Sales Invoice", "Purchase Invoice", "Payment Entry", "Journal Entry",
         "Customer", "Supplier", "Item", "Account", "Quotation", "Bank Transaction"
@@ -279,6 +283,7 @@ def get_recent_errors(limit=10):
     entity document (e.g. connection/token failures) are shown only if recent
     (last 24h), since there is no entity state to check them against.
     """
+    require_xero_manager()
     limit = cint(limit) or 10
     cutoff = add_days(now_datetime(), -1)
     errors = frappe.db.sql("""
@@ -361,6 +366,7 @@ def get_recent_errors(limit=10):
 def get_system_health():
     """Get system health indicators"""
     # Check Xero connection
+    require_xero_manager()
     settings = frappe.get_single("Xero Settings")
     connection_healthy = bool(settings.access_token and settings.tenant_id)
     
@@ -431,6 +437,7 @@ def get_system_health():
 @frappe.whitelist()
 def get_active_sync_jobs():
     """Get currently active sync jobs"""
+    require_xero_manager()
     try:
         active_jobs = frappe.db.sql("""
             SELECT
@@ -450,6 +457,7 @@ def get_active_sync_jobs():
 @frappe.whitelist()
 def trigger_manual_sync(entity_type, filters=None, sync_type="full"):
     """Trigger manual sync for specific entity type"""
+    require_xero_manager()
     try:
         settings = frappe.get_single("Xero Settings")
         if not settings.enable_xero_sync:
@@ -583,6 +591,7 @@ def trigger_manual_sync(entity_type, filters=None, sync_type="full"):
 @frappe.whitelist()
 def bulk_retry_failed_jobs(entity_type=None, date_range=None):
     """Retry multiple failed jobs in bulk"""
+    require_xero_manager()
     try:
         conditions = ["status = 'Error'"]
         params = []
@@ -634,6 +643,7 @@ def bulk_retry_failed_jobs(entity_type=None, date_range=None):
 @frappe.whitelist()
 def get_sync_configuration():
     """Get current sync configuration"""
+    require_xero_manager()
     try:
         settings = frappe.get_single("Xero Settings")
         
@@ -688,6 +698,7 @@ def get_sync_configuration():
 @frappe.whitelist()
 def update_sync_settings(settings_data):
     """Update sync settings"""
+    require_xero_manager()
     try:
         if isinstance(settings_data, str):
             settings_data = json.loads(settings_data)
@@ -716,6 +727,7 @@ def update_sync_settings(settings_data):
 @frappe.whitelist()
 def get_logs(start=0, page_length=20, filters=None):
     """Enhanced log retrieval with advanced filtering"""
+    require_xero_manager()
     import json
     
     # Convert parameters to integers
@@ -793,6 +805,7 @@ def get_logs(start=0, page_length=20, filters=None):
 @frappe.whitelist()
 def retry_failed_job(log_name):
     """Enhanced retry functionality with better error handling"""
+    require_xero_manager()
     try:
         log = frappe.get_doc("Xero Log", log_name)
         
@@ -895,6 +908,7 @@ def retry_failed_job(log_name):
 @frappe.whitelist()
 def get_sync_queue_status():
     """Get current sync queue status"""
+    require_xero_manager()
     try:
         # Get queue statistics
         queue_stats = frappe.db.sql("""
@@ -933,6 +947,7 @@ def get_sync_queue_status():
 @frappe.whitelist()
 def get_queue_status():
     """Get queue status for dashboard"""
+    require_xero_manager()
     try:
         # Check if RQ Job table exists
         if not frappe.db.exists("DocType", "RQ Job"):
@@ -985,6 +1000,7 @@ def get_queue_status():
 @frappe.whitelist()
 def bulk_retry_failed():
     """Retry all failed sync jobs"""
+    require_xero_manager()
     try:
         # Get failed logs from last 7 days that have document information
         failed_logs = frappe.db.sql("""
@@ -1056,6 +1072,7 @@ def bulk_retry_failed():
 @frappe.whitelist()
 def sync_all_entities():
     """Trigger sync for all configured entities"""
+    require_xero_manager()
     try:
         settings = frappe.get_single("Xero Settings")
         if not settings.enable_xero_sync:
@@ -1127,6 +1144,7 @@ def sync_all_entities():
 @frappe.whitelist()
 def clear_old_logs(days=30):
     """Clear old log entries"""
+    require_xero_manager()
     try:
         days = int(days)
         cutoff_date = add_days(now_datetime(), -days)
@@ -1153,6 +1171,7 @@ def clear_old_logs(days=30):
 @frappe.whitelist()
 def get_log_details(log_name):
     """Get detailed information for a specific log entry"""
+    require_xero_manager()
     try:
         log = frappe.get_doc("Xero Log", log_name)
         return {
@@ -1178,6 +1197,7 @@ def get_log_details(log_name):
 @frappe.whitelist()
 def test_xero_connection():
     """Test Xero API connection"""
+    require_xero_manager()
     try:
         from xero.utils.xero_client import XeroClient
         
@@ -1214,6 +1234,7 @@ def test_xero_connection():
 @frappe.whitelist()
 def refresh_xero_token():
     """Refresh Xero access token"""
+    require_xero_manager()
     try:
         from xero.utils.xero_client import XeroClient
         
@@ -1241,6 +1262,7 @@ def refresh_xero_token():
 @frappe.whitelist()
 def save_sync_settings(settings):
     """Save sync configuration settings"""
+    require_xero_manager()
     try:
         if isinstance(settings, str):
             settings = json.loads(settings)
@@ -1277,6 +1299,7 @@ def save_sync_settings(settings):
 @frappe.whitelist()
 def export_logs(filters=None):
     """Export logs to CSV file"""
+    require_xero_manager()
     try:
         import csv
         import os
@@ -1317,7 +1340,8 @@ def export_logs(filters=None):
         
         # Save file
         file_name = f"xero_sync_logs_{frappe.utils.now().replace(' ', '_').replace(':', '-')}.csv"
-        file_doc = save_file(file_name, csv_data, "Home", is_private=0)
+        # Private: exported logs carry customer names, doc numbers and error detail.
+        file_doc = save_file(file_name, csv_data, "Home", is_private=1)
         
         return {
             "success": True,
@@ -1335,6 +1359,7 @@ def export_logs(filters=None):
 @frappe.whitelist()
 def get_health_monitoring_metrics():
     """Get comprehensive health monitoring metrics"""
+    require_xero_manager()
     try:
         from datetime import datetime, timedelta
         
@@ -1455,6 +1480,7 @@ def get_health_monitoring_metrics():
 @frappe.whitelist()
 def get_data_integrity_metrics():
     """Get data integrity validation results"""
+    require_xero_manager()
     try:
         # Orphaned invoices (have Xero ID but no sync status)
         orphaned_invoices = frappe.db.sql("""
@@ -1551,6 +1577,7 @@ def get_data_integrity_metrics():
 @frappe.whitelist()
 def get_sync_performance_metrics():
     """Get sync performance metrics"""
+    require_xero_manager()
     try:
         one_day_ago = add_days(now_datetime(), -1)
         
@@ -1826,6 +1853,7 @@ def get_last_sync_attempts():
     different sync operations (e.g. Contacts then Items) from merging together.
     Falls back to timestamp-based grouping for older logs without batch IDs.
     """
+    require_xero_manager()
     try:
         from datetime import datetime, timedelta
         
@@ -2164,6 +2192,7 @@ def get_recommendations_by_batch(sync_batch_id):
 def get_sync_batch_status(sync_batch_id):
     """Get the current status of a sync batch by its ID.
     Used for polling after triggering a manual sync."""
+    require_xero_manager()
     try:
         if not sync_batch_id:
             return {"total_logs": 0, "success_count": 0, "error_count": 0, "warning_count": 0}
@@ -2194,6 +2223,7 @@ def get_unmapped_accounts_from_errors(days=7):
     Analyzes recent errors to find which Xero AccountCodes need mapping.
     Returns list of unmapped accounts with details and suggestions.
     """
+    require_xero_manager()
     try:
         from datetime import timedelta
         cutoff_date = add_days(now_datetime(), -int(days))
@@ -2270,6 +2300,7 @@ def get_account_suggestions(xero_account_code):
     """
     Returns suggested ERPNext accounts for a Xero account based on type and name matching.
     """
+    require_xero_manager()
     try:
         # Get Xero Account details
         xero_account = frappe.db.get_value("Xero Account",
