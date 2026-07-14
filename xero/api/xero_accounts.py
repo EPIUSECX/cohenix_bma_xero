@@ -6,7 +6,7 @@ from frappe import _
 from frappe.utils import now_datetime
 import hashlib
 import re
-from ..utils.xero_client import xero_request, get_xero_settings
+from ..utils.xero_client import xero_request, get_xero_settings, require_xero_manager
 from ..utils.logging import log_xero_error
 from ..utils.retry_handler import retry_with_exponential_backoff
 
@@ -816,6 +816,7 @@ def fetch_xero_accounts():
     Fetches accounts from Xero for display in the UI.
     Returns formatted account data for the Xero Settings interface.
     """
+    require_xero_manager()
     settings = get_xero_settings()
     if not settings.enable_xero_sync:
         frappe.throw("Xero sync is not enabled.")
@@ -866,6 +867,7 @@ def fetch_xero_tax_rates():
     """
     Fetches tax rates from Xero for display in the UI.
     """
+    require_xero_manager()
     settings = get_xero_settings()
     if not settings.enable_xero_sync:
         frappe.throw("Xero sync is not enabled.")
@@ -941,6 +943,7 @@ def fetch_and_update_account_mapping():
     Fetches accounts from Xero for display purposes only.
     Does not automatically populate the Account Mapping table since erpnext_account is required.
     """
+    require_xero_manager()
     settings = get_xero_settings()
     if not settings.enable_xero_sync:
         frappe.throw("Xero sync is not enabled.")
@@ -994,6 +997,7 @@ def fetch_and_update_tax_mapping():
     """
     Fetches tax rates from Xero for display purposes only.
     """
+    require_xero_manager()
     settings = get_xero_settings()
     if not settings.enable_xero_sync:
         frappe.throw("Xero sync is not enabled.")
@@ -1051,6 +1055,7 @@ def get_xero_account_options():
     """
     Returns Xero account options for dropdown fields.
     """
+    require_xero_manager()
     try:
         response = xero_request("GET", "Accounts")
         
@@ -1079,6 +1084,7 @@ def get_xero_tax_type_options():
     """
     Returns Xero tax type options for dropdown fields.
     """
+    require_xero_manager()
     try:
         response = xero_request("GET", "TaxRates")
         

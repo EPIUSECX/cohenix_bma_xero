@@ -2,6 +2,7 @@
 # For license information, please see license.txt
 
 import frappe
+from xero.utils.xero_client import require_xero_manager
 from frappe.model.document import Document
 from frappe.utils import now
 
@@ -28,6 +29,7 @@ class XeroTaxRate(Document):
 @frappe.whitelist()
 def get_xero_tax_rate_by_code(tax_type_code):
     """Get Xero Tax Rate by tax type code"""
+    require_xero_manager()
     try:
         return frappe.get_doc("Xero Tax Rate", tax_type_code)
     except frappe.DoesNotExistError:
@@ -37,6 +39,7 @@ def get_xero_tax_rate_by_code(tax_type_code):
 @frappe.whitelist()
 def sync_xero_tax_rates():
     """Sync all tax rates from Xero to local DocType"""
+    require_xero_manager()
     from xero.api.xero_accounts import fetch_xero_tax_rates
     
     try:
