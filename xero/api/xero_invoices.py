@@ -259,6 +259,11 @@ def enqueue_sync_invoice_or_return(doc, method):
     Wrapper function for on_submit event.
     Checks if the document is a return and enqueues the correct sync job.
     """
+    # HI-4: the inbound (Xero -> ERPNext) import sets this flag before submitting
+    # an imported invoice/return, so the on_submit hook does not bounce the same
+    # document straight back out to Xero as an update (echo loop).
+    if getattr(doc.flags, "ignore_xero_sync", False):
+        return
     if doc.get("is_return"):
         from .xero_credit_notes import enqueue_sync_return
 
@@ -1725,6 +1730,15 @@ def process_xero_invoice(xero_invoice_data, settings):
                 direction="Xero to ERPNext",
                 category="Validation Errors",
             )
+
+        # HI-4 (suspenders): stamp the data hash on the imported doc so the
+        # outbound worker short-circuits on an unchanged inbound doc (belt is the
+        # ignore_xero_sync flag on submit) and a LATER genuine ERPNext edit is
+        # still detected as changed.
+        frappe.db.set_value(
+            doc.doctype, erpnext_doc_name, "xero_data_hash",
+            compute_invoice_hash(doc), update_modified=False,
+        )
 
         frappe.db.commit()
         # Release the idempotency lock now that the record is committed
