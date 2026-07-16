@@ -208,6 +208,11 @@ def enqueue_sync_return(doc, method):
     ERPNext Sales Invoice (is_return=1) → Xero ACCRECCREDIT
     ERPNext Purchase Invoice (is_return=1) → Xero ACCPAYCREDIT
     """
+    # HI-4: the inbound (Xero -> ERPNext) import sets this flag before submitting
+    # an imported credit note, so this on_submit hook does not bounce it straight
+    # back out to Xero as an update (echo loop).
+    if getattr(doc.flags, "ignore_xero_sync", False):
+        return
     settings = get_xero_settings()
     if not settings.enable_xero_sync or not settings.get("sync_credit_notes"):
         return
@@ -1255,6 +1260,14 @@ def process_xero_credit_note(xero_cn_data, settings):
             erpnext_doc_name,
             cn_number,
             xero_cn_id,
+        )
+
+        # HI-4 (suspenders): stamp the data hash on the imported credit note so
+        # the outbound worker short-circuits on an unchanged inbound doc and a
+        # LATER genuine ERPNext edit is still detected as changed.
+        frappe.db.set_value(
+            doc.doctype, erpnext_doc_name, "xero_data_hash",
+            compute_credit_note_hash(doc), update_modified=False,
         )
 
         frappe.db.commit()

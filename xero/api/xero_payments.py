@@ -14,6 +14,11 @@ from ..utils.retry_handler import retry_with_exponential_backoff
 @frappe.whitelist()
 def enqueue_sync_payment(doc, method):
     """Enqueue background job to sync a Payment Entry to Xero."""
+    # HI-4: the inbound (Xero -> ERPNext) import sets this flag before submitting
+    # an imported Payment Entry, so this on_submit hook does not bounce it back
+    # out to Xero (echo loop / duplicate payment).
+    if getattr(doc.flags, "ignore_xero_sync", False):
+        return
     settings = get_xero_settings()
     if not settings.enable_xero_sync or not settings.get("sync_payments"):
         return
@@ -905,6 +910,10 @@ def process_xero_payment(xero_payment_data, settings):
             doc.update(erpnext_data)
             doc.insert(ignore_permissions=True)
             erpnext_doc_name = doc.name
+
+            # HI-4: mark this inbound-created Payment Entry so its on_submit hook
+            # does not bounce the payment back out to Xero (echo loop / duplicate).
+            doc.flags.ignore_xero_sync = True
 
             # Auto-submit if configured
             if settings.get("auto_submit_payment_entries"):
