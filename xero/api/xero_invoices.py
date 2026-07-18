@@ -1411,6 +1411,50 @@ def sync_invoices_from_xero(invoice_type=None, modified_since=None, status=None)
         )
 
 
+def _resolve_inbound_tax_account(doc):
+    """Resolve the ERPNext tax account to post imported Xero tax against.
+
+    Prefers the tax account on a mapped item_tax_template already set on a line.
+    Only returns an account the operator has explicitly mapped — never a guess —
+    so we never post VAT to a wrong account.
+    """
+    for item in doc.items:
+        tmpl = item.get("item_tax_template")
+        if tmpl:
+            acc = frappe.db.get_value(
+                "Item Tax Template Detail", {"parent": tmpl}, "tax_type"
+            )
+            if acc:
+                return acc
+    return None
+
+
+def _apply_inbound_taxes(doc, xero_invoice_data, erpnext_doctype, settings):
+    """Add a single 'Actual' tax charge equal to Xero's total tax so the ERPNext
+    grand total matches the Xero Total.
+
+    No-op when there is no tax or no mapped tax account can be resolved; in the
+    latter case 6a keeps the document as a Draft for manual review rather than
+    posting an under-taxed invoice.
+    """
+    total_tax = flt(xero_invoice_data.get("TotalTax", 0))
+    if total_tax <= 0:
+        return
+    tax_account = _resolve_inbound_tax_account(doc)
+    if not tax_account:
+        return
+    row = {
+        "charge_type": "Actual",
+        "account_head": tax_account,
+        "description": "Tax (imported from Xero)",
+        "tax_amount": total_tax,
+    }
+    if erpnext_doctype == "Purchase Invoice":
+        row["category"] = "Total"
+        row["add_deduct_tax"] = "Add"
+    doc.append("taxes", row)
+
+
 def process_xero_invoice(xero_invoice_data, settings):
     """
     Creates or updates an ERPNext Sales/Purchase Invoice from Xero invoice data.
@@ -1704,25 +1748,33 @@ def process_xero_invoice(xero_invoice_data, settings):
                 )
                 return
 
+            # 6b: reconstruct tax so the ERPNext total matches Xero. Imported
+            # invoices otherwise carry only net line amounts and omit VAT, which
+            # posts an under-taxed invoice to the GL. Safe no-op when no tax
+            # account can be resolved (6a then keeps the doc as a Draft).
+            _apply_inbound_taxes(doc, xero_invoice_data, erpnext_doctype, settings)
+
             doc.insert(ignore_permissions=True)
             erpnext_doc_name = doc.name
             log_message = f"Created {erpnext_doctype} {erpnext_doc_name} from Xero Invoice {xero_invoice_id} ({invoice_number})"
 
-        # ME-12: Verify the ERPNext document total matches the Xero Total.
-        # Account mappings, skipped lines, tax-template gaps or discount
-        # handling can silently shift the total. Surface any divergence beyond
-        # a 0.02 tolerance as a Warning instead of trusting the imported doc.
+        # ME-12 / 6a: Verify the ERPNext total matches the Xero Total. Account
+        # mappings, skipped lines, tax-template gaps or discount handling can
+        # silently shift the total. If it diverges beyond a 0.02 tolerance the
+        # document must NOT be posted to the GL — posting an under-taxed invoice
+        # is silent financial corruption. Flag it and leave it as a Draft below.
         xero_total = flt(xero_invoice_data.get("Total", 0))
         erpnext_total = flt(doc.get("grand_total"))
-        if xero_total and abs(erpnext_total - xero_total) > 0.02:
+        totals_reconcile = not (xero_total and abs(erpnext_total - xero_total) > 0.02)
+        if not totals_reconcile:
             log_xero_error(
                 message=(
                     f"Total mismatch on inbound {erpnext_doctype} "
                     f"{erpnext_doc_name} (Xero Invoice {invoice_number}): "
                     f"ERPNext grand_total {erpnext_total} vs Xero Total "
-                    f"{xero_total}. Review before submitting."
+                    f"{xero_total}. NOT auto-submitting; left as Draft for review."
                 ),
-                status="Warning",
+                status="Error",
                 xero_entity_id=xero_invoice_id,
                 xero_entity_type="Invoice",
                 erpnext_doc_type=erpnext_doctype,
@@ -1744,10 +1796,12 @@ def process_xero_invoice(xero_invoice_data, settings):
         # Release the idempotency lock now that the record is committed
         frappe.cache().delete_value(lock_key)
 
-        # Opt-in: post the imported invoice to the GL when auto-submit is enabled.
-        # The draft is already committed above, so a failed submit leaves the
-        # draft intact for manual review rather than losing the import.
-        maybe_submit_inbound(doc, settings, xero_invoice_id, "Invoice")
+        # Opt-in: post the imported invoice to the GL when auto-submit is enabled
+        # — but ONLY when the totals reconcile. An under-taxed or otherwise
+        # divergent invoice is never posted automatically; it stays a Draft
+        # (already committed above) for manual review.
+        if totals_reconcile:
+            maybe_submit_inbound(doc, settings, xero_invoice_id, "Invoice")
 
         log_xero_error(
             message=log_message,

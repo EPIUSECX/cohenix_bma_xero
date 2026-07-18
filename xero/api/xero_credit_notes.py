@@ -1233,17 +1233,21 @@ def process_xero_credit_note(xero_cn_data, settings):
         # Credit notes carry Total as a positive figure in Xero; the ERPNext
         # return doc grand_total is negative, so compare magnitudes. Warn (do
         # not block) on divergence beyond a 0.02 tolerance.
+        # 6a: if the ERPNext total diverges from Xero beyond tolerance (e.g. tax
+        # could not be reconstructed), do NOT post to the GL — leave it Draft and
+        # flag it. Posting an under-taxed credit note is silent GL corruption.
         xero_total = flt(xero_cn_data.get("Total", 0))
         erpnext_total = abs(flt(doc.get("grand_total")))
-        if xero_total and abs(erpnext_total - abs(xero_total)) > 0.02:
+        totals_reconcile = not (xero_total and abs(erpnext_total - abs(xero_total)) > 0.02)
+        if not totals_reconcile:
             log_xero_error(
                 message=(
                     f"Total mismatch on inbound credit note {erpnext_doctype} "
                     f"{erpnext_doc_name} (Xero CN {cn_number}): ERPNext "
                     f"|grand_total| {erpnext_total} vs Xero |Total| "
-                    f"{abs(xero_total)}. Review before submitting."
+                    f"{abs(xero_total)}. NOT auto-submitting; left as Draft for review."
                 ),
-                status="Warning",
+                status="Error",
                 xero_entity_id=xero_cn_id,
                 xero_entity_type="CreditNote",
                 erpnext_doc_type=erpnext_doctype,
@@ -1278,7 +1282,9 @@ def process_xero_credit_note(xero_cn_data, settings):
         # failed submit leaves it as Draft for manual review.
         from .xero_invoices import maybe_submit_inbound
 
-        maybe_submit_inbound(doc, settings, xero_cn_id, "CreditNote")
+        # Only auto-post when the totals reconcile (see 6a above).
+        if totals_reconcile:
+            maybe_submit_inbound(doc, settings, xero_cn_id, "CreditNote")
 
         log_xero_error(
             message=log_message,
