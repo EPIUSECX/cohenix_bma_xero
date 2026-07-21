@@ -227,55 +227,18 @@ def _save_payment_idempotency_map(doc_type, doc_name, idemp_map):
     frappe.db.commit()
 
 
-def _xero_payment_exists_for_invoice(xero_invoice_id):
-    """
-    Defensive check: query Xero directly to see if there is already an
-    AUTHORISED payment against this invoice. Used as a backstop when our
-    local idempotency map is empty (e.g. the map was never written because
-    a previous attempt crashed between the Xero-side success and the local
-    DB commit).
-
-    Returns the existing PaymentID string if found, else None.
-
-    Per Xero API spec, payments can be filtered with
-    where=Invoice.InvoiceID=guid("...") AND Status="AUTHORISED".
-    """
-    if not xero_invoice_id:
-        return None
-    try:
-        params = {
-            "where": (
-                f'Invoice.InvoiceID=guid("{xero_invoice_id}") '
-                'AND Status="AUTHORISED"'
-            )
-        }
-        response = xero_request("GET", "Payments", params=params)
-        payments = (response or {}).get("Payments") or []
-        if payments:
-            # Return first AUTHORISED payment ID; multi-payment cases are
-            # rare and an existing payment is sufficient evidence of dedup.
-            return payments[0].get("PaymentID")
-    except Exception:
-        # Best-effort: if the lookup fails, we fall through and let the
-        # caller proceed with normal PUT. Xero will reject genuine
-        # duplicates with an outstanding-amount error, which is safer
-        # than blocking sync on a transient lookup failure.
-        return None
-    return None
-
-
 def sync_invoice_payments(doc, xero_bank_account_id, doc_type, doc_name):
     """
     Handle payments against specific invoices, idempotently.
 
-    Strategy:
-      1. Load the {xero_invoice_id: xero_payment_id} idempotency map from
-         xero_payment_data. Any reference whose invoice already has a
-         payment ID in this map is skipped (no second PUT).
-      2. For references not in the map, defensively query Xero
-         (GET /Payments?where=Invoice.InvoiceID=...) before creating, so a
-         crash between Xero-side success and local DB commit on a previous
-         attempt does not produce a duplicate Xero payment.
+    Strategy (dedup is scoped to THIS Payment Entry, never the invoice):
+      1. Load the {xero_invoice_id: xero_payment_id} idempotency map from this
+         PE's xero_payment_data. A reference already in this map is skipped.
+      2. For references not in the map, create the payment with a stable
+         Idempotency-Key (PE + invoice) so Xero collapses a retry of THIS PE's
+         payment that crashed between the Xero-side success and the local
+         commit. A different PE gets a different key, so a legitimately separate
+         partial payment is created rather than wrongly deduped.
       3. Persist the map after EACH successful PUT, before processing the
          next reference. This means a partial failure mid-loop leaves a
          consistent map; the retry only re-attempts unsynced references.
@@ -326,30 +289,14 @@ def sync_invoice_payments(doc, xero_bank_account_id, doc_type, doc_name):
             )
             continue
 
-        # --- Idempotency check (Xero-side defensive lookup) ---
-        existing_payment_id = _xero_payment_exists_for_invoice(xero_invoice_id)
-        if existing_payment_id:
-            idemp_map[xero_invoice_id] = existing_payment_id
-            log_xero_error(
-                message=(
-                    f"Payment for {invoice_doctype} {invoice_name} already "
-                    f"exists in Xero (PaymentID={existing_payment_id}); "
-                    f"reattaching to ERPNext map without creating duplicate."
-                ),
-                status="Info",
-                erpnext_doc_type=doc_type,
-                erpnext_doc_name=doc_name,
-                xero_entity_id=existing_payment_id,
-                xero_entity_type="Payment",
-                direction="ERPNext to Xero",
-                category="Duplicate Entity",
-            )
-            # Persist immediately so any subsequent failure does not lose
-            # the discovered link.
-            _save_payment_idempotency_map(doc_type, doc_name, idemp_map)
-            continue
-
         # --- Build payload & create payment ---
+        # Dedup is handled per-Payment-Entry: the local idemp_map above skips a
+        # payment this PE already created (beyond-24h retries), and a stable
+        # Idempotency-Key makes Xero itself collapse a retry of THIS PE's payment
+        # that crashed between the Xero-side success and the local commit. We do
+        # NOT gate on "any AUTHORISED payment on the invoice" — that wrongly
+        # dropped a second, legitimately separate partial payment (a different PE)
+        # and mapped it to the first payment's id, under-recording cash.
         payment_payload = {
             "Invoice": {"InvoiceID": xero_invoice_id},
             "Account": {"AccountID": xero_bank_account_id},
@@ -358,7 +305,11 @@ def sync_invoice_payments(doc, xero_bank_account_id, doc_type, doc_name):
             "Reference": f"{doc.reference_no or doc.name} - {invoice_name}",
         }
 
-        response = xero_request("PUT", "Payments", data={"Payments": [payment_payload]})
+        idempotency_key = f"Payment Entry:{doc_name}:{xero_invoice_id}:create-payment"
+        response = xero_request(
+            "PUT", "Payments", data={"Payments": [payment_payload]},
+            idempotency_key=idempotency_key,
+        )
 
         if not response or not response.get("Payments"):
             raise Exception(
