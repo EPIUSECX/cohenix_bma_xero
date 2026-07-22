@@ -109,7 +109,24 @@ def sync_payment_to_xero(doc_name, doc_type="Payment Entry", **kwargs):
             # This is a payment against invoice(s)
             sync_invoice_payments(doc, xero_bank_account_id, doc_type, doc_name)
         else:
-            # This is a standalone payment (advance payment, etc.)
+            # Standalone payment (advance, etc.) → Xero Bank Transaction. Gated
+            # OFF by default: this path writes money movements to Xero and had
+            # never actually run (it raised AttributeError before the API call),
+            # so it stays disabled until validated against a sandbox and enabled
+            # explicitly via 'Sync Standalone Payments' on Xero Settings.
+            if not settings.get("sync_payments_standalone"):
+                log_xero_error(
+                    message=(
+                        f"Standalone payment sync is disabled; skipping {doc_type} "
+                        f"{doc_name}. Enable 'Sync Standalone Payments' in Xero "
+                        f"Settings once validated against a sandbox."
+                    ),
+                    status="Info",
+                    erpnext_doc_type=doc_type,
+                    erpnext_doc_name=doc_name,
+                    category="System Monitoring",
+                )
+                return
             sync_standalone_payment(
                 doc, xero_contact_id, xero_bank_account_id, doc_type, doc_name
             )
@@ -373,12 +390,15 @@ def sync_standalone_payment(
 
     settings = get_xero_settings()
 
-    # Get account code for the party account
-    party_account = doc.party_account
-    xero_account_code = get_xero_account_code(party_account, settings)
+    # The bank leg is BankAccount (resolved by the caller). The LineItem is coded
+    # to the CONTRA account — the non-bank side of the Payment Entry. Payment
+    # Entry has no `party_account` field; the previous code read that and raised
+    # AttributeError, so this path had never actually run.
+    contra_account = doc.paid_to if doc.payment_type == "Pay" else doc.paid_from
+    xero_account_code = get_xero_account_code(contra_account, settings)
     if not xero_account_code:
         raise Exception(
-            f"Xero Account Code mapping not found for Account: {party_account}"
+            f"Xero Account Code mapping not found for Account: {contra_account}"
         )
 
     # Create bank transaction payload
@@ -405,9 +425,19 @@ def sync_standalone_payment(
     if xero_bank_transaction_id:
         transaction_payload["BankTransactionID"] = xero_bank_transaction_id
 
-    # Make API call
+    # C8: key the create so a lost response after Xero committed does not create
+    # a duplicate bank transaction on retry. Only on create — an update already
+    # targets a specific BankTransactionID.
+    idempotency_key = (
+        None
+        if xero_bank_transaction_id
+        else f"Payment Entry:{doc_name}:create-banktxn"
+    )
     response = xero_request(
-        "PUT", "BankTransactions", data={"BankTransactions": [transaction_payload]}
+        "PUT",
+        "BankTransactions",
+        data={"BankTransactions": [transaction_payload]},
+        idempotency_key=idempotency_key,
     )
 
     if response and response.get("BankTransactions"):
