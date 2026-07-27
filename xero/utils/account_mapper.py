@@ -194,7 +194,7 @@ def run_full_auto_map():
     settings_fresh = get_xero_settings()
     mapped_codes = {r.xero_account_code for r in settings_fresh.account_mapping if r.xero_account_code}
     new_status = "Complete" if active_xero_codes.issubset(mapped_codes) else "Review Required"
-    frappe.db.set_value("Xero Settings", "Xero Settings", "mapping_status", new_status)
+    frappe.db.set_single_value("Xero Settings", "mapping_status", new_status)
     frappe.db.commit()
 
     result = _build_result(
@@ -1471,7 +1471,7 @@ def _update_mapping_status(unmatched_xero, unmatched_erpnext, matched):
     else:
         new_status = "Not Started"
 
-    frappe.db.set_value("Xero Settings", "Xero Settings", "mapping_status", new_status)
+    frappe.db.set_single_value("Xero Settings", "mapping_status", new_status)
     frappe.db.commit()
 
 
@@ -1489,7 +1489,7 @@ def _refresh_mapping_status(settings):
         else:
             new_status = "Not Started"
 
-        frappe.db.set_value("Xero Settings", "Xero Settings", "mapping_status", new_status)
+        frappe.db.set_single_value("Xero Settings", "mapping_status", new_status)
         frappe.db.commit()
     except Exception:
         pass
