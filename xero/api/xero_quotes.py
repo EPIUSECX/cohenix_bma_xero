@@ -66,7 +66,7 @@ def sync_quotation_to_xero(doc_name, doc_type, **kwargs):
         if doc.quotation_to != "Customer":
             log_xero_error(f"Only Customer quotations can be synced to Xero: {doc_name}", status="Info")
             frappe.db.set_value(doc_type, doc_name, "xero_sync_status", "Skipped", update_modified=False)
-            frappe.db.commit()
+            frappe.db.commit()  # nosemgrep: per-doc status checkpoint in bulk sync
             return
 
         # --- Get Linked Xero Contact ID ---
@@ -163,7 +163,7 @@ def sync_quotation_to_xero(doc_name, doc_type, **kwargs):
                     "xero_quote_id": new_xero_quote_id,
                     "xero_sync_status": "Synced"
                 }, update_modified=False)
-                frappe.db.commit()
+                frappe.db.commit()  # nosemgrep: Xero write succeeded; a retried job must see this outcome or it would duplicate
 
                 log_xero_error(
                     message=f"Successfully synced {doc_type} {doc_name} to Xero.",
@@ -186,7 +186,7 @@ def sync_quotation_to_xero(doc_name, doc_type, **kwargs):
         if is_already_exists_error(str(e), error_traceback):
             if doc_name and doc_type:
                 frappe.db.set_value(doc_type, doc_name, {"xero_sync_status": "Synced"}, update_modified=False)
-                frappe.db.commit()
+                frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
             
             log_xero_error(
                 message=f"{doc_type} {doc_name} already exists in Xero. No action needed.",
@@ -200,7 +200,7 @@ def sync_quotation_to_xero(doc_name, doc_type, **kwargs):
             from ..utils.logging import format_sync_error_message
             if doc_name and doc_type:
                 frappe.db.set_value(doc_type, doc_name, {"xero_sync_status": "Error"}, update_modified=False)
-                frappe.db.commit()
+                frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
 
             user_message = format_sync_error_message(
                 doc_type, doc_name, doc_name, "ERPNext to Xero", e
@@ -389,7 +389,7 @@ def process_xero_quote(xero_quote_data, settings):
         erpnext_doc_name = doc.name
         log_message = f"Created Quotation {erpnext_doc_name} from Xero Quote {xero_quote_id}"
 
-        frappe.db.commit()
+        frappe.db.commit()  # nosemgrep: per-doc checkpoint in inbound sync; later failures must not undo imported docs
         log_xero_error(
             message=log_message,
             status="Success",
@@ -407,7 +407,7 @@ def process_xero_quote(xero_quote_data, settings):
         if is_already_exists_error(str(e), error_traceback):
             if erpnext_doc_name:
                 frappe.db.set_value("Quotation", erpnext_doc_name, "xero_sync_status", "Synced", update_modified=False)
-                frappe.db.commit()
+                frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
             
             log_xero_error(
                 message=f"Xero Quote {xero_quote_id} already exists in ERPNext as {erpnext_doc_name or 'existing document'}. Skipping update.",
@@ -424,7 +424,7 @@ def process_xero_quote(xero_quote_data, settings):
             sync_status = "Error"
             if erpnext_doc_name:
                 frappe.db.set_value("Quotation", erpnext_doc_name, "xero_sync_status", sync_status, update_modified=False)
-                frappe.db.commit()
+                frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
 
             user_message = format_sync_error_message(
                 "Xero Quote", xero_quote_id, xero_quote_id, "Xero to ERPNext", e

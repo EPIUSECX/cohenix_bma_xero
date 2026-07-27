@@ -102,7 +102,7 @@ def sync_purchase_order_to_xero(doc_name, doc_type):
             new_xero_id = response["PurchaseOrders"][0].get("PurchaseOrderID")
             frappe.db.set_value(doc_type, doc_name, "xero_purchase_order_id", new_xero_id, update_modified=False)
             frappe.db.set_value(doc_type, doc_name, "xero_sync_status", "Synced", update_modified=False)
-            frappe.db.commit()
+            frappe.db.commit()  # nosemgrep: Xero write succeeded; a retried job must see this outcome or it would duplicate
             log_xero_error(
                 message=f"Successfully synced {doc_type} {doc.name} to Xero.",
                 status="Success",
@@ -120,7 +120,7 @@ def sync_purchase_order_to_xero(doc_name, doc_type):
         
         if is_already_exists_error(str(e), error_traceback):
             frappe.db.set_value(doc_type, doc_name, "xero_sync_status", "Synced", update_modified=False)
-            frappe.db.commit()
+            frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
             log_xero_error(
                 message=f"{doc_type} {doc_name} already exists in Xero. No action needed.",
                 status="Info",
@@ -135,7 +135,7 @@ def sync_purchase_order_to_xero(doc_name, doc_type):
             # retry task stops re-queuing an unsatisfiable document.
             sync_status = "Failed" if getattr(e, "is_permanent", False) else "Error"
             frappe.db.set_value(doc_type, doc_name, "xero_sync_status", sync_status, update_modified=False)
-            frappe.db.commit()
+            frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
             user_message = format_sync_error_message(
                 doc_type, doc_name, doc_name, "ERPNext to Xero", e
             )
@@ -365,7 +365,7 @@ def process_xero_purchase_order(xero_order_data, settings):
         erpnext_doc_name = doc.name
         log_message = f"Created Purchase Order {erpnext_doc_name} from Xero Order {xero_order_id} ({order_number})"
         
-        frappe.db.commit()
+        frappe.db.commit()  # nosemgrep: per-doc checkpoint in inbound sync; later failures must not undo imported docs
         log_xero_error(
             message=log_message,
             status="Success",
@@ -383,7 +383,7 @@ def process_xero_purchase_order(xero_order_data, settings):
         if is_already_exists_error(str(e), error_traceback):
             if erpnext_doc_name:
                 frappe.db.set_value("Purchase Order", erpnext_doc_name, "xero_sync_status", "Synced", update_modified=False)
-                frappe.db.commit()
+                frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
             
             log_xero_error(
                 message=f"Xero Purchase Order {xero_order_id} ({order_number}) already exists in ERPNext. Skipping update.",
@@ -400,7 +400,7 @@ def process_xero_purchase_order(xero_order_data, settings):
             sync_status = "Error"
             if erpnext_doc_name:
                 frappe.db.set_value("Purchase Order", erpnext_doc_name, "xero_sync_status", sync_status, update_modified=False)
-                frappe.db.commit()
+                frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
             
             user_message = format_sync_error_message(
                 "Xero Purchase Order", xero_order_id, order_number, "Xero to ERPNext", e

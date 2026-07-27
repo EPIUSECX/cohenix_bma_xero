@@ -195,7 +195,6 @@ def run_full_auto_map():
     mapped_codes = {r.xero_account_code for r in settings_fresh.account_mapping if r.xero_account_code}
     new_status = "Complete" if active_xero_codes.issubset(mapped_codes) else "Review Required"
     frappe.db.set_single_value("Xero Settings", "mapping_status", new_status)
-    frappe.db.commit()
 
     result = _build_result(
         matched, unmatched_xero, unmatched_erpnext,
@@ -262,7 +261,6 @@ def confirm_mapping(suggestions):
 
     settings.flags.ignore_version = True
     settings.save(ignore_permissions=True)
-    frappe.db.commit()
 
     _refresh_mapping_status(settings)
 
@@ -304,7 +302,9 @@ def push_accounts_to_xero(account_names):
                 xero_code = xero_acc.get("Code")
 
                 frappe.db.set_value("Account", acc_name, "xero_account_id", xero_id, update_modified=False)
-                frappe.db.commit()
+                # The account now exists in Xero; its linkage must survive a
+                # failure later in this loop or a re-push would duplicate it.
+                frappe.db.commit()  # nosemgrep
 
                 created.append({
                     "erpnext_account": acc_name,
@@ -507,7 +507,9 @@ def _process_resolutions(resolutions, user=None):
 
     settings.flags.ignore_version = True
     settings.save(ignore_permissions=True)
-    frappe.db.commit()
+    # The loop above created/linked accounts in Xero; persist that linkage
+    # before any later step in this request can fail and roll it back.
+    frappe.db.commit()  # nosemgrep
     _refresh_mapping_status(settings)
     # Bust the cached single so any read later (e.g. a manual sync triggered
     # right after) sees the new mapping rows immediately.
@@ -899,7 +901,9 @@ def apply_mapping_workspace(decisions):
 
     settings.flags.ignore_version = True
     settings.save(ignore_permissions=True)
-    frappe.db.commit()
+    # Persist the applied inbound decisions before the outbound phase below
+    # makes external Xero calls that can fail mid-way.
+    frappe.db.commit()  # nosemgrep
     _refresh_mapping_status(settings)
     frappe.clear_document_cache("Xero Settings", "Xero Settings")
 
@@ -1304,7 +1308,9 @@ def _get_or_create_group_account(path_parts, root_type, company):
             doc.is_group       = 1
             doc.company        = company
             doc.insert(ignore_permissions=True)
-            frappe.db.commit()
+            # Checkpoint each created group so a failure deeper in the tree
+            # keeps the levels already built (recreation is duplicate-guarded).
+            frappe.db.commit()  # nosemgrep
             current_parent = doc.name
         except Exception as e:
             # If creation fails (e.g. duplicate), try to find it again
@@ -1396,7 +1402,9 @@ def _create_erpnext_account_from_xero(xero_acc, company):
     doc.xero_account_id = xero_id
     doc.disabled        = 1 if xero_status == "ARCHIVED" else 0
     doc.insert(ignore_permissions=True)
-    frappe.db.commit()
+    # Checkpoint per imported account so one bad account later in the batch
+    # does not roll back the mirrors already created for real Xero accounts.
+    frappe.db.commit()  # nosemgrep
 
     return doc.name
 
@@ -1457,7 +1465,6 @@ def _bulk_write_mappings(settings, rows_to_write, existing_codes, existing_erpne
             fresh_erpnext.add(row["erpnext_account"])
 
         fresh.save(ignore_permissions=True)
-        frappe.db.commit()
 
     return added
 
@@ -1472,7 +1479,6 @@ def _update_mapping_status(unmatched_xero, unmatched_erpnext, matched):
         new_status = "Not Started"
 
     frappe.db.set_single_value("Xero Settings", "mapping_status", new_status)
-    frappe.db.commit()
 
 
 def _refresh_mapping_status(settings):
@@ -1490,7 +1496,6 @@ def _refresh_mapping_status(settings):
             new_status = "Not Started"
 
         frappe.db.set_single_value("Xero Settings", "mapping_status", new_status)
-        frappe.db.commit()
     except Exception:
         pass
 

@@ -190,7 +190,6 @@ class XeroSettings(Document):
 
         self.connection_status = status
         self.save(ignore_permissions=True)
-        frappe.db.commit()
         return {"status": status}
 
     @frappe.whitelist()
@@ -202,7 +201,6 @@ class XeroSettings(Document):
         self.tenant_id = None
         self.connection_status = "Disconnected"
         self.save(ignore_permissions=True)
-        frappe.db.commit()
         frappe.msgprint("Disconnected from Xero. Tokens have been cleared.")
 
     @frappe.whitelist()
@@ -293,7 +291,6 @@ class XeroSettings(Document):
                     added += 1
 
         doc.save(ignore_permissions=True)
-        frappe.db.commit()
         frappe.msgprint(
             f"Account mapping updated: {added} added, {updated} updated. Please review and fill any missing Xero Account Codes manually."
         )
@@ -342,7 +339,6 @@ class XeroSettings(Document):
                 added += 1
 
         doc.save(ignore_permissions=True)
-        frappe.db.commit()
         frappe.msgprint(
             f"Tax mapping updated: {added} ERPNext templates added. Please review and enter the corresponding Xero TaxType Codes."
         )
@@ -429,7 +425,6 @@ class XeroSettings(Document):
                 mappings_added += 1
 
         doc.save(ignore_permissions=True)
-        frappe.db.commit()
 
         # Clear cache to ensure new mappings are used immediately
         frappe.cache().delete_value("xero_account_map")

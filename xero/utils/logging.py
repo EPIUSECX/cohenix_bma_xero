@@ -56,7 +56,7 @@ def log_xero_error(message, status="Error", erpnext_doc_type=None, erpnext_doc_n
         # Error/Warning entries, so a failure that is about to abort and roll
         # back the transaction still leaves an audit trail in the Xero Log.
         if status in ("Error", "Warning"):
-            frappe.db.commit()
+            frappe.db.commit()  # nosemgrep
 
     except Exception as e:
         # If logging itself fails, print to stderr and Frappe error log
