@@ -7,3 +7,4 @@
 xero.patches.add_directional_sync_toggles
 xero.patches.disable_unsupported_xero_entities
 xero.patches.encrypt_oauth_tokens
+xero.patches.drop_xero_cache_doctypes

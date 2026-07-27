@@ -257,11 +257,8 @@ def confirm_mapping(suggestions):
         if ea in existing_erpnext or code in existing_codes:
             continue
 
-        xero_account_doc = frappe.db.get_value("Xero Account", {"account_code": code}, "name")
-
         settings.append("account_mapping", {
             "erpnext_account":   ea,
-            "xero_account":      xero_account_doc or None,
             "xero_account_code": code,
             "xero_account_name": name or "",
         })
@@ -1228,10 +1225,8 @@ def _append_mapping_row(settings, ea, code, name, existing_erpnext):
     """
     if ea in existing_erpnext:
         return False
-    xero_account_doc = frappe.db.get_value("Xero Account", {"account_code": code}, "name")
     settings.append("account_mapping", {
         "erpnext_account":   ea,
-        "xero_account":      xero_account_doc or None,
         "xero_account_code": code,
         "xero_account_name": name or "",
     })
@@ -1459,10 +1454,8 @@ def _bulk_write_mappings(settings, rows_to_write, existing_codes, existing_erpne
         if ea in local_erpnext or code in local_codes:
             continue
 
-        xero_account_doc = frappe.db.get_value("Xero Account", {"account_code": code}, "name")
         to_append.append({
             "erpnext_account":   ea,
-            "xero_account":      xero_account_doc or None,
             "xero_account_code": code,
             "xero_account_name": name,
         })
