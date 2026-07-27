@@ -8,6 +8,7 @@ from frappe.utils import getdate
 from ..utils.xero_client import xero_request, get_xero_settings
 from ..utils.logging import log_xero_error
 from ..utils.retry_handler import retry_with_exponential_backoff
+from ..utils.sync_status import mark_sync_failure
 from .xero_invoices import get_xero_account_code, map_erpnext_tax_to_xero
 
 # --- Quote Sync (ERPNext to Xero) ---
@@ -23,6 +24,7 @@ def enqueue_sync_quotation(doc, method):
         "xero.api.xero_quotes.sync_quotation_to_xero",
         queue="short",
         timeout=600,
+        enqueue_after_commit=True,
         doc_name=doc.name,
         doc_type=doc.doctype
     )
@@ -198,21 +200,8 @@ def sync_quotation_to_xero(doc_name, doc_type, **kwargs):
                 direction="ERPNext to Xero"
             )
         else:
-            from ..utils.logging import format_sync_error_message
-            if doc_name and doc_type:
-                frappe.db.set_value(doc_type, doc_name, {"xero_sync_status": "Error"}, update_modified=False)
-                commit_error_state()
-
-            user_message = format_sync_error_message(
-                doc_type, doc_name, doc_name, "ERPNext to Xero", e
-            )
-
-            log_xero_error(
-                message=user_message,
-                erpnext_doc_type=doc_type,
-                erpnext_doc_name=doc_name,
-                error_details=error_traceback,
-                direction="ERPNext to Xero"
+            mark_sync_failure(
+                doc_type, doc_name, e, "ERPNext to Xero", traceback_text=error_traceback
             )
 
 
@@ -455,22 +444,14 @@ def process_xero_quote(xero_quote_data, settings):
                 direction="Xero to ERPNext"
             )
         else:
-            from ..utils.logging import format_sync_error_message
-            sync_status = "Error"
-            if erpnext_doc_name:
-                frappe.db.set_value("Quotation", erpnext_doc_name, "xero_sync_status", sync_status, update_modified=False)
-                commit_error_state()
-
-            user_message = format_sync_error_message(
-                "Xero Quote", xero_quote_id, xero_quote_id, "Xero to ERPNext", e
-            )
-
-            log_xero_error(
-                message=user_message,
-                erpnext_doc_type="Quotation",
-                erpnext_doc_name=erpnext_doc_name,
+            mark_sync_failure(
+                "Quotation",
+                erpnext_doc_name,
+                e,
+                "Xero to ERPNext",
+                source_type="Xero Quote",
+                source_id=xero_quote_id,
                 xero_entity_id=xero_quote_id,
                 xero_entity_type="Quote",
-                direction="Xero to ERPNext",
-                error_details=error_traceback
+                traceback_text=error_traceback,
             )

@@ -17,6 +17,7 @@ from ..utils.xero_client import (
 from ..utils.logging import log_xero_error
 from ..utils.retry_handler import retry_with_exponential_backoff
 from ..utils.exceptions import TaxRepresentationError
+from ..utils.sync_status import mark_sync_failure
 from .xero_line_builder import (
     apply_inbound_taxes,
     build_xero_lines,
@@ -317,6 +318,7 @@ def enqueue_sync_invoice(doc, method):
         "xero.api.xero_invoices.sync_invoice_to_xero",
         queue="short",
         timeout=600,
+        enqueue_after_commit=True,
         doc_name=doc.name,
         doc_type=doc.doctype,
     )
@@ -629,32 +631,8 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
                 direction="ERPNext to Xero",
             )
         else:
-            from ..utils.logging import build_error_details, format_sync_error_message
-
-            # Genuine sync error. A permanent Xero rejection (4xx validation)
-            # can never succeed with the same payload, so it goes to the
-            # terminal "Failed" state — sync_pending_documents leaves those
-            # alone; the operator fixes the cause and retries explicitly.
-            sync_status = "Failed" if getattr(e, "is_permanent", False) else "Error"
-            if doc_name and doc_type:
-                frappe.db.set_value(
-                    doc_type,
-                    doc_name,
-                    {"xero_sync_status": sync_status},
-                    update_modified=False,
-                )
-                commit_error_state()
-
-            user_message = format_sync_error_message(
-                doc_type, doc_name, doc_name, "ERPNext to Xero", e
-            )
-
-            log_xero_error(
-                message=user_message,
-                erpnext_doc_type=doc_type,
-                erpnext_doc_name=doc_name,
-                error_details=build_error_details(e, error_traceback),
-                direction="ERPNext to Xero",
+            mark_sync_failure(
+                doc_type, doc_name, e, "ERPNext to Xero", traceback_text=error_traceback
             )
 
 
@@ -682,6 +660,7 @@ def enqueue_void_invoice(doc, method):
     frappe.enqueue(
         "xero.api.xero_invoices.void_invoice_in_xero",
         queue="short",
+        enqueue_after_commit=True,
         doc_name=doc.name,
         doc_type=doc.doctype,
     )
@@ -1699,7 +1678,7 @@ def process_xero_invoice(xero_invoice_data, settings):
         # Discard the failed insert's uncommitted writes FIRST — including the
         # naming-series increment doc.insert() already reserved. Without this,
         # the commit inside log_xero_error persisted the series bump and every
-        # failed inbound attempt burned an ACC-SINV number (C3).
+        # failed inbound attempt burned an ACC-SINV number.
         frappe.db.rollback()
         # Always release the lock on failure so retries are not permanently blocked
         frappe.cache().delete_value(lock_key)
@@ -1736,35 +1715,17 @@ def process_xero_invoice(xero_invoice_data, settings):
                 direction="Xero to ERPNext",
             )
         else:
-            from ..utils.logging import build_error_details, format_sync_error_message
-
-            sync_status = "Error"
-            if erpnext_doc_name:
-                frappe.db.set_value(
-                    erpnext_doctype,
-                    erpnext_doc_name,
-                    "xero_sync_status",
-                    sync_status,
-                    update_modified=False,
-                )
-                commit_error_state()
-
-            user_message = format_sync_error_message(
-                "Xero Invoice", xero_invoice_id, invoice_number, "Xero to ERPNext", e
-            )
-
-            log_xero_error(
-                message=user_message,
-                erpnext_doc_type=erpnext_doctype
-                if "erpnext_doctype" in locals()
-                else None,
-                erpnext_doc_name=erpnext_doc_name
-                if "erpnext_doc_name" in locals()
-                else None,
+            mark_sync_failure(
+                erpnext_doctype,
+                erpnext_doc_name,
+                e,
+                "Xero to ERPNext",
+                source_type="Xero Invoice",
+                source_id=xero_invoice_id,
+                source_display=invoice_number,
                 xero_entity_id=xero_invoice_id,
                 xero_entity_type="Invoice",
-                direction="Xero to ERPNext",
-                error_details=build_error_details(e, error_traceback),
+                traceback_text=error_traceback,
             )
 
 

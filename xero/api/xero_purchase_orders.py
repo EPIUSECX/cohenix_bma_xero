@@ -6,6 +6,7 @@ from ..utils.transactions import commit_checkpoint, commit_error_state, commit_e
 from frappe import _
 from ..utils.xero_client import xero_request, get_xero_settings
 from ..utils.logging import log_xero_error
+from ..utils.sync_status import mark_sync_failure
 from .xero_line_builder import build_xero_lines
 from frappe.utils import getdate
 
@@ -19,6 +20,7 @@ def enqueue_sync_purchase_order(doc, method):
     frappe.enqueue(
         "xero.api.xero_purchase_orders.sync_purchase_order_to_xero",
         queue="short",
+        enqueue_after_commit=True,
         doc_name=doc.name,
         doc_type=doc.doctype
     )
@@ -131,21 +133,8 @@ def sync_purchase_order_to_xero(doc_name, doc_type):
                 direction="ERPNext to Xero"
             )
         else:
-            from ..utils.logging import build_error_details, format_sync_error_message
-            # Permanent Xero rejections go terminal ("Failed") so the hourly
-            # retry task stops re-queuing an unsatisfiable document.
-            sync_status = "Failed" if getattr(e, "is_permanent", False) else "Error"
-            frappe.db.set_value(doc_type, doc_name, "xero_sync_status", sync_status, update_modified=False)
-            commit_error_state()
-            user_message = format_sync_error_message(
-                doc_type, doc_name, doc_name, "ERPNext to Xero", e
-            )
-            log_xero_error(
-                message=user_message,
-                erpnext_doc_type=doc_type,
-                erpnext_doc_name=doc_name,
-                error_details=build_error_details(e, error_traceback),
-                direction="ERPNext to Xero"
+            mark_sync_failure(
+                doc_type, doc_name, e, "ERPNext to Xero", traceback_text=error_traceback
             )
 
 
@@ -429,22 +418,15 @@ def process_xero_purchase_order(xero_order_data, settings):
                 direction="Xero to ERPNext"
             )
         else:
-            from ..utils.logging import format_sync_error_message
-            sync_status = "Error"
-            if erpnext_doc_name:
-                frappe.db.set_value("Purchase Order", erpnext_doc_name, "xero_sync_status", sync_status, update_modified=False)
-                commit_error_state()
-            
-            user_message = format_sync_error_message(
-                "Xero Purchase Order", xero_order_id, order_number, "Xero to ERPNext", e
-            )
-            
-            log_xero_error(
-                message=user_message,
-                erpnext_doc_type="Purchase Order",
-                erpnext_doc_name=erpnext_doc_name if 'erpnext_doc_name' in locals() else None,
+            mark_sync_failure(
+                "Purchase Order",
+                erpnext_doc_name,
+                e,
+                "Xero to ERPNext",
+                source_type="Xero Purchase Order",
+                source_id=xero_order_id,
+                source_display=order_number,
                 xero_entity_id=xero_order_id,
                 xero_entity_type="PurchaseOrder",
-                direction="Xero to ERPNext",
-                error_details=error_traceback
+                traceback_text=error_traceback,
             )

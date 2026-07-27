@@ -10,6 +10,7 @@ import re
 from ..utils.xero_client import xero_request, get_xero_settings, require_xero_manager
 from ..utils.logging import log_xero_error
 from ..utils.retry_handler import retry_with_exponential_backoff
+from ..utils.sync_status import mark_sync_failure
 
 # Mapping from Xero Account Types to ERPNext Root Types / Account Types
 XERO_ACCOUNT_TYPE_MAP = {
@@ -231,18 +232,24 @@ def enqueue_sync_account(doc, method=None):
     if not settings.enable_sync_to_xero:
         return
     
-    # Skip group accounts (only sync ledger accounts)
+    # Group accounts never sync (only ledger accounts do). Mark them Skipped
+    # so they don't sit in "Pending" forever and show up as sync backlog.
     if doc.is_group:
+        if doc.xero_sync_status != "Skipped":
+            frappe.db.set_value(
+                "Account", doc.name, "xero_sync_status", "Skipped", update_modified=False
+            )
         return
-    
+
     # Skip if no changes since last sync
     if doc.xero_sync_status == "Synced" and not account_data_changed(doc):
         return
-    
+
     # Enqueue the actual sync
     frappe.enqueue(
         "xero.api.xero_accounts.sync_account_to_xero",
         queue="short",
+        enqueue_after_commit=True,
         account_name=doc.name
     )
 
@@ -265,8 +272,10 @@ def sync_account_to_xero(account_name):
     if not settings.enable_sync_to_xero:
         return
     
-    # Skip group accounts
+    # Group accounts never sync — mark Skipped so the backlog stays honest.
     if doc.is_group:
+        if doc.xero_sync_status != "Skipped":
+            doc.db_set("xero_sync_status", "Skipped", update_modified=False)
         log_xero_error(
             message=f"Skipping group account {doc.name} - only ledger accounts can sync to Xero",
             status="Info",
@@ -366,19 +375,8 @@ def sync_account_to_xero(account_name):
                 direction="ERPNext to Xero"
             )
         else:
-            from ..utils.logging import format_sync_error_message
-            # API or other error - mark as error
-            doc.db_set("xero_sync_status", "Error")
-            user_message = format_sync_error_message(
-                "Account", doc.name, doc.name, "ERPNext to Xero", e
-            )
-            log_xero_error(
-                message=user_message,
-                status="Error",
-                erpnext_doc_type="Account",
-                erpnext_doc_name=doc.name,
-                direction="ERPNext to Xero",
-                error_details=error_traceback
+            mark_sync_failure(
+                "Account", doc.name, e, "ERPNext to Xero", traceback_text=error_traceback
             )
 
 
@@ -809,18 +807,17 @@ def process_xero_account(xero_account_data, company):
                 direction="Xero to ERPNext"
             )
         else:
-            from ..utils.logging import format_sync_error_message
-            user_message = format_sync_error_message(
-                "Xero Account", xero_account_id, xero_name, "Xero to ERPNext", e
-            )
-            log_xero_error(
-                message=user_message,
-                erpnext_doc_type="Account",
-                erpnext_doc_name=erpnext_doc_name,
+            mark_sync_failure(
+                "Account",
+                erpnext_doc_name,
+                e,
+                "Xero to ERPNext",
+                source_type="Xero Account",
+                source_id=xero_account_id,
+                source_display=xero_name,
                 xero_entity_id=xero_account_id,
                 xero_entity_type="Account",
-                direction="Xero to ERPNext",
-                error_details=error_traceback
+                traceback_text=error_traceback,
             )
 
 
