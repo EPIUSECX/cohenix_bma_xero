@@ -242,8 +242,9 @@ def sync_purchase_orders_from_xero(modified_since=None):
 
 def process_xero_purchase_order(xero_order_data, settings):
     """Creates or updates an ERPNext Purchase Order from Xero order data."""
-    from .xero_invoices import parse_xero_date
+    from .xero_invoices import get_erpnext_tax_from_xero_type, parse_xero_date
     from .xero_items import get_or_create_item_for_xero_line
+    from .xero_line_builder import apply_inbound_taxes, inbound_line_rate
     
     xero_order_id = xero_order_data.get("PurchaseOrderID")
     order_number = xero_order_data.get("PurchaseOrderNumber")
@@ -338,20 +339,27 @@ def process_xero_purchase_order(xero_order_data, settings):
         # (Required By) date, so always resolve/create an item and carry the
         # header schedule date onto each row.
         po_schedule_date = erpnext_data.get("schedule_date") or erpnext_data.get("transaction_date")
+        # Rates are always stored tax-exclusive; Xero's tax is reconstructed as
+        # a taxes row below so the ERPNext grand total matches Xero's Total.
+        inclusive = xero_order_data.get("LineAmountTypes") == "Inclusive"
         line_items = xero_order_data.get("LineItems", [])
         for line in line_items:
             item_code = get_or_create_item_for_xero_line(
                 line.get("ItemCode"), line.get("Description"), settings, is_purchase=True
             )
-            doc.append("items", {
+            row = {
                 "item_code": item_code,
                 "item_name": (line.get("Description") or item_code)[:140],
                 "description": line.get("Description") or "Item from Xero",
                 # PO qty must be > 0
                 "qty": frappe.utils.flt(line.get("Quantity", 1)) or 1,
-                "rate": frappe.utils.flt(line.get("UnitAmount", 0)),
+                "rate": inbound_line_rate(line, inclusive),
                 "schedule_date": po_schedule_date,
-            })
+            }
+            tax_template = get_erpnext_tax_from_xero_type(line.get("TaxType"), settings)
+            if tax_template:
+                row["item_tax_template"] = tax_template
+            doc.append("items", row)
 
         if not doc.items:
             log_xero_error(
@@ -362,10 +370,34 @@ def process_xero_purchase_order(xero_order_data, settings):
             )
             return
 
+        apply_inbound_taxes(doc, xero_order_data, "Purchase Order")
+
         doc.insert(ignore_permissions=True)
         erpnext_doc_name = doc.name
         log_message = f"Created Purchase Order {erpnext_doc_name} from Xero Order {xero_order_id} ({order_number})"
-        
+
+        # Flag a total that does not reconcile with Xero (missing tax mapping,
+        # skipped lines). POs import as drafts so nothing posts to the GL, but
+        # a silent price divergence must still be operator-visible.
+        xero_total = frappe.utils.flt(xero_order_data.get("Total", 0))
+        erpnext_total = frappe.utils.flt(doc.get("grand_total"))
+        if xero_total and abs(erpnext_total - xero_total) > 0.02:
+            log_xero_error(
+                message=(
+                    f"Total mismatch on inbound Purchase Order {erpnext_doc_name} "
+                    f"(Xero PO {order_number}): ERPNext grand_total {erpnext_total} "
+                    f"vs Xero Total {xero_total}. Check tax mappings for the "
+                    "order's TaxTypes."
+                ),
+                status="Error",
+                xero_entity_id=xero_order_id,
+                xero_entity_type="PurchaseOrder",
+                erpnext_doc_type="Purchase Order",
+                erpnext_doc_name=erpnext_doc_name,
+                direction="Xero to ERPNext",
+                category="Validation Errors",
+            )
+
         commit_checkpoint()
         log_xero_error(
             message=log_message,

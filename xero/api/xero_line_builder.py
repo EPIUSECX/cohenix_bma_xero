@@ -311,3 +311,72 @@ def _verify_reconciles(doc, doc_type, line_items, inclusive, target_total):
             f"or discount structure the Xero sync cannot represent faithfully. "
             f"Nothing was sent to Xero."
         )
+
+
+# --- Inbound (Xero -> ERPNext) tax reconstruction ---
+# Shared by the invoice, credit note, quotation and purchase order inbound
+# processors so every imported document carries the tax Xero holds.
+
+
+def inbound_line_rate(line, inclusive):
+    """Net (tax-exclusive) unit rate for an inbound Xero line.
+
+    ERPNext line rates are tax-exclusive (tax lives in the taxes table), but a
+    Xero document with LineAmountTypes=Inclusive carries gross amounts in both
+    UnitAmount and LineAmount. Using UnitAmount verbatim on such a document
+    counts the tax twice once the taxes row is added.
+    """
+    qty = flt(line.get("Quantity", 1)) or 1
+    if inclusive:
+        net_amount = flt(line.get("LineAmount", 0)) - flt(line.get("TaxAmount", 0))
+        return flt(net_amount / qty)
+    return flt(line.get("UnitAmount", 0))
+
+
+def resolve_inbound_tax_account(doc):
+    """Resolve the ERPNext tax account to post imported Xero tax against.
+
+    Prefers the tax account on a mapped item_tax_template already set on a line.
+    Only returns an account the operator has explicitly mapped — never a guess —
+    so we never post VAT to a wrong account.
+    """
+    for item in doc.items:
+        tmpl = item.get("item_tax_template")
+        if tmpl:
+            acc = frappe.db.get_value(
+                "Item Tax Template Detail", {"parent": tmpl}, "tax_type"
+            )
+            if acc:
+                return acc
+    return None
+
+
+def apply_inbound_taxes(doc, xero_data, erpnext_doctype, sign=1):
+    """Add a single 'Actual' tax charge equal to Xero's total tax so the ERPNext
+    grand total matches the Xero Total.
+
+    ``sign=-1`` is for return documents (credit notes): Xero reports TotalTax
+    as a positive figure while the ERPNext return carries negative amounts.
+
+    No-op when there is no tax or no mapped tax account can be resolved; the
+    caller's total-reconciliation guard then keeps the document a Draft rather
+    than posting an under-taxed record.
+    """
+    total_tax = flt(xero_data.get("TotalTax", 0))
+    if total_tax <= 0:
+        return
+    tax_account = resolve_inbound_tax_account(doc)
+    if not tax_account:
+        return
+    row = {
+        "charge_type": "Actual",
+        "account_head": tax_account,
+        "description": "Tax (imported from Xero)",
+        "tax_amount": sign * total_tax,
+    }
+    # Purchase-side doctypes share the "Purchase Taxes and Charges" child
+    # table, which requires category/add_deduct_tax.
+    if erpnext_doctype in ("Purchase Invoice", "Purchase Order"):
+        row["category"] = "Total"
+        row["add_deduct_tax"] = "Add"
+    doc.append("taxes", row)

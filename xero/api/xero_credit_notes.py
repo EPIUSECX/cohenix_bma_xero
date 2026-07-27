@@ -997,7 +997,12 @@ def process_xero_credit_note(xero_cn_data, settings):
             doc = frappe.new_doc(erpnext_doctype)
             doc.update(erpnext_data)
 
-            # Add line items
+            # Add line items. Inclusive Xero documents carry gross amounts, so
+            # net the per-line tax out of the rate (the taxes row below carries
+            # the tax) — same treatment as inbound invoices.
+            from .xero_line_builder import apply_inbound_taxes, inbound_line_rate
+
+            inclusive = xero_cn_data.get("LineAmountTypes") == "Inclusive"
             line_items = xero_cn_data.get("LineItems", [])
             for line in line_items:
                 item_code = get_or_create_item_from_xero_code(
@@ -1017,13 +1022,13 @@ def process_xero_credit_note(xero_cn_data, settings):
                     continue
 
                 # For credit notes, quantities should be negative in ERPNext
+                net_rate = inbound_line_rate(line, inclusive)
+                qty = abs(flt(line.get("Quantity", 1)))
                 item_dict = {
                     "description": line.get("Description", "Item from Xero"),
-                    "qty": -abs(flt(line.get("Quantity", 1))),  # Negative for return
-                    "rate": flt(line.get("UnitAmount", 0)),
-                    "amount": -abs(
-                        flt(line.get("LineAmount", 0))
-                    ),  # Negative for return
+                    "qty": -qty,  # Negative for return
+                    "rate": net_rate,
+                    "amount": -abs(flt(net_rate * qty)),  # Negative for return
                 }
 
                 # item_name is a 140-char field; Xero descriptions run to 4000.
@@ -1068,6 +1073,11 @@ def process_xero_credit_note(xero_cn_data, settings):
                     xero_entity_type="CreditNote",
                 )
                 return
+
+            # Reconstruct Xero's tax as a negative Actual charge so the return's
+            # |grand_total| matches Xero's Total (the reconcile guard below
+            # otherwise refuses to post it).
+            apply_inbound_taxes(doc, xero_cn_data, erpnext_doctype, sign=-1)
 
             doc.insert(ignore_permissions=True)
             erpnext_doc_name = doc.name
@@ -1128,7 +1138,9 @@ def process_xero_credit_note(xero_cn_data, settings):
 
         # Only auto-post when the totals reconcile (see 6a above).
         if totals_reconcile:
-            maybe_submit_inbound(doc, settings, xero_cn_id, "CreditNote")
+            maybe_submit_inbound(
+                doc, settings, xero_cn_id, "CreditNote", xero_status=cn_status
+            )
 
         log_xero_error(
             message=log_message,
