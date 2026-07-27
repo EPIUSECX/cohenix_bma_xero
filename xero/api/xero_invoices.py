@@ -15,7 +15,8 @@ from ..utils.xero_client import (
 )
 from ..utils.logging import log_xero_error
 from ..utils.retry_handler import retry_with_exponential_backoff
-# from .xero_accounts import get_xero_tax_rates # No longer needed here directly
+from ..utils.exceptions import TaxRepresentationError
+from .xero_line_builder import build_xero_lines, validate_invoice_description
 
 
 def maybe_submit_inbound(doc, settings, xero_entity_id, xero_entity_type):
@@ -76,28 +77,8 @@ def maybe_submit_inbound(doc, settings, xero_entity_id, xero_entity_type):
 
 
 # --- Validation Functions ---
-
-
-def validate_invoice_description(description, item_name=None, item_code=None):
-    """
-    Validate and sanitize invoice line item description for Xero.
-    Xero requires: min 1 char, max 4000 chars
-    """
-    description = (description or "").strip()
-
-    # Strip HTML tags if description contains them
-    if description and "<" in description:
-        description = re.sub(r"<[^>]+>", "", description).strip()
-
-    # Fallback if empty
-    if not description:
-        description = item_name or item_code or "Item"
-
-    # Xero max length is 4000 chars
-    if len(description) > 4000:
-        description = description[:3997] + "..."
-
-    return description
+# validate_invoice_description lives in xero_line_builder (shared with credit
+# notes and purchase orders) and is re-exported above for existing importers.
 
 
 def validate_invoice_number(invoice_name):
@@ -456,28 +437,23 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
         # For Purchase Invoices, use bill_date (supplier's invoice date) if set; fall back to posting_date
         bill_date = doc.get("bill_date") if doc_type == "Purchase Invoice" else None
 
-        # CR-7: Detect tax-inclusive ERPNext invoices. ERPNext flags this on the
-        # tax rows via included_in_print_rate=1 (the rate already contains tax).
-        # If ANY tax row is inclusive we must tell Xero "Inclusive" so it does
-        # not add tax on top of an already-tax-inclusive line amount.
-        line_amount_types = "Exclusive"
-        if any(flt(tax.get("included_in_print_rate")) for tax in doc.taxes):
-            line_amount_types = "Inclusive"
+        # Line items + per-line TaxType/TaxAmount + LineAmountTypes + rounding
+        # line. Raises TaxRepresentationError (doc marked Error below) instead
+        # of ever sending a payload whose Total/TotalTax would not reconcile.
+        built = build_xero_lines(doc, doc_type, settings)
 
         invoice_payload = {
             "Type": xero_invoice_type,
             "Contact": {"ContactID": xero_contact_id},
             "Date": getdate(bill_date or doc.posting_date).isoformat(),
             "DueDate": getdate(doc.due_date).isoformat(),
-            "LineItems": [],
+            "LineItems": built.line_items,
             "InvoiceNumber": validate_invoice_number(
                 doc.name
             ),  # Validate invoice number
             "CurrencyCode": doc.currency,
             "Status": "AUTHORISED",  # Or SUBMITTED? AUTHORISED seems more appropriate for synced invoices.
-            # CR-7: LineAmountTypes derived from ERPNext tax config (Inclusive vs
-            # Exclusive) rather than hardcoded. See line_amount_types above.
-            "LineAmountTypes": line_amount_types,
+            "LineAmountTypes": built.line_amount_types,
         }
 
         # Add Reference field (max 255 chars)
@@ -532,133 +508,6 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
         # include the Xero Invoice ID so Xero performs UPDATE not CREATE.
         if xero_invoice_id:
             invoice_payload["InvoiceID"] = xero_invoice_id
-
-        # --- Map Line Items ---
-        # Track whether any line carries a Xero TaxType. When it does, Xero
-        # computes the tax itself from the line, so we must NOT also send the
-        # ERPNext tax rows as separate line items (that double-counts VAT).
-        has_line_tax = False
-        for item in doc.items:
-            # Get Xero Account Code from mapping in settings
-            erpnext_account = (
-                item.income_account
-                if doc_type == "Sales Invoice"
-                else item.expense_account
-            )
-            xero_account_code = get_xero_account_code(
-                erpnext_account, settings
-            )  # Pass settings
-            if not xero_account_code:
-                raise Exception(
-                    f"Xero Account Code mapping not found in Xero Settings for ERPNext Account: {erpnext_account} (Item: {item.item_code or item.description})"
-                )
-
-            # Validate description (min 1 char, max 4000 chars)
-            description = validate_invoice_description(
-                item.description, item.item_name, item.item_code
-            )
-
-            line_item = {
-                "Description": description,
-                "Quantity": item.qty,
-                "UnitAmount": item.rate,
-                "AccountCode": xero_account_code,
-                "LineAmount": item.amount,
-                # Map Tax Type using mapping in settings
-                "TaxType": map_erpnext_tax_to_xero(
-                    item.item_tax_template, settings
-                ),  # Pass settings
-            }
-            if line_item["TaxType"] != "NONE":
-                has_line_tax = True
-
-            # Add ItemCode if item has been synced to Xero
-            if item.item_code:
-                xero_item_code = frappe.db.get_value(
-                    "Item", item.item_code, "xero_item_id"
-                )
-                if xero_item_code:
-                    line_item["ItemCode"] = item.item_code
-
-            # LO-1: Do NOT send DiscountRate. ERPNext's item.rate / item.amount
-            # are ALREADY net of the discount, so also sending DiscountRate makes
-            # Xero apply the discount a SECOND time. We send the net rate only
-            # (no DiscountRate) so the figure Xero stores matches ERPNext.
-            invoice_payload["LineItems"].append(line_item)
-
-        # --- Map Taxes and Charges ---
-        # Add each tax/charge as a separate line item, as per Xero's recommendation for non-standard taxes/charges.
-        for tax in doc.taxes:
-            # When Xero is already computing tax from the line-level TaxType,
-            # skip percentage-based tax rows (e.g. VAT) so the tax isn't counted
-            # twice. Flat "Actual" charges (rate == 0, e.g. freight) are genuine
-            # additional lines and are still sent.
-            if has_line_tax and flt(tax.rate):
-                continue
-            tax_account_code = get_xero_account_code(tax.account_head, settings)
-            if not tax_account_code:
-                raise Exception(
-                    f"Xero Account Code mapping not found for Tax/Charge Account: {tax.account_head}"
-                )
-
-            tax_description = validate_invoice_description(
-                tax.description, "Tax/Charge"
-            )
-
-            tax_line_item = {
-                "Description": tax_description,
-                "Quantity": 1,
-                "UnitAmount": tax.tax_amount_after_discount_amount,
-                "AccountCode": tax_account_code,
-                # We set the tax type to NONE for the charge itself, as the tax is part of the line total.
-                # The tax on the main items should handle the actual tax calculation.
-                "TaxType": "NONE",
-            }
-            invoice_payload["LineItems"].append(tax_line_item)
-
-        # --- CR-7: Tax reconciliation guard ---
-        # Compare the tax we are effectively sending Xero against ERPNext's own
-        # tax total. When has_line_tax is True, Xero computes tax from the line
-        # TaxTypes, so the "tax we send" is the sum of ERPNext percentage tax
-        # rows that we intentionally dropped from the payload (they are encoded
-        # in the line TaxType instead). When has_line_tax is False, every tax
-        # row was sent as an explicit line, so the "sent" tax equals the doc
-        # tax total. In both cases the authoritative figure is the ERPNext doc
-        # tax total; we surface any divergence rather than silently shipping a
-        # payload whose VAT does not match the ERPNext document.
-        erpnext_tax_total = sum(
-            flt(tax.base_tax_amount_after_discount_amount or tax.tax_amount_after_discount_amount)
-            for tax in doc.taxes
-        )
-        if has_line_tax:
-            # Tax encoded in line TaxTypes — what we "send" is the dropped
-            # percentage rows that Xero will recompute.
-            sent_tax_total = sum(
-                flt(tax.tax_amount_after_discount_amount)
-                for tax in doc.taxes
-                if flt(tax.rate)
-            )
-        else:
-            # All tax rows sent as explicit NONE-taxed line items.
-            sent_tax_total = sum(
-                flt(tax.tax_amount_after_discount_amount) for tax in doc.taxes
-            )
-        if abs(flt(erpnext_tax_total) - flt(sent_tax_total)) > 0.02:
-            log_xero_error(
-                message=(
-                    f"Tax mismatch on outbound {doc_type} {doc_name}: ERPNext "
-                    f"tax total {erpnext_tax_total} vs tax represented in Xero "
-                    f"payload {sent_tax_total} (LineAmountTypes="
-                    f"{invoice_payload['LineAmountTypes']}, has_line_tax="
-                    f"{has_line_tax}). Verify tax mapping before relying on the "
-                    f"Xero figures."
-                ),
-                status="Warning",
-                erpnext_doc_type=doc_type,
-                erpnext_doc_name=doc_name,
-                direction="ERPNext to Xero",
-                category="Validation Errors",
-            )
 
         # --- Make API Call (POST for both create and update) ---
         # Xero API: POST creates OR updates (if InvoiceID provided, updates; otherwise creates)
@@ -750,14 +599,18 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
                 direction="ERPNext to Xero",
             )
         else:
-            from ..utils.logging import format_sync_error_message
+            from ..utils.logging import build_error_details, format_sync_error_message
 
-            # Genuine sync error
+            # Genuine sync error. A permanent Xero rejection (4xx validation)
+            # can never succeed with the same payload, so it goes to the
+            # terminal "Failed" state — sync_pending_documents leaves those
+            # alone; the operator fixes the cause and retries explicitly.
+            sync_status = "Failed" if getattr(e, "is_permanent", False) else "Error"
             if doc_name and doc_type:
                 frappe.db.set_value(
                     doc_type,
                     doc_name,
-                    {"xero_sync_status": "Error"},
+                    {"xero_sync_status": sync_status},
                     update_modified=False,
                 )
                 frappe.db.commit()
@@ -770,7 +623,7 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
                 message=user_message,
                 erpnext_doc_type=doc_type,
                 erpnext_doc_name=doc_name,
-                error_details=error_traceback,
+                error_details=build_error_details(e, error_traceback),
                 direction="ERPNext to Xero",
             )
 
@@ -1291,9 +1144,11 @@ def get_erpnext_tax_from_xero_type(xero_tax_type, settings=None):
     # Get existing mapping (ERPNext → Xero)
     tax_map = settings.get_tax_map()
 
-    # Reverse lookup
+    # Reverse lookup. Mapping keys may also be doc-level tax templates or tax
+    # accounts (outbound resolution); only a real Item Tax Template is valid on
+    # an ERPNext invoice line.
     for erpnext_tax, xero_type in tax_map.items():
-        if xero_type == xero_tax_type:
+        if xero_type == xero_tax_type and frappe.db.exists("Item Tax Template", erpnext_tax):
             return erpnext_tax
 
     # Not found - return None (will use no tax)
@@ -1409,6 +1264,17 @@ def sync_invoices_from_xero(invoice_type=None, modified_since=None, status=None)
             message="Error during sync_invoices_from_xero",
             error_details=frappe.get_traceback(),
         )
+
+
+def _default_uom():
+    """UOM for inbound lines that carry no ItemCode. Xero has no UOM concept,
+    so use the site's default stock UOM (falling back to any existing UOM)."""
+    uom = frappe.db.get_single_value("Stock Settings", "stock_uom")
+    if uom and frappe.db.exists("UOM", uom):
+        return uom
+    if frappe.db.exists("UOM", "Nos"):
+        return "Nos"
+    return frappe.db.get_value("UOM", {}, "name")
 
 
 def _resolve_inbound_tax_account(doc):
@@ -1707,13 +1573,20 @@ def process_xero_invoice(xero_invoice_data, settings):
                     "amount": flt(line.get("LineAmount", 0)),
                 }
 
-                # Add item code if found
+                # Add item code if found. item_name is a 140-char field while
+                # Xero descriptions run to 4000 — truncate; the full text is
+                # kept in description.
                 if item_code:
                     item_dict["item_code"] = item_code
-                    item_dict["item_name"] = line.get("Description")
+                    item_dict["item_name"] = (line.get("Description") or "")[:140] or None
                 else:
-                    # Use description as item_name when no item_code
-                    item_dict["item_name"] = line.get("Description", "Xero Item")
+                    item_dict["item_name"] = (line.get("Description") or "Xero Item")[:140]
+                    # C3: description-only lines (the normal shape of a
+                    # hand-entered Xero invoice) have no Item to backfill the
+                    # mandatory UOM from — without these two fields every such
+                    # invoice failed with the bare MandatoryError "uom".
+                    item_dict["uom"] = _default_uom()
+                    item_dict["conversion_factor"] = 1
 
                 # Add account
                 if erpnext_doctype == "Sales Invoice":
@@ -1814,6 +1687,11 @@ def process_xero_invoice(xero_invoice_data, settings):
         )
 
     except Exception as e:
+        # Discard the failed insert's uncommitted writes FIRST — including the
+        # naming-series increment doc.insert() already reserved. Without this,
+        # the commit inside log_xero_error persisted the series bump and every
+        # failed inbound attempt burned an ACC-SINV number (C3).
+        frappe.db.rollback()
         # Always release the lock on failure so retries are not permanently blocked
         frappe.cache().delete_value(lock_key)
         from ..utils.logging import is_already_exists_error
@@ -1849,7 +1727,7 @@ def process_xero_invoice(xero_invoice_data, settings):
                 direction="Xero to ERPNext",
             )
         else:
-            from ..utils.logging import format_sync_error_message
+            from ..utils.logging import build_error_details, format_sync_error_message
 
             sync_status = "Error"
             if erpnext_doc_name:
@@ -1877,7 +1755,7 @@ def process_xero_invoice(xero_invoice_data, settings):
                 xero_entity_id=xero_invoice_id,
                 xero_entity_type="Invoice",
                 direction="Xero to ERPNext",
-                error_details=error_traceback,
+                error_details=build_error_details(e, error_traceback),
             )
 
 

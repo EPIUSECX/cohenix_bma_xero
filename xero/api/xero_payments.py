@@ -7,6 +7,7 @@ from frappe.utils import getdate, flt, now
 from ..utils.xero_client import xero_request, get_xero_settings
 from ..utils.logging import log_xero_error
 from ..utils.retry_handler import retry_with_exponential_backoff
+from ..utils.exceptions import XeroApiError
 
 # --- Payment Sync (ERPNext to Xero) ---
 
@@ -156,14 +157,16 @@ def sync_payment_to_xero(doc_name, doc_type="Payment Entry", **kwargs):
                 direction="ERPNext to Xero",
             )
         else:
-            from ..utils.logging import format_sync_error_message
+            from ..utils.logging import build_error_details, format_sync_error_message
 
-            # Genuine sync error
+            # Genuine sync error; permanent Xero rejections go terminal so the
+            # hourly retry task stops re-queuing an unsatisfiable document.
+            sync_status = "Failed" if getattr(e, "is_permanent", False) else "Error"
             if doc_name and doc_type:
                 frappe.db.set_value(
                     doc_type,
                     doc_name,
-                    {"xero_sync_status": "Error"},
+                    {"xero_sync_status": sync_status},
                     update_modified=False,
                 )
                 frappe.db.commit()
@@ -176,7 +179,7 @@ def sync_payment_to_xero(doc_name, doc_type="Payment Entry", **kwargs):
                 message=user_message,
                 erpnext_doc_type=doc_type,
                 erpnext_doc_name=doc_name,
-                error_details=error_traceback,
+                error_details=build_error_details(e, error_traceback),
                 direction="ERPNext to Xero",
             )
 
@@ -259,9 +262,15 @@ def sync_invoice_payments(doc, xero_bank_account_id, doc_type, doc_name):
       3. Persist the map after EACH successful PUT, before processing the
          next reference. This means a partial failure mid-loop leaves a
          consistent map; the retry only re-attempts unsynced references.
+      4. A leg Xero PERMANENTLY rejects (4xx validation) is recorded and the
+         loop continues, so one bad leg cannot block the others. The document
+         then ends "Failed" with a per-leg summary — visibly partial, not an
+         opaque single Error — and is not re-queued hourly (H4). Transient
+         errors still raise so the retry decorator can re-run the whole sync.
     """
     idemp_map = _load_payment_idempotency_map(doc_type, doc_name)
     initial_map_size = len(idemp_map)
+    rejected_legs = []
 
     for reference in doc.references:
         if reference.allocated_amount <= 0:
@@ -323,10 +332,39 @@ def sync_invoice_payments(doc, xero_bank_account_id, doc_type, doc_name):
         }
 
         idempotency_key = f"Payment Entry:{doc_name}:{xero_invoice_id}:create-payment"
-        response = xero_request(
-            "PUT", "Payments", data={"Payments": [payment_payload]},
-            idempotency_key=idempotency_key,
-        )
+        try:
+            response = xero_request(
+                "PUT", "Payments", data={"Payments": [payment_payload]},
+                idempotency_key=idempotency_key,
+            )
+        except XeroApiError as leg_error:
+            if not leg_error.is_permanent:
+                raise
+            rejected_legs.append(
+                {
+                    "invoice": f"{invoice_doctype} {invoice_name}",
+                    "amount": flt(reference.allocated_amount),
+                    "reason": "; ".join(leg_error.validation_messages) or str(leg_error),
+                    "body": leg_error.response_body,
+                }
+            )
+            log_xero_error(
+                message=(
+                    f"Xero rejected the {flt(reference.allocated_amount)} payment "
+                    f"leg for {invoice_doctype} {invoice_name} (from {doc_type} "
+                    f"{doc_name}): "
+                    + ("; ".join(leg_error.validation_messages) or str(leg_error))
+                ),
+                status="Error",
+                erpnext_doc_type=doc_type,
+                erpnext_doc_name=doc_name,
+                xero_entity_id=xero_invoice_id,
+                xero_entity_type="Payment",
+                direction="ERPNext to Xero",
+                error_details=leg_error.response_body,
+                category="Validation Errors",
+            )
+            continue
 
         if not response or not response.get("Payments"):
             raise Exception(
@@ -355,7 +393,39 @@ def sync_invoice_payments(doc, xero_bank_account_id, doc_type, doc_name):
             direction="ERPNext to Xero",
         )
 
-    # --- Final summary log ---
+    # --- Final summary ---
+    if rejected_legs:
+        # Partial (or zero) success with permanently-rejected legs: make the
+        # split explicit and go terminal. The successful legs are safe in the
+        # idempotency map (a later retry cannot double-pay them); the failed
+        # legs need operator action, so hourly re-queuing would only spam logs.
+        eligible = [r for r in doc.references if r.allocated_amount > 0]
+        detail = "; ".join(
+            f"{leg['invoice']} ({leg['amount']}): {leg['reason']}" for leg in rejected_legs
+        )
+        frappe.db.set_value(
+            doc_type, doc_name, {"xero_sync_status": "Failed"}, update_modified=False
+        )
+        frappe.db.commit()
+        log_xero_error(
+            message=(
+                f"Partial payment sync for {doc_type} {doc_name}: "
+                f"{len(idemp_map)} of {len(eligible)} leg(s) exist in Xero; "
+                f"{len(rejected_legs)} leg(s) permanently rejected — {detail}. "
+                f"Fix the cause and use Retry; this document is not re-queued "
+                f"automatically."
+            ),
+            status="Error",
+            erpnext_doc_type=doc_type,
+            erpnext_doc_name=doc_name,
+            xero_entity_id=next(iter(idemp_map.values()), None),
+            xero_entity_type="Payment",
+            direction="ERPNext to Xero",
+            error_details="\n\n".join(leg["body"] for leg in rejected_legs if leg.get("body")) or None,
+            category="Validation Errors",
+        )
+        return
+
     if not idemp_map:
         # Map is empty — nothing was synced, ever. Treat as failure to
         # surface on dashboard, but only if the doc had references that
@@ -566,6 +636,8 @@ def sync_payments_from_xero(invoice_id=None):
 
 def process_xero_payment(xero_payment_data, settings):
     """Creates or updates an ERPNext Payment Entry from Xero payment data."""
+    import json
+
     from .xero_invoices import parse_xero_date
 
     xero_payment_id = xero_payment_data.get("PaymentID")
@@ -795,6 +867,11 @@ def process_xero_payment(xero_payment_data, settings):
             "reference_date": posting_date,  # Set reference date to match posting date
             "remarks": f"Payment from Xero for {invoice_doctype} {invoice_name}",
             "xero_payment_id": xero_payment_id,
+            # Seed the outbound idempotency map: this payment already exists in
+            # Xero, so a later manual submit of this PE must skip the leg
+            # instead of PUTting a duplicate payment (flags.ignore_xero_sync
+            # does not survive beyond the inbound request).
+            "xero_payment_data": json.dumps({xero_invoice_id: xero_payment_id}),
             "xero_sync_status": "Synced",
             "references": [
                 {

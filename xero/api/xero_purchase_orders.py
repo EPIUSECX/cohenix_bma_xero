@@ -5,6 +5,7 @@ import frappe
 from frappe import _
 from ..utils.xero_client import xero_request, get_xero_settings
 from ..utils.logging import log_xero_error
+from .xero_line_builder import build_xero_lines
 from frappe.utils import getdate
 
 @frappe.whitelist()
@@ -59,26 +60,28 @@ def sync_purchase_order_to_xero(doc_name, doc_type):
         if not xero_contact_id:
             raise Exception(f"Xero Contact ID not found for Supplier: {doc.supplier}.")
 
-        # 2. Map Line Items
-        line_items = []
-        for item in doc.items:
-            line_items.append({
-                "Description": item.description,
-                "Quantity": item.qty,
-                "UnitAmount": item.rate,
-                "ItemCode": item.item_code,
-                "LineAmount": item.amount,
-            })
+        # 2. Map Line Items via the shared builder: sanitised descriptions,
+        # mapped AccountCodes where available, per-line TaxType/TaxAmount and
+        # LineAmountTypes. Sending no TaxType made Xero fall back to each
+        # account's DEFAULT tax rate, inflating every PO by that rate (H2).
+        # AccountCode stays optional on PO lines (require_account=False);
+        # rounding is off because nothing allocates payments against a PO.
+        built = build_xero_lines(
+            doc, doc_type, settings, require_account=False, include_rounding=False
+        )
 
         # 3. Construct Purchase Order Payload
         po_payload = {
             "Contact": { "ContactID": xero_contact_id },
             "Date": getdate(doc.transaction_date).isoformat(),
-            "DeliveryDate": getdate(doc.schedule_date).isoformat() if doc.schedule_date else None,
-            "LineItems": line_items,
+            "LineItems": built.line_items,
+            "LineAmountTypes": built.line_amount_types,
             "PurchaseOrderNumber": doc.name,
+            "CurrencyCode": doc.currency,
             "Status": "AUTHORISED",
         }
+        if doc.schedule_date:
+            po_payload["DeliveryDate"] = getdate(doc.schedule_date).isoformat()
 
         if xero_po_id:
             po_payload["PurchaseOrderID"] = xero_po_id
@@ -86,7 +89,13 @@ def sync_purchase_order_to_xero(doc_name, doc_type):
         # 4. Make API Call
         # Xero API: POST handles both create (no ID) and update (ID in payload).
         # PUT only creates new records and will not update existing ones.
-        response = xero_request("POST", "PurchaseOrders", data={"PurchaseOrders": [po_payload]})
+        # Key the create so a retry after a lost response cannot duplicate the PO.
+        response = xero_request(
+            "POST",
+            "PurchaseOrders",
+            data={"PurchaseOrders": [po_payload]},
+            idempotency_key=None if xero_po_id else f"{doc_type}:{doc_name}:create-purchase-order",
+        )
 
         # 5. Process response
         if response and response.get("PurchaseOrders"):
@@ -121,8 +130,11 @@ def sync_purchase_order_to_xero(doc_name, doc_type):
                 direction="ERPNext to Xero"
             )
         else:
-            from ..utils.logging import format_sync_error_message
-            frappe.db.set_value(doc_type, doc_name, "xero_sync_status", "Error", update_modified=False)
+            from ..utils.logging import build_error_details, format_sync_error_message
+            # Permanent Xero rejections go terminal ("Failed") so the hourly
+            # retry task stops re-queuing an unsatisfiable document.
+            sync_status = "Failed" if getattr(e, "is_permanent", False) else "Error"
+            frappe.db.set_value(doc_type, doc_name, "xero_sync_status", sync_status, update_modified=False)
             frappe.db.commit()
             user_message = format_sync_error_message(
                 doc_type, doc_name, doc_name, "ERPNext to Xero", e
@@ -131,7 +143,7 @@ def sync_purchase_order_to_xero(doc_name, doc_type):
                 message=user_message,
                 erpnext_doc_type=doc_type,
                 erpnext_doc_name=doc_name,
-                error_details=error_traceback,
+                error_details=build_error_details(e, error_traceback),
                 direction="ERPNext to Xero"
             )
 

@@ -15,12 +15,11 @@
  "fields": [
   {
    "fieldname": "erpnext_tax_template",
-   "fieldtype": "Link",
-   "label": "ERPNext Item Tax Template",
-   "options": "Item Tax Template",
+   "fieldtype": "Data",
+   "label": "ERPNext Tax (template or account)",
    "reqd": 1,
    "in_list_view": 1,
-   "description": "Select the ERPNext tax template to map."
+   "description": "Exact name of an Item Tax Template, a Sales/Purchase Taxes and Charges Template, or a tax Account. Outbound sync resolves a line's Xero Tax Type in that order."
   },
   {
    "fieldname": "xero_tax_rate_link",
@@ -63,7 +62,7 @@
 "issingle": 0,
 "istable": 1,
 "links": [],
-"modified": "2025-04-17 19:09:18.483560",
+"modified": "2026-07-26 12:00:00.000000",
 "modified_by": "Administrator",
 "module": "Xero",
 "name": "Xero Tax Mapping",

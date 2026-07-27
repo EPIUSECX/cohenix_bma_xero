@@ -27,7 +27,13 @@ def retry_with_exponential_backoff(max_retries=3, base_delay=1, max_delay=60, ba
                     return func(*args, **kwargs)
                 except Exception as e:
                     last_exception = e
-                    
+
+                    # A permanent Xero rejection (4xx validation) can never
+                    # succeed on retry with the same payload — fail fast so the
+                    # caller can mark the document terminally.
+                    if getattr(e, "is_permanent", False):
+                        raise e
+
                     if attempt == max_retries:
                         # Final attempt failed, log and re-raise
                         log_xero_error(
