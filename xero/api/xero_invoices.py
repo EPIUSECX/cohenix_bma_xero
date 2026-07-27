@@ -2,6 +2,7 @@
 # For license information, please see license.txt
 
 import frappe
+from ..utils.transactions import commit_checkpoint, commit_error_state, commit_external_outcome
 from frappe import _
 from frappe.utils import flt, getdate, nowdate, now_datetime
 from frappe.model.mapper import get_mapped_doc
@@ -42,7 +43,7 @@ def maybe_submit_inbound(doc, settings, xero_entity_id, xero_entity_type):
         frappe.db.set_value(
             doc.doctype, doc.name, "xero_sync_status", "Synced", update_modified=False
         )
-        frappe.db.commit()  # nosemgrep: per-doc checkpoint in inbound sync; later failures must not undo imported docs
+        commit_checkpoint()
         log_xero_error(
             message=f"Auto-submitted inbound {doc.doctype} {doc.name} from Xero {xero_entity_type} {xero_entity_id}",
             status="Success",
@@ -59,7 +60,7 @@ def maybe_submit_inbound(doc, settings, xero_entity_id, xero_entity_type):
             frappe.db.set_value(
                 doc.doctype, doc.name, "xero_sync_status", "Error", update_modified=False
             )
-            frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
+            commit_error_state()
         except Exception:
             pass
         log_xero_error(
@@ -408,7 +409,7 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
                 {"xero_sync_status": "Pending Prerequisites"},
                 update_modified=False,
             )
-            frappe.db.commit()  # nosemgrep: per-doc status checkpoint in bulk sync
+            commit_checkpoint()
 
             log_xero_error(
                 message=f"{doc_type} {doc_name} sync deferred: {contact_party_type} {contact_party_name} must be synced to Xero first. Contact sync queued.",
@@ -487,7 +488,7 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
                     {"xero_invoice_id": recovered_id},
                     update_modified=False,
                 )
-                frappe.db.commit()  # nosemgrep: Xero write succeeded; a retried job must see this outcome or it would duplicate
+                commit_external_outcome()
                 log_xero_error(
                     message=(
                         f"Recovered Xero InvoiceID {recovered_id} for "
@@ -544,7 +545,7 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
                     {"xero_invoice_id": new_xero_invoice_id},
                     update_modified=False,
                 )
-                frappe.db.commit()  # nosemgrep: Xero write succeeded; a retried job must see this outcome or it would duplicate
+                commit_external_outcome()
 
                 # Now write the remaining sync fields
                 data_hash = compute_invoice_hash(doc)
@@ -557,7 +558,7 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
                     },
                     update_modified=False,
                 )
-                frappe.db.commit()  # nosemgrep: Xero write succeeded; a retried job must see this outcome or it would duplicate
+                commit_external_outcome()
 
                 log_xero_error(
                     message=f"Successfully synced {doc_type} {doc_name} to Xero.",
@@ -588,7 +589,7 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
                     {"xero_sync_status": "Synced"},
                     update_modified=False,
                 )
-                frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
+                commit_error_state()
 
             log_xero_error(
                 message=f"{doc_type} {doc_name} already exists in Xero. No action needed.",
@@ -613,7 +614,7 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
                     {"xero_sync_status": sync_status},
                     update_modified=False,
                 )
-                frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
+                commit_error_state()
 
             user_message = format_sync_error_message(
                 doc_type, doc_name, doc_name, "ERPNext to Xero", e
@@ -730,7 +731,7 @@ def void_invoice_in_xero(doc_name, doc_type):
                 f"{action_past} in Xero",
                 update_modified=False,
             )
-            frappe.db.commit()  # nosemgrep: Xero write succeeded; a retried job must see this outcome or it would duplicate
+            commit_external_outcome()
             log_xero_error(
                 message=f"Successfully {action_past.lower()} {doc_type} {doc_name} in Xero (status: {new_status}).",
                 status="Success",
@@ -841,7 +842,7 @@ def check_invoice_payments():
                     else:
                         # Just update status if PE creation is disabled
                         erpnext_inv_doc.db_set("status", "Paid")
-                        frappe.db.commit()  # nosemgrep: per-doc checkpoint in inbound sync; later failures must not undo imported docs
+                        commit_checkpoint()
 
                     processed_count += 1
 
@@ -968,7 +969,7 @@ def create_payment_entry_for_xero_payment(invoice_doc, xero_invoice_data, settin
         # Still update status if PE creation skipped
         if invoice_doc.status != "Paid":
             invoice_doc.db_set("status", "Paid")
-            frappe.db.commit()  # nosemgrep: per-doc checkpoint in inbound sync; later failures must not undo imported docs
+            commit_checkpoint()
         return
 
     from .xero_payments import process_xero_payment
@@ -1665,7 +1666,7 @@ def process_xero_invoice(xero_invoice_data, settings):
             compute_invoice_hash(doc), update_modified=False,
         )
 
-        frappe.db.commit()  # nosemgrep: per-doc checkpoint in inbound sync; later failures must not undo imported docs
+        commit_checkpoint()
         # Release the idempotency lock now that the record is committed
         frappe.cache().delete_value(lock_key)
 
@@ -1710,7 +1711,7 @@ def process_xero_invoice(xero_invoice_data, settings):
                     "Synced",
                     update_modified=False,
                 )
-                frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
+                commit_error_state()
 
             log_xero_error(
                 message=f"Xero Invoice {xero_invoice_id} ({invoice_number}) already exists in ERPNext as {erpnext_doc_name or 'submitted document'}. Skipping update.",
@@ -1738,7 +1739,7 @@ def process_xero_invoice(xero_invoice_data, settings):
                     sync_status,
                     update_modified=False,
                 )
-                frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
+                commit_error_state()
 
             user_message = format_sync_error_message(
                 "Xero Invoice", xero_invoice_id, invoice_number, "Xero to ERPNext", e

@@ -3,6 +3,7 @@
 
 import frappe
 import requests
+from .transactions import commit_checkpoint, commit_error_state, commit_external_outcome
 from frappe.utils import get_site_url, now_datetime, add_to_date, get_datetime
 from json import dumps, loads
 from urllib.parse import urlencode
@@ -114,7 +115,7 @@ def set_sync_watermark(entity_key, value):
     # The synced documents behind this watermark are already committed
     # per-document; the watermark must persist with them even if a later
     # entity in the same batch job aborts and rolls back.
-    frappe.db.commit()  # nosemgrep
+    commit_checkpoint()
 
 
 def incremental_since(entity_key):
@@ -278,7 +279,7 @@ def handle_oauth_callback(code=None, state=None, error=None):
         # The authorization code was consumed by the one-shot token exchange
         # above; the tokens must persist even if the rest of this request
         # fails, or the user has to redo the whole OAuth flow.
-        frappe.db.commit()  # nosemgrep
+        commit_external_outcome()
 
         frappe.local.response["type"] = "redirect"
         frappe.local.response["location"] = (
@@ -465,7 +466,7 @@ def _do_refresh(settings, log_xero_error, time):
             # Xero rotates the refresh token on every use; if a later failure
             # in the surrounding job rolled this back, the stored (already
             # invalidated) token would permanently break the connection.
-            frappe.db.commit()  # nosemgrep
+            commit_external_outcome()
 
             log_xero_error(
                 message="Xero access token refreshed successfully",
@@ -499,7 +500,7 @@ def _do_refresh(settings, log_xero_error, time):
                     # Persist the invalidation before the surrounding job
                     # aborts, or the dead token would be restored on rollback
                     # and every subsequent run would retry it and re-alert.
-                    frappe.db.commit()  # nosemgrep
+                    commit_error_state()
 
                     notify_admins_token_failure(
                         "Invalid refresh token - re-authentication required"

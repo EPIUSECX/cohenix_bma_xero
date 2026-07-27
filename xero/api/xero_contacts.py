@@ -2,6 +2,7 @@
 # For license information, please see license.txt
 
 import frappe
+from ..utils.transactions import commit_checkpoint, commit_error_state, commit_external_outcome
 from frappe import _
 from frappe.utils import get_fullname
 import hashlib
@@ -237,7 +238,7 @@ def sync_contact_to_xero(doc_name, doc_type, **kwargs):
             frappe.db.set_value(
                 doc_type, doc_name, {"xero_sync_status": "Error"}, update_modified=False
             )
-            frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
+            commit_error_state()
             return
 
         # --- Map ERPNext Data to Xero Contact Format ---
@@ -430,7 +431,7 @@ def sync_contact_to_xero(doc_name, doc_type, **kwargs):
                     },
                     update_modified=False,
                 )
-                frappe.db.commit()  # nosemgrep: Xero write succeeded; a retried job must see this outcome or it would duplicate
+                commit_external_outcome()
 
                 log_xero_error(
                     message=f"Successfully synced {doc_type} {doc_name} to Xero.",
@@ -459,7 +460,7 @@ def sync_contact_to_xero(doc_name, doc_type, **kwargs):
                 {"xero_sync_status": "Synced"},
                 update_modified=False,
             )
-            frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
+            commit_error_state()
 
             log_xero_error(
                 message=f"{doc_type} {doc_name} already exists in Xero. No action needed.",
@@ -479,7 +480,7 @@ def sync_contact_to_xero(doc_name, doc_type, **kwargs):
             frappe.db.set_value(
                 doc_type, doc_name, {"xero_sync_status": sync_status}, update_modified=False
             )
-            frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
+            commit_error_state()
             user_message = format_sync_error_message(
                 doc_type, doc_name, doc_name, "ERPNext to Xero", e
             )
@@ -1021,7 +1022,7 @@ def sync_xero_contact_to_erpnext(xero_contact_data, target_doctype):
                 error_details=frappe.get_traceback(),
             )
 
-        frappe.db.commit()  # nosemgrep: per-doc checkpoint in inbound sync; later failures must not undo imported docs
+        commit_checkpoint()
         log_xero_error(
             message=log_message,
             status="Success",
@@ -1137,7 +1138,7 @@ def sync_xero_contact_to_erpnext(xero_contact_data, target_doctype):
                 sync_status,
                 update_modified=False,
             )
-            frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
+            commit_error_state()
 
         log_xero_error(
             message=f"Failed to sync Xero Contact {xero_contact_id} to ERPNext {target_doctype}",
@@ -1350,7 +1351,7 @@ def sync_contact_person_to_erpnext(
             contact.insert(ignore_permissions=True)
             action = "Created"
 
-        frappe.db.commit()  # nosemgrep: per-doc checkpoint in inbound sync; later failures must not undo imported docs
+        commit_checkpoint()
 
         # Log success
         full_name = (
@@ -1513,7 +1514,7 @@ def sync_xero_address_to_erpnext(
             address.insert(ignore_permissions=True)
             action = "Created"
 
-        frappe.db.commit()  # nosemgrep: per-doc checkpoint in inbound sync; later failures must not undo imported docs
+        commit_checkpoint()
 
         # Log success
         address_summary = f"{address_line1 or ''}, {city or ''}".strip(", ")
@@ -1603,7 +1604,7 @@ def store_contact_notes(party_doctype, party_name, notes):
         added += 1
 
     if added:
-        frappe.db.commit()  # nosemgrep: per-doc checkpoint in inbound sync; later failures must not undo imported docs
+        commit_checkpoint()
     return added
 
 
@@ -1726,7 +1727,7 @@ def sync_contact_notes_from_xero(batch_size=50, refresh_days=7, call_delay=0.4):
         if call_delay and i < len(due) - 1:
             time.sleep(call_delay)
 
-    frappe.db.commit()  # nosemgrep: per-doc checkpoint in inbound sync; later failures must not undo imported docs
+    commit_checkpoint()
     total, synced, never = get_contact_notes_progress()
 
     log_xero_error(
