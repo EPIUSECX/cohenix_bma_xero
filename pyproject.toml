@@ -1,9 +1,9 @@
 [project]
 name = "xero"
 authors = [
-    { name = "Cohenix", email = "info@cohenix.com"}
+    { name = "EPI-USE Global Services", email = "support@epiuse.com"}
 ]
-description = "Xero Integration with Cohenix ERP"
+description = "Integrate ERPNext with Xero Accounting"
 requires-python = ">=3.10"
 readme = "README.md"
 dynamic = ["version"]
