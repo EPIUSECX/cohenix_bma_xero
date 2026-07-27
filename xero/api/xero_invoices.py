@@ -1227,6 +1227,7 @@ def sync_invoices_from_xero(invoice_type=None, modified_since=None, status=None)
     try:
         page = 1
         params = {"page": page}
+        synced = skipped = failed = 0
 
         if invoice_type:
             params["Type"] = invoice_type
@@ -1248,14 +1249,22 @@ def sync_invoices_from_xero(invoice_type=None, modified_since=None, status=None)
 
             for invoice_data in invoices:
                 try:
-                    process_xero_invoice(invoice_data, settings)
+                    outcome = process_xero_invoice(invoice_data, settings)
                 except Exception as e:
+                    failed += 1
                     log_xero_error(
                         message=f"Failed to process Xero Invoice ID {invoice_data.get('InvoiceID')}",
                         xero_entity_id=invoice_data.get("InvoiceID"),
                         xero_entity_type="Invoice",
                         error_details=frappe.get_traceback(),
                     )
+                else:
+                    if outcome == "synced":
+                        synced += 1
+                    elif outcome == "failed":
+                        failed += 1
+                    else:
+                        skipped += 1
 
             if len(invoices) < 100:
                 break
@@ -1266,13 +1275,51 @@ def sync_invoices_from_xero(invoice_type=None, modified_since=None, status=None)
         # exception aborted the loop, the next run re-fetches from the old
         # watermark so nothing is missed.
         commit_watermark(watermark_key, run_started_at)
-        log_xero_error(message="Finished syncing invoices from Xero.", status="Info")
+        # skipped counts guards and duplicates; a skipped invoice is NOT
+        # retried by the incremental sweep once the watermark advances past it
+        # — recover individually via refetch_invoice after fixing the cause.
+        log_xero_error(
+            message=(
+                f"Finished syncing invoices from Xero: "
+                f"synced={synced}, skipped={skipped}, failed={failed}."
+            ),
+            status="Info",
+        )
 
     except Exception as e:
         log_xero_error(
             message="Error during sync_invoices_from_xero",
             error_details=frappe.get_traceback(),
         )
+
+
+@frappe.whitelist()
+def refetch_invoice(invoice_id):
+    """Fetch one invoice from Xero by ID and process it, without touching the
+    incremental watermark. Targeted recovery for an invoice the sweep skipped
+    (e.g. missing account mapping) after the underlying cause is fixed —
+    re-running the sweep would not help because the watermark has already
+    advanced past the invoice's UpdatedDateUTC.
+    """
+    from ..utils.xero_client import require_xero_manager
+
+    require_xero_manager()
+
+    invoice_id = (invoice_id or "").strip()
+    if not re.fullmatch(r"[0-9a-fA-F-]{36}", invoice_id):
+        frappe.throw(_("'{0}' is not a valid Xero invoice ID.").format(invoice_id))
+
+    settings = get_xero_settings()
+    if not settings.enable_xero_sync:
+        frappe.throw(_("Xero sync is disabled in Xero Settings."))
+
+    response = xero_request("GET", f"Invoices/{invoice_id}")
+    invoices = (response or {}).get("Invoices") or []
+    if not invoices:
+        frappe.throw(_("Invoice {0} not found in Xero.").format(invoice_id))
+
+    outcome = process_xero_invoice(invoices[0], settings)
+    return {"invoice_id": invoice_id, "outcome": outcome}
 
 
 def _default_uom():
@@ -1289,6 +1336,9 @@ def _default_uom():
 def process_xero_invoice(xero_invoice_data, settings):
     """
     Creates or updates an ERPNext Sales/Purchase Invoice from Xero invoice data.
+
+    Returns an outcome string for the sweep's tally: "synced" (created/updated),
+    "skipped" (guard or duplicate), or "failed" (error already logged here).
     """
     xero_invoice_id = xero_invoice_data.get("InvoiceID")
     invoice_number = xero_invoice_data.get("InvoiceNumber")
@@ -1298,13 +1348,13 @@ def process_xero_invoice(xero_invoice_data, settings):
         log_xero_error(
             message=f"Skipping Xero invoice due to missing ID or Type", status="Info"
         )
-        return
+        return "skipped"
 
     # Respect per-entity direction toggle for inbound
     if invoice_type == "ACCREC" and not settings.get("sync_invoices_from_xero"):
-        return  # Sales Invoice inbound disabled
+        return "skipped"  # Sales Invoice inbound disabled
     if invoice_type == "ACCPAY" and not settings.get("sync_bills_from_xero"):
-        return  # Bills inbound disabled
+        return "skipped"  # Bills inbound disabled
 
     # A voided/deleted Xero invoice has no ledger effect and must not be
     # imported (same guard credit notes have always had). An ERPNext doc that
@@ -1319,14 +1369,13 @@ def process_xero_invoice(xero_invoice_data, settings):
             xero_entity_type="Invoice",
             direction="Xero to ERPNext",
         )
-        return
+        return "skipped"
 
     # Determine ERPNext DocType
     erpnext_doctype = (
         "Sales Invoice" if invoice_type == "ACCREC" else "Purchase Invoice"
     )
 
-    # Check if invoice already exists in ERPNext.
     # Use a per-Xero-ID mutex via cache to prevent duplicate creation when
     # the hourly task and a manual sync overlap.
     lock_key = f"xero_inbound_lock_{xero_invoice_id}"
@@ -1337,17 +1386,26 @@ def process_xero_invoice(xero_invoice_data, settings):
             xero_entity_id=xero_invoice_id,
             direction="Xero to ERPNext",
         )
-        return
+        return "skipped"
     frappe.cache().set_value(lock_key, True, expires_in_sec=120)  # 2-minute lock
-
     try:
-        erpnext_doc_name = frappe.db.get_value(
-            erpnext_doctype, {"xero_invoice_id": xero_invoice_id}, "name"
+        return _process_xero_invoice_locked(
+            xero_invoice_data, settings, erpnext_doctype,
+            xero_invoice_id, invoice_number,
         )
     finally:
-        # Lock will auto-expire; release early on the happy path is not needed
-        # but we clear it in the exception handler below if insert fails.
-        pass
+        # Every exit path must release the mutex — a leaked lock blocks
+        # retries of this invoice for the full 2-minute TTL.
+        frappe.cache().delete_value(lock_key)
+
+
+def _process_xero_invoice_locked(
+    xero_invoice_data, settings, erpnext_doctype, xero_invoice_id, invoice_number
+):
+    """Create/update one inbound invoice. Caller holds the per-invoice mutex."""
+    erpnext_doc_name = frappe.db.get_value(
+        erpnext_doctype, {"xero_invoice_id": xero_invoice_id}, "name"
+    )
 
     # Get contact information
     xero_contact_id = xero_invoice_data.get("Contact", {}).get("ContactID")
@@ -1356,10 +1414,10 @@ def process_xero_invoice(xero_invoice_data, settings):
             message=f"Skipping Xero invoice {invoice_number}: No contact information",
             status="Info",
         )
-        return
+        return "skipped"
 
     # Find corresponding ERPNext customer/supplier
-    party_doctype = "Customer" if invoice_type == "ACCREC" else "Supplier"
+    party_doctype = "Customer" if erpnext_doctype == "Sales Invoice" else "Supplier"
     party_name = frappe.db.get_value(
         party_doctype, {"xero_contact_id": xero_contact_id}, "name"
     )
@@ -1371,7 +1429,7 @@ def process_xero_invoice(xero_invoice_data, settings):
             xero_entity_id=xero_invoice_id,
             xero_entity_type="Invoice",
         )
-        return
+        return "skipped"
 
     try:
         # Get company - use default company
@@ -1499,7 +1557,6 @@ def process_xero_invoice(xero_invoice_data, settings):
             # editing submitted/cancelled docs, and regressing xero_sync_status
             # to "Pending" on them is invalid. Skip cleanly (Info, not Error).
             if doc.docstatus != 0:
-                frappe.cache().delete_value(lock_key)
                 log_xero_error(
                     message=f"Xero Invoice {xero_invoice_id} ({invoice_number}) already exists as {erpnext_doctype} {erpnext_doc_name} (docstatus {doc.docstatus}); skipping update.",
                     status="Info",
@@ -1510,7 +1567,7 @@ def process_xero_invoice(xero_invoice_data, settings):
                     erpnext_doc_name=erpnext_doc_name,
                     direction="Xero to ERPNext",
                 )
-                return
+                return "skipped"
             doc.update(erpnext_data)
             doc.save(ignore_permissions=True)
             log_message = f"Updated {erpnext_doctype} {erpnext_doc_name} from Xero Invoice {xero_invoice_id}"
@@ -1604,7 +1661,7 @@ def process_xero_invoice(xero_invoice_data, settings):
                     direction="Xero to ERPNext",
                     category="Mapping Errors",
                 )
-                return
+                return "skipped"
 
             # 6b: reconstruct tax so the ERPNext total matches Xero. Imported
             # invoices otherwise carry only net line amounts and omit VAT, which
@@ -1651,8 +1708,6 @@ def process_xero_invoice(xero_invoice_data, settings):
         )
 
         commit_checkpoint()
-        # Release the idempotency lock now that the record is committed
-        frappe.cache().delete_value(lock_key)
 
         # Opt-in: post the imported invoice to the GL when auto-submit is enabled
         # — but ONLY when the totals reconcile. An under-taxed or otherwise
@@ -1673,6 +1728,7 @@ def process_xero_invoice(xero_invoice_data, settings):
             xero_entity_type="Invoice",
             direction="Xero to ERPNext",
         )
+        return "synced"
 
     except Exception as e:
         # Discard the failed insert's uncommitted writes FIRST — including the
@@ -1680,8 +1736,6 @@ def process_xero_invoice(xero_invoice_data, settings):
         # the commit inside log_xero_error persisted the series bump and every
         # failed inbound attempt burned an ACC-SINV number.
         frappe.db.rollback()
-        # Always release the lock on failure so retries are not permanently blocked
-        frappe.cache().delete_value(lock_key)
         from ..utils.logging import is_already_exists_error
 
         error_traceback = frappe.get_traceback()
@@ -1704,29 +1758,27 @@ def process_xero_invoice(xero_invoice_data, settings):
                 message=f"Xero Invoice {xero_invoice_id} ({invoice_number}) already exists in ERPNext as {erpnext_doc_name or 'submitted document'}. Skipping update.",
                 status="Info",
                 category="Duplicate Entity",
-                erpnext_doc_type=erpnext_doctype
-                if "erpnext_doctype" in locals()
-                else None,
-                erpnext_doc_name=erpnext_doc_name
-                if "erpnext_doc_name" in locals()
-                else None,
+                erpnext_doc_type=erpnext_doctype,
+                erpnext_doc_name=erpnext_doc_name,
                 xero_entity_id=xero_invoice_id,
                 xero_entity_type="Invoice",
                 direction="Xero to ERPNext",
             )
-        else:
-            mark_sync_failure(
-                erpnext_doctype,
-                erpnext_doc_name,
-                e,
-                "Xero to ERPNext",
-                source_type="Xero Invoice",
-                source_id=xero_invoice_id,
-                source_display=invoice_number,
-                xero_entity_id=xero_invoice_id,
-                xero_entity_type="Invoice",
-                traceback_text=error_traceback,
-            )
+            return "skipped"
+
+        mark_sync_failure(
+            erpnext_doctype,
+            erpnext_doc_name,
+            e,
+            "Xero to ERPNext",
+            source_type="Xero Invoice",
+            source_id=xero_invoice_id,
+            source_display=invoice_number,
+            xero_entity_id=xero_invoice_id,
+            xero_entity_type="Invoice",
+            traceback_text=error_traceback,
+        )
+        return "failed"
 
 
 # TODO: Implement Journal Entry sync

@@ -9,9 +9,10 @@ from .utils.logging import log_xero_error
 
 def sync_all_enabled():
     """
-    Daily task to sync all enabled entities from Xero to ERPNext.
-    LITE Mode: Only syncs contacts, invoices, credit notes (inbound).
-    Each entity respects its own per-entity directional toggle.
+    Daily task to sync all enabled entities from Xero to ERPNext: contacts,
+    items, invoices/bills, credit notes, chart of accounts, manual journals,
+    purchase orders, quotes and financial reports.
+    Each entity respects its own per-entity inbound toggle.
     """
     settings = get_xero_settings()
     if not settings or not settings.enable_xero_sync:
@@ -114,11 +115,9 @@ def check_payments():
     """
     Hourly task to check for new payments in Xero and sync them to ERPNext.
 
-    FIX: Uses ONLY sync_payments_from_xero (Pathway B) to avoid the dual-pathway
-    PE creation race condition. check_invoice_payments (Pathway A) is no longer
-    called here — its PE creation logic was problematic (wrong dates, ignore_mandatory,
-    race with Pathway B). Invoice payment status is still detected via Pathway B
-    which fetches the /Payments endpoint directly.
+    Uses sync_payments_from_xero (the /Payments endpoint) as the single
+    pathway for Payment Entry creation — check_invoice_payments must not be
+    called here as well, or the two pathways race and duplicate PEs.
     """
     settings = get_xero_settings()
     if not settings or not settings.enable_xero_sync:
