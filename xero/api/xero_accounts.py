@@ -289,12 +289,29 @@ def sync_account_to_xero(account_name):
         else:
             # Create new - use PUT. Pass a stable idempotency key so a retry after
             # a network timeout does not create a duplicate account in Xero.
-            response = xero_request(
-                "PUT",
-                "Accounts",
-                data={"Accounts": [payload]},
-                idempotency_key=f"Account:{doc.name}:create"
-            )
+            try:
+                response = xero_request(
+                    "PUT",
+                    "Accounts",
+                    data={"Accounts": [payload]},
+                    idempotency_key=f"Account:{doc.name}:create"
+                )
+            except Exception as e:
+                msgs = " ".join([str(e)] + list(getattr(e, "validation_messages", None) or []))
+                if "unique code" not in msgs.lower():
+                    raise
+                # Distinct ERPNext names can sanitize to the same 10-char code
+                # ("Expenses Included In [Asset] Valuation" -> "ExpensesIn").
+                # Re-pick against the codes actually in Xero and retry once.
+                from ..utils.account_mapper import _fetch_xero_accounts_raw, _xero_code_for
+                used = {a.get("Code") for a in _fetch_xero_accounts_raw() if a.get("Code")}
+                payload["Code"] = _xero_code_for(doc, used)
+                response = xero_request(
+                    "PUT",
+                    "Accounts",
+                    data={"Accounts": [payload]},
+                    idempotency_key=f"Account:{doc.name}:create:{payload['Code']}"
+                )
             action = "Created"
         
         # Process response

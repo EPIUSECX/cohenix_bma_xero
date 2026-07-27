@@ -21,6 +21,27 @@ XERO_HTTP_TIMEOUT = 30
 RETRYABLE_STATUS_CODES = {500, 502, 503, 504}
 
 
+def safe_idempotency_key(key):
+    """Make an idempotency key legal as an HTTP header value.
+
+    HTTP headers must be Latin-1 encodable; keys are built from ERPNext
+    document names, and Customers/Suppliers are named by customer_name /
+    supplier_name, so Greek/CJK/emoji names produced a UnicodeEncodeError that
+    permanently killed sync for that party (H5). Keys that already encode are
+    returned UNCHANGED so every existing key stays stable across this fix;
+    non-encodable keys are replaced by their SHA-256 hex digest — deterministic
+    (stable per document) and collision-free in practice.
+    """
+    key = str(key)
+    try:
+        key.encode("latin-1")
+        return key
+    except UnicodeEncodeError:
+        import hashlib
+
+        return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
 def get_xero_settings():
     """Returns the Xero Settings document."""
     # Consider multi-company scenarios if applicable
@@ -658,7 +679,7 @@ def xero_request(method, endpoint, data=None, params=None, idempotency_key=None,
     settings = get_xero_settings()
     headers = dict(get_xero_client())  # Gets headers with valid token (copy to mutate)
     if idempotency_key:
-        headers["Idempotency-Key"] = str(idempotency_key)
+        headers["Idempotency-Key"] = safe_idempotency_key(idempotency_key)
     if modified_since:
         headers["If-Modified-Since"] = str(modified_since)
     url = f"{XERO_API_BASE_URL}/{endpoint}"
@@ -801,33 +822,38 @@ def xero_request(method, endpoint, data=None, params=None, idempotency_key=None,
                 )
                 time.sleep(wait_time)
             else:
-                # For other HTTP errors (4xx), log details and re-raise
-                error_details = ""
+                # Other HTTP errors (4xx): surface the SPECIFIC reason Xero gave.
+                # Xero nests it in Elements[].ValidationErrors[].Message; the
+                # outer "Message" is always the useless generic one (C4).
+                from .exceptions import XeroApiError, extract_xero_validation_messages
+
+                status_code = e.response.status_code
+                error_data = None
                 try:
                     error_data = e.response.json()
                     error_details = dumps(error_data, indent=2)
                 except Exception:
                     error_details = e.response.text or ""
 
-                # Log to frappe error log
+                validation_messages = extract_xero_validation_messages(error_data)
+                summary = "; ".join(validation_messages) or (
+                    (error_data or {}).get("Message") or e.response.reason or ""
+                )
+
+                # Keep the full body in the Frappe Error Log for forensics. The
+                # Xero Log row is created by the CALLER (which knows the ERPNext
+                # document), so the dashboard row links to the real doc instead
+                # of a doc-less "Unknown" entry.
                 frappe.log_error(
-                    message=f"Xero API Error ({e.response.status_code}) on {method} {url}:\n{error_details}",
+                    message=f"Xero API Error ({status_code}) on {method} {url}:\n{error_details}",
                     title="Xero API Error",
                 )
 
-                # Also log to Xero Log for visibility in the dashboard
-                from ..utils.logging import log_xero_error
-
-                log_xero_error(
-                    message=f"Xero API Error ({e.response.status_code}) on {method} {endpoint}: {error_details[:500]}",
-                    status="Error",
-                    category="Validation Errors",
-                    error_details=error_details,
-                )
-
-                # Include response body in the thrown error so callers can see it
-                frappe.throw(
-                    f"Xero API request failed: {e.response.reason} ({e.response.status_code})\nDetails: {error_details[:3000]}"
+                raise XeroApiError(
+                    f"Xero rejected the request ({status_code}): {summary}",
+                    status_code=status_code,
+                    response_body=error_details,
+                    validation_messages=validation_messages,
                 )
 
         except requests.exceptions.RequestException as e:
@@ -851,11 +877,15 @@ def xero_request(method, endpoint, data=None, params=None, idempotency_key=None,
             )
             frappe.throw(f"Network error communicating with Xero: {e}")
 
-        except Exception as e:
+        except Exception:
+            # Log for forensics but RE-RAISE the original exception: replacing
+            # it with "An unexpected error occurred in the Xero client." erased
+            # the type and message the operator needed (e.g. the
+            # UnicodeEncodeError behind H5) and got miscategorised downstream.
             frappe.log_error(
                 message=frappe.get_traceback(), title="Xero Client Unexpected Error"
             )
-            frappe.throw("An unexpected error occurred in the Xero client.")
+            raise
 
     # This part should not be reached if the loop completes, but as a fallback:
     frappe.throw("Failed to get a valid response from Xero after multiple retries.")

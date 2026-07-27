@@ -260,11 +260,9 @@ def sync_contact_to_xero(doc_name, doc_type, **kwargs):
             contact_payload["FirstName"] = first_name
         if last_name:
             contact_payload["LastName"] = last_name
-        if not first_name and not last_name:
-            # Optional: use first word of organisation name as FirstName for display (safe: name is non-empty here).
-            words = name.split()
-            if words:
-                contact_payload["FirstName"] = words[0]
+        # No fallback for company-only parties: inventing FirstName from the
+        # organisation name round-trips badly — inbound sees it on the Xero
+        # contact and materialises a bogus ERP Contact person for the party.
 
         # Add EmailAddress if available from contact details
         if (
@@ -472,20 +470,32 @@ def sync_contact_to_xero(doc_name, doc_type, **kwargs):
                 direction="ERPNext to Xero",
             )
         else:
-            from ..utils.logging import format_sync_error_message
+            from ..utils.logging import build_error_details, format_sync_error_message
 
+            # Permanent Xero rejections (duplicate name, archived contact, ...)
+            # go terminal ("Failed") so the hourly retry task stops re-queuing
+            # a contact that can never sync unchanged.
+            sync_status = "Failed" if getattr(e, "is_permanent", False) else "Error"
             frappe.db.set_value(
-                doc_type, doc_name, {"xero_sync_status": "Error"}, update_modified=False
+                doc_type, doc_name, {"xero_sync_status": sync_status}, update_modified=False
             )
             frappe.db.commit()
             user_message = format_sync_error_message(
                 doc_type, doc_name, doc_name, "ERPNext to Xero", e
             )
+            # M4: archived contacts cannot be edited OR unarchived through the
+            # Xero API (verified even for a minimal ContactStatus-only update),
+            # so point the operator at the one action that works.
+            if "archived contact" in str(e).lower():
+                user_message += (
+                    " Unarchive the contact in the Xero web UI first, then use "
+                    "Retry — the API cannot modify archived contacts."
+                )
             log_xero_error(
                 message=user_message,
                 erpnext_doc_type=doc_type,
                 erpnext_doc_name=doc_name,
-                error_details=error_traceback,
+                error_details=build_error_details(e, error_traceback),
                 direction="ERPNext to Xero",
             )
 
@@ -1022,45 +1032,13 @@ def sync_xero_contact_to_erpnext(xero_contact_data, target_doctype):
             direction="Xero to ERPNext",
         )
 
-        # --- Sync Contact Persons (NEW IMPLEMENTATION) ---
-        # After successfully creating/updating the Customer/Supplier, sync contact persons
-
-        # First, sync the primary contact (FirstName, EmailAddress, Phones on the Contact itself)
-        # Xero stores primary contact info directly on the Contact object
-        primary_first_name = xero_contact_data.get("FirstName")
-        primary_email = xero_contact_data.get("EmailAddress")
-        primary_phones = xero_contact_data.get("Phones", [])
-
-        if primary_first_name or primary_email:
-            # Create a pseudo ContactPerson dict from primary contact fields
-            primary_person_data = {}
-            if primary_first_name:
-                primary_person_data["FirstName"] = primary_first_name
-            if primary_email:
-                primary_person_data["EmailAddress"] = primary_email
-            if primary_phones:
-                primary_person_data["Phones"] = primary_phones
-            primary_person_data["IncludeInEmails"] = (
-                True  # Primary contact should be included
-            )
-
-            try:
-                sync_contact_person_to_erpnext(
-                    primary_person_data,
-                    target_doctype,
-                    erpnext_doc_name,
-                    xero_contact_id,
-                )
-            except Exception as person_error:
-                # Log error but continue
-                log_xero_error(
-                    message=f"Failed to sync primary contact for {target_doctype} {erpnext_doc_name}",
-                    erpnext_doc_type="Contact",
-                    xero_entity_id=xero_contact_id,
-                    error_details=str(person_error),
-                )
-
-        # Then, sync additional contact persons from ContactPersons array
+        # --- Sync Contact Persons ---
+        # Order matters: process the ContactPersons array FIRST and the
+        # Contact-level primary fields (FirstName/EmailAddress/Phones) LAST.
+        # Xero mirrors the primary person into ContactPersons, so after a
+        # Contact-level email change the array still echoes the OLD address —
+        # whichever block runs last decides the primary email, and that must
+        # be the authoritative Contact-level one.
         # NOTE: Xero allows max 5 ContactPersons per contact
         contact_persons = xero_contact_data.get("ContactPersons", [])
         if contact_persons:
@@ -1091,6 +1069,44 @@ def sync_xero_contact_to_erpnext(xero_contact_data, target_doctype):
                         xero_entity_id=xero_contact_id,
                         error_details=str(person_error),
                     )
+
+        # The primary contact lives directly on the Xero Contact object;
+        # processed last so it wins over any stale ContactPersons echo.
+        primary_first_name = xero_contact_data.get("FirstName")
+        primary_email = xero_contact_data.get("EmailAddress")
+        primary_phones = xero_contact_data.get("Phones", [])
+
+        if primary_first_name or primary_email:
+            # Pseudo ContactPerson from the primary fields. LastName MUST be
+            # carried too: without it the person-matcher cannot find the
+            # existing "First Last" Contact and creates a duplicate per amend.
+            primary_person_data = {}
+            if primary_first_name:
+                primary_person_data["FirstName"] = primary_first_name
+            if xero_contact_data.get("LastName"):
+                primary_person_data["LastName"] = xero_contact_data.get("LastName")
+            if primary_email:
+                primary_person_data["EmailAddress"] = primary_email
+            if primary_phones:
+                primary_person_data["Phones"] = primary_phones
+            # The primary contact is always included in emails.
+            primary_person_data["IncludeInEmails"] = True
+
+            try:
+                sync_contact_person_to_erpnext(
+                    primary_person_data,
+                    target_doctype,
+                    erpnext_doc_name,
+                    xero_contact_id,
+                )
+            except Exception as person_error:
+                # Log error but continue
+                log_xero_error(
+                    message=f"Failed to sync primary contact for {target_doctype} {erpnext_doc_name}",
+                    erpnext_doc_type="Contact",
+                    xero_entity_id=xero_contact_id,
+                    error_details=str(person_error),
+                )
 
         # --- Sync Addresses (NEW IMPLEMENTATION) ---
         # Sync addresses from Xero to ERPNext Address DocType
@@ -1182,18 +1198,21 @@ def sync_contact_person_to_erpnext(
         if scoped:
             contact_name = scoped[0].name
 
-    # Strategy 2: Find by name linked to this specific customer/supplier
-    if not contact_name and first_name and last_name:
+    # Strategy 2: Find by name linked to this specific customer/supplier.
+    # last_name is legitimately empty for company-only contacts, so match it
+    # as an empty string instead of requiring both parts (requiring both made
+    # every amend of a last-name-less contact create a duplicate).
+    if not contact_name and first_name:
         contact_result = frappe.db.sql(
             """
             SELECT c.name
             FROM `tabContact` c
             INNER JOIN `tabDynamic Link` dl ON dl.parent = c.name AND dl.parenttype = 'Contact'
-            WHERE c.first_name = %s AND c.last_name = %s
+            WHERE c.first_name = %s AND COALESCE(c.last_name, '') = %s
             AND dl.link_doctype = %s AND dl.link_name = %s
             LIMIT 1
         """,
-            (first_name, last_name, parent_doctype, parent_name),
+            (first_name, last_name or "", parent_doctype, parent_name),
             as_dict=True,
         )
         if contact_result:
@@ -1215,18 +1234,17 @@ def sync_contact_person_to_erpnext(
             contact = frappe.get_doc("Contact", contact_name)
             contact.update(contact_data)
 
-            # Update email in child table if provided
+            # Update email in child table if provided. Xero's EmailAddress is
+            # THE address, so it becomes the only primary row — leaving an old
+            # row primary alongside it makes the effective email_id ambiguous.
             if email:
-                # Check if email already exists in email_ids child table
                 email_exists = False
                 for email_row in contact.email_ids:
+                    email_row.is_primary = 1 if email_row.email_id == email else 0
                     if email_row.email_id == email:
                         email_exists = True
-                        email_row.is_primary = 1
-                        break
 
                 if not email_exists:
-                    # Add new email to child table
                     contact.append("email_ids", {"email_id": email, "is_primary": 1})
 
             # Update phone numbers in child table if provided
