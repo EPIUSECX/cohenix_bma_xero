@@ -1,16 +1,11 @@
-# Xero App Tests
-"""
-Test suite for Xero integration.
+# Copyright (c) 2024, EPI-USE Global Services and contributors
+# For license information, please see license.txt
 
-This package contains:
-- Unit tests for sync validation functions
-- Integration tests for bidirectional sync
-- Test data creation scripts
-- Sync test utilities
+"""Offline test suite for the Xero integration.
 
-Run tests with:
-    bench run-tests --app xero
+Every test here runs without a live Xero connection or network access: the
+Xero HTTP layer is mocked and any documents created are rolled back.
 
-Or run individual test files:
-    python xero/tests/test_invoice_standalone.py
+Run with:
+    bench run-tests --app xero --site your-site
 """

@@ -587,25 +587,33 @@ def custom_sync_function(doc):
 
 ### Testing
 
-#### Automated unit tests (offline, HTTP mocked)
+The app ships an offline test suite. Every test mocks the Xero HTTP layer and
+rolls back anything it writes, so it runs on any site — no live Xero
+connection, network access, or test data required:
+
 ```bash
-# Run the app's unit tests (no live Xero connection required)
+# Run the full suite
 bench run-tests --app xero --site your-site
 
 # Run a single module
-bench run-tests --app xero --module xero.tests.test_xero_client --site your-site
+bench run-tests --app xero --module xero.tests.test_contact_sync --site your-site
 ```
 
-`xero/tests/test_xero_client.py` covers the auth- and money-critical paths with
-the Xero HTTP layer mocked: token refresh (success, rotation, 400/401
-invalidation, concurrent-lock reuse), webhook HMAC signature accept/reject, the
-429 / 5xx retry and backoff behaviour, and idempotency-key propagation.
+Coverage (`xero/tests/`):
 
-#### Data-creation / manual scenario scripts
-The other files under `xero/tests/` (e.g. the `test_data/` and `sync_test_data/`
-scripts) are **manual, connection-dependent fixtures**, not part of the
-automated suite. They require a configured Xero connection and write real data;
-run them only against a developer site, via `bench execute`.
+- **`test_xero_client.py`** — the auth- and money-critical client paths: token
+  refresh (success, refresh-token rotation, 400/401 invalidation,
+  concurrent-lock reuse), webhook HMAC signature accept/reject, 429/5xx retry
+  and backoff, and Idempotency-Key propagation on mutating calls.
+- **`test_contact_sync.py`** — one full entity sync round trip
+  (Customer ↔ Xero Contact): outbound create/update payload correctness and
+  sync-status/id/hash bookkeeping, the enqueue guards that prevent redundant
+  syncs and sync loops, and inbound contact creation including the
+  archived→disabled mapping.
+- **`test_invoice_sync.py`** — outbound field validation against Xero's length
+  and character limits, and change-detection hashing.
+- **`test_inbound_behavior.py`** — ERPNext→Xero account-type mapping and the
+  inbound auto-submit guards.
 
 ## Changelog
 

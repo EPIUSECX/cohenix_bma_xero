@@ -7,10 +7,10 @@ These tests mock the Xero HTTP layer (``requests``) and the Frappe cache so they
 run without a live Xero connection or network access:
 
   * token refresh — success, refresh-token rotation, 400/401 invalidation
-  * concurrent-refresh lock — token reuse instead of a second rotation (CR-3)
+  * concurrent-refresh lock — token reuse instead of a second rotation
   * webhook HMAC signature — accept valid, reject invalid/missing (security)
-  * 429 and 5xx retry with backoff (HI-6)
-  * Idempotency-Key propagation on mutating calls (HI-7)
+  * 429 and 5xx retry with backoff
+  * Idempotency-Key propagation on mutating calls
 
 Run: bench run-tests --app xero --module xero.tests.test_xero_client
 """
@@ -151,7 +151,9 @@ class TestTokenFreshness(unittest.TestCase):
 # Token refresh
 # ---------------------------------------------------------------------------
 class TestRefreshAccessToken(unittest.TestCase):
-    @patch("xero.utils.xero_client.frappe.db.commit", MagicMock())
+    # The token-save commit is routed through xero.utils.transactions; patch the
+    # underlying frappe.db.commit there so tests never persist anything.
+    @patch("xero.utils.transactions.frappe.db.commit", MagicMock())
     def test_successful_refresh_returns_plaintext_and_saves(self):
         settings = _fake_settings()
         cache = FakeCache()
@@ -174,7 +176,7 @@ class TestRefreshAccessToken(unittest.TestCase):
         settings.save.assert_called()
         post.assert_called_once()
 
-    @patch("xero.utils.xero_client.frappe.db.commit", MagicMock())
+    @patch("xero.utils.transactions.frappe.db.commit", MagicMock())
     def test_invalid_refresh_token_invalidates_and_throws(self):
         settings = _fake_settings()
         cache = FakeCache()
@@ -192,7 +194,7 @@ class TestRefreshAccessToken(unittest.TestCase):
         self.assertIsNone(settings.refresh_token)
 
     def test_concurrent_refresh_reuses_fresh_token(self):
-        """CR-3: if another worker already refreshed (token fresh once we hold the
+        """If another worker already refreshed (token fresh once we hold the
         lock), we must reuse it and NOT burn the rotated refresh token."""
         settings = _fake_settings(token_expiry=add_to_date(now_datetime(), minutes=30))
         cache = FakeCache()
