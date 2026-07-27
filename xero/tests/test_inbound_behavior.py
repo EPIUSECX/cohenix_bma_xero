@@ -3,7 +3,7 @@
 
 """Offline unit tests for inbound-sync behaviour:
 
-  * ME-3 — ERPNext->Xero account-type mapping (exact, root-type fallback, generic)
+  * ERPNext->Xero account-type mapping (exact, root-type fallback, generic)
   * Opt-in auto-submit (maybe_submit_inbound) is a no-op when the setting is OFF
     and never touches an already-submitted document.
 
