@@ -122,8 +122,6 @@ def create_trial_balance_entry(date, account, xero_account_name, debit, credit, 
             doc.company = company
             doc.insert(ignore_permissions=True)
         
-        frappe.db.commit()
-        
     except Exception as e:
         log_xero_error(
             message=f"Error creating trial balance entry for account {account}",
@@ -245,8 +243,6 @@ def create_pl_entry(from_date, to_date, account, xero_account_name, amount, comp
             doc.company = company
             doc.insert(ignore_permissions=True)
         
-        frappe.db.commit()
-        
     except Exception as e:
         log_xero_error(
             message=f"Error creating P&L entry for account {account}",
@@ -358,8 +354,6 @@ def create_balance_sheet_entry(date, account, xero_account_name, amount, company
             doc.amount = amount
             doc.company = company
             doc.insert(ignore_permissions=True)
-        
-        frappe.db.commit()
         
     except Exception as e:
         log_xero_error(
@@ -541,8 +535,6 @@ def create_aged_receivables_entry(date, contact_name, current, days_1_30, days_3
             doc.save(ignore_permissions=True)
         else:
             doc.insert(ignore_permissions=True)
-        
-        frappe.db.commit()
         
     except Exception as e:
         log_xero_error(

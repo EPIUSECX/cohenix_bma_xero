@@ -146,7 +146,7 @@ def sync_payment_to_xero(doc_name, doc_type="Payment Entry", **kwargs):
                     {"xero_sync_status": "Synced"},
                     update_modified=False,
                 )
-                frappe.db.commit()
+                frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
 
             log_xero_error(
                 message=f"{doc_type} {doc_name} already exists in Xero. No action needed.",
@@ -169,7 +169,7 @@ def sync_payment_to_xero(doc_name, doc_type="Payment Entry", **kwargs):
                     {"xero_sync_status": sync_status},
                     update_modified=False,
                 )
-                frappe.db.commit()
+                frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
 
             user_message = format_sync_error_message(
                 doc_type, doc_name, doc_name, "ERPNext to Xero", e
@@ -244,7 +244,7 @@ def _save_payment_idempotency_map(doc_type, doc_name, idemp_map):
         },
         update_modified=False,
     )
-    frappe.db.commit()
+    frappe.db.commit()  # nosemgrep: Xero write succeeded; a retried job must see this outcome or it would duplicate
 
 
 def sync_invoice_payments(doc, xero_bank_account_id, doc_type, doc_name):
@@ -406,7 +406,7 @@ def sync_invoice_payments(doc, xero_bank_account_id, doc_type, doc_name):
         frappe.db.set_value(
             doc_type, doc_name, {"xero_sync_status": "Failed"}, update_modified=False
         )
-        frappe.db.commit()
+        frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
         log_xero_error(
             message=(
                 f"Partial payment sync for {doc_type} {doc_name}: "
@@ -525,7 +525,7 @@ def sync_standalone_payment(
                 },
                 update_modified=False,
             )
-            frappe.db.commit()
+            frappe.db.commit()  # nosemgrep: Xero write succeeded; a retried job must see this outcome or it would duplicate
 
             log_xero_error(
                 message=f"Successfully synced standalone payment {doc_type} {doc_name} to Xero as Bank Transaction.",
@@ -683,7 +683,7 @@ def process_xero_payment(xero_payment_data, settings):
                 xero_payment_id,
                 update_modified=False,
             )
-            frappe.db.commit()
+            frappe.db.commit()  # nosemgrep: Xero write succeeded; a retried job must see this outcome or it would duplicate
             log_xero_error(
                 message=(
                     f"Reattached Xero Payment {xero_payment_id} to existing "
@@ -924,7 +924,7 @@ def process_xero_payment(xero_payment_data, settings):
                     },
                     update_modified=False,
                 )
-                frappe.db.commit()
+                frappe.db.commit()  # nosemgrep: Xero write succeeded; a retried job must see this outcome or it would duplicate
                 log_xero_error(
                     message=(
                         f"Linked Xero Payment {xero_payment_id} to existing "
@@ -980,7 +980,7 @@ def process_xero_payment(xero_payment_data, settings):
             else:
                 log_message = f"Created Payment Entry {erpnext_doc_name} from Xero Payment {xero_payment_id} (Draft - please review and submit)"
 
-        frappe.db.commit()
+        frappe.db.commit()  # nosemgrep: per-doc checkpoint in inbound sync; later failures must not undo imported docs
         log_xero_error(
             message=log_message,
             status="Success",
@@ -1005,7 +1005,7 @@ def process_xero_payment(xero_payment_data, settings):
                     "Synced",
                     update_modified=False,
                 )
-                frappe.db.commit()
+                frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
 
             log_xero_error(
                 message=f"Xero Payment {xero_payment_id} already exists in ERPNext as {erpnext_doc_name or 'submitted document'}. Skipping update.",
@@ -1027,7 +1027,7 @@ def process_xero_payment(xero_payment_data, settings):
                     sync_status,
                     update_modified=False,
                 )
-                frappe.db.commit()
+                frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
 
             # Create user-friendly error message
             error_str = str(e)

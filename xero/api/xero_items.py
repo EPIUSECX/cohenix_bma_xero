@@ -626,7 +626,7 @@ def sync_item_to_xero(item_code, **kwargs):
                     },
                     update_modified=False,
                 )
-                frappe.db.commit()
+                frappe.db.commit()  # nosemgrep: Xero write succeeded; a retried job must see this outcome or it would duplicate
 
                 log_xero_error(
                     message=f"Successfully synced Item {item_code} to Xero.",
@@ -647,7 +647,7 @@ def sync_item_to_xero(item_code, **kwargs):
         frappe.db.set_value(
             "Item", item_code, "xero_sync_status", "Error", update_modified=False
         )
-        frappe.db.commit()
+        frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
         log_xero_error(
             message=f"Validation error syncing Item {item_code}: {str(e)}",
             status="Error",
@@ -671,7 +671,7 @@ def sync_item_to_xero(item_code, **kwargs):
                     "Synced",
                     update_modified=False,
                 )
-                frappe.db.commit()
+                frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
             log_xero_error(
                 message=f"Item {item_code} already exists in Xero. No action needed.",
                 status="Info",
@@ -692,7 +692,7 @@ def sync_item_to_xero(item_code, **kwargs):
                     "Error",
                     update_modified=False,
                 )
-                frappe.db.commit()
+                frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
             user_message = format_sync_error_message(
                 "Item", item_code, item_code, "ERPNext to Xero", e
             )
@@ -1094,7 +1094,7 @@ def process_xero_item(xero_item_data, settings):
                 f"Created Item {erpnext_doc_name} from Xero Item {xero_item_id}"
             )
 
-        frappe.db.commit()
+        frappe.db.commit()  # nosemgrep: per-doc checkpoint in inbound sync; later failures must not undo imported docs
         log_xero_error(
             message=log_message,
             status="Success",
@@ -1119,7 +1119,7 @@ def process_xero_item(xero_item_data, settings):
                     "Synced",
                     update_modified=False,
                 )
-                frappe.db.commit()
+                frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
 
             log_xero_error(
                 message=f"Xero Item {xero_item_id} already exists in ERPNext as {erpnext_doc_name or 'existing item'}. Skipping update.",
@@ -1142,7 +1142,7 @@ def process_xero_item(xero_item_data, settings):
                     "Error",
                     update_modified=False,
                 )
-                frappe.db.commit()
+                frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
 
             user_message = format_sync_error_message(
                 "Xero Item", xero_item_id, item_code, "Xero to ERPNext", e

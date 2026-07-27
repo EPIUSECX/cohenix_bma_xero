@@ -111,7 +111,10 @@ def set_sync_watermark(entity_key, value):
     data = _load_watermarks()
     data[entity_key] = value
     frappe.db.set_single_value("Xero Settings", "sync_watermarks", dumps(data))
-    frappe.db.commit()
+    # The synced documents behind this watermark are already committed
+    # per-document; the watermark must persist with them even if a later
+    # entity in the same batch job aborts and rolls back.
+    frappe.db.commit()  # nosemgrep
 
 
 def incremental_since(entity_key):
@@ -146,7 +149,6 @@ def reset_xero_sync_watermarks():
     Use after a mapping change or to backfill historical records."""
     require_xero_manager()
     frappe.db.set_single_value("Xero Settings", "sync_watermarks", "")
-    frappe.db.commit()
     return {"status": "ok", "message": "Xero sync watermarks cleared; next sync will be a full sweep."}
 
 
@@ -273,7 +275,10 @@ def handle_oauth_callback(code=None, state=None, error=None):
         settings.tenant_id = tenant_id
         settings.tenant_name = tenant_name
         settings.save(ignore_permissions=True)
-        frappe.db.commit()
+        # The authorization code was consumed by the one-shot token exchange
+        # above; the tokens must persist even if the rest of this request
+        # fails, or the user has to redo the whole OAuth flow.
+        frappe.db.commit()  # nosemgrep
 
         frappe.local.response["type"] = "redirect"
         frappe.local.response["location"] = (
@@ -360,7 +365,6 @@ def select_tenant(tenant_id):
     settings.tenant_id = match["id"]
     settings.tenant_name = match["name"]
     settings.save(ignore_permissions=True)
-    frappe.db.commit()
     frappe.msgprint(f"Xero organisation changed to: {match['name']}")
     return {"tenant_id": match["id"], "tenant_name": match["name"]}
 
@@ -458,7 +462,10 @@ def _do_refresh(settings, log_xero_error, time):
             )
             settings.last_token_refresh = now_datetime()
             settings.save(ignore_permissions=True)
-            frappe.db.commit()
+            # Xero rotates the refresh token on every use; if a later failure
+            # in the surrounding job rolled this back, the stored (already
+            # invalidated) token would permanently break the connection.
+            frappe.db.commit()  # nosemgrep
 
             log_xero_error(
                 message="Xero access token refreshed successfully",
@@ -489,7 +496,10 @@ def _do_refresh(settings, log_xero_error, time):
                     settings.refresh_token = None
                     settings.access_token = None
                     settings.save(ignore_permissions=True)
-                    frappe.db.commit()
+                    # Persist the invalidation before the surrounding job
+                    # aborts, or the dead token would be restored on rollback
+                    # and every subsequent run would retry it and re-alert.
+                    frappe.db.commit()  # nosemgrep
 
                     notify_admins_token_failure(
                         "Invalid refresh token - re-authentication required"

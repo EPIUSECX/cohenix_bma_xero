@@ -200,8 +200,6 @@ def cleanup_old_logs():
             (cutoff_date,),
         )
 
-        frappe.db.commit()
-
         log_xero_error(
             message=f"Cleaned up Xero logs older than {retention_days} days.",
             status="Success",
@@ -243,7 +241,6 @@ def purge_resolved_logs():
               AND l.timestamp < ls.last_success
             """
         )
-        frappe.db.commit()
         after = frappe.db.count("Xero Log")
         removed = before - after
         log_xero_error(

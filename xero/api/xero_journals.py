@@ -202,7 +202,7 @@ def sync_journal_to_xero(doc_name, doc_type="Journal Entry", **kwargs):
                     "xero_sync_status": "Synced",
                     "xero_last_sync": now()
                 }, update_modified=False)
-                frappe.db.commit()
+                frappe.db.commit()  # nosemgrep: Xero write succeeded; a retried job must see this outcome or it would duplicate
 
                 log_xero_error(
                     message=f"Successfully synced {doc_type} {doc_name} to Xero Manual Journal.",
@@ -225,7 +225,7 @@ def sync_journal_to_xero(doc_name, doc_type="Journal Entry", **kwargs):
         if is_already_exists_error(str(e), error_traceback):
             if doc_name and doc_type:
                 frappe.db.set_value(doc_type, doc_name, {"xero_sync_status": "Synced"}, update_modified=False)
-                frappe.db.commit()
+                frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
             
             log_xero_error(
                 message=f"{doc_type} {doc_name} already exists in Xero. No action needed.",
@@ -239,7 +239,7 @@ def sync_journal_to_xero(doc_name, doc_type="Journal Entry", **kwargs):
             from ..utils.logging import format_sync_error_message
             if doc_name and doc_type:
                 frappe.db.set_value(doc_type, doc_name, {"xero_sync_status": "Error"}, update_modified=False)
-                frappe.db.commit()
+                frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
 
             user_message = format_sync_error_message(
                 doc_type, doc_name, doc_name, "ERPNext to Xero", e
@@ -316,7 +316,7 @@ def delete_journal_from_xero(doc_name, doc_type="Journal Entry"):
                 "xero_sync_status": "Cancelled",
                 "xero_last_sync": now()
             }, update_modified=False)
-            frappe.db.commit()
+            frappe.db.commit()  # nosemgrep: Xero write succeeded; a retried job must see this outcome or it would duplicate
 
             log_xero_error(
                 message=f"Successfully voided Xero Manual Journal for {doc_type} {doc_name}.",
@@ -561,7 +561,7 @@ def process_xero_manual_journal(xero_journal_data, settings):
         erpnext_doc_name = doc.name
         log_message = f"Created Journal Entry {erpnext_doc_name} from Xero Manual Journal {xero_journal_id}"
 
-        frappe.db.commit()
+        frappe.db.commit()  # nosemgrep: per-doc checkpoint in inbound sync; later failures must not undo imported docs
         log_xero_error(
             message=log_message,
             status="Success",
@@ -579,7 +579,7 @@ def process_xero_manual_journal(xero_journal_data, settings):
         if is_already_exists_error(str(e), error_traceback):
             if erpnext_doc_name:
                 frappe.db.set_value("Journal Entry", erpnext_doc_name, "xero_sync_status", "Synced", update_modified=False)
-                frappe.db.commit()
+                frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
             
             log_xero_error(
                 message=f"Xero Manual Journal {xero_journal_id} already exists in ERPNext as {erpnext_doc_name or 'submitted document'}. Skipping update.",
@@ -596,7 +596,7 @@ def process_xero_manual_journal(xero_journal_data, settings):
             sync_status = "Error"
             if erpnext_doc_name:
                 frappe.db.set_value("Journal Entry", erpnext_doc_name, "xero_sync_status", sync_status, update_modified=False)
-                frappe.db.commit()
+                frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
 
             user_message = format_sync_error_message(
                 "Xero Manual Journal", xero_journal_id, xero_journal_id, "Xero to ERPNext", e

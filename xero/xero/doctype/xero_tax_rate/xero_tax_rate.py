@@ -108,9 +108,7 @@ def sync_xero_tax_rates():
                 
                 doc.insert(ignore_permissions=True)
                 created_count += 1
-        
-        frappe.db.commit()
-        
+
         message = f"Sync completed: {created_count} tax rates created, {updated_count} tax rates updated"
         frappe.msgprint(message)
         

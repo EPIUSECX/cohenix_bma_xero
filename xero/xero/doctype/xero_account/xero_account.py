@@ -89,9 +89,7 @@ def sync_xero_accounts():
                 doc = frappe.get_doc(account_doc_data)
                 doc.insert(ignore_permissions=True)
                 created_count += 1
-        
-        frappe.db.commit()
-        
+
         message = f"Sync completed: {created_count} accounts created, {updated_count} accounts updated"
         frappe.msgprint(message)
         

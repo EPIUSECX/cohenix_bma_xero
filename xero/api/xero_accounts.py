@@ -777,7 +777,7 @@ def process_xero_account(xero_account_data, company):
             erpnext_doc_name = doc.name
             log_message = f"Created Account {erpnext_doc_name} from Xero Account {xero_account_id}"
         
-        frappe.db.commit()
+        frappe.db.commit()  # nosemgrep: per-doc checkpoint in inbound sync; later failures must not undo imported docs
         log_xero_error(
             message=log_message,
             status="Success",
@@ -795,7 +795,7 @@ def process_xero_account(xero_account_data, company):
         if is_already_exists_error(str(e), error_traceback):
             if erpnext_doc_name:
                 frappe.db.set_value("Account", erpnext_doc_name, "xero_sync_status", "Synced", update_modified=False)
-                frappe.db.commit()
+                frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
             
             log_xero_error(
                 message=f"Xero Account {xero_account_id} ({xero_name}) already exists in ERPNext. Skipping update.",

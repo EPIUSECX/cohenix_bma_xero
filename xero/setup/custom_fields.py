@@ -588,7 +588,6 @@ def remove_custom_fields():
             if frappe.db.exists("Custom Field", custom_field_name):
                 try:
                     frappe.delete_doc("Custom Field", custom_field_name, ignore_permissions=True, force=True)
-                    frappe.db.commit()
                     print(f"Deleted custom field: {custom_field_name}")
                 except Exception as e:
                     print(f"Error deleting custom field {custom_field_name}: {e}")
