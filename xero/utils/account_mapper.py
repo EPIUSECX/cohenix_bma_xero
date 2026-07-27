@@ -53,6 +53,7 @@ from difflib import SequenceMatcher
 from ..api.xero_accounts import XERO_ACCOUNT_TYPE_MAP, XERO_SYSTEM_ACCOUNTS
 from ..utils.xero_client import xero_request, get_xero_settings
 from ..utils.logging import log_xero_error
+from ..utils.transactions import commit_checkpoint, commit_external_outcome
 
 # ---------------------------------------------------------------------------
 # Confidence constants
@@ -304,7 +305,7 @@ def push_accounts_to_xero(account_names):
                 frappe.db.set_value("Account", acc_name, "xero_account_id", xero_id, update_modified=False)
                 # The account now exists in Xero; its linkage must survive a
                 # failure later in this loop or a re-push would duplicate it.
-                frappe.db.commit()  # nosemgrep
+                commit_external_outcome()
 
                 created.append({
                     "erpnext_account": acc_name,
@@ -509,7 +510,7 @@ def _process_resolutions(resolutions, user=None):
     settings.save(ignore_permissions=True)
     # The loop above created/linked accounts in Xero; persist that linkage
     # before any later step in this request can fail and roll it back.
-    frappe.db.commit()  # nosemgrep
+    commit_external_outcome()
     _refresh_mapping_status(settings)
     # Bust the cached single so any read later (e.g. a manual sync triggered
     # right after) sees the new mapping rows immediately.
@@ -903,7 +904,7 @@ def apply_mapping_workspace(decisions):
     settings.save(ignore_permissions=True)
     # Persist the applied inbound decisions before the outbound phase below
     # makes external Xero calls that can fail mid-way.
-    frappe.db.commit()  # nosemgrep
+    commit_checkpoint()
     _refresh_mapping_status(settings)
     frappe.clear_document_cache("Xero Settings", "Xero Settings")
 
@@ -1310,7 +1311,7 @@ def _get_or_create_group_account(path_parts, root_type, company):
             doc.insert(ignore_permissions=True)
             # Checkpoint each created group so a failure deeper in the tree
             # keeps the levels already built (recreation is duplicate-guarded).
-            frappe.db.commit()  # nosemgrep
+            commit_checkpoint()
             current_parent = doc.name
         except Exception as e:
             # If creation fails (e.g. duplicate), try to find it again
@@ -1404,7 +1405,7 @@ def _create_erpnext_account_from_xero(xero_acc, company):
     doc.insert(ignore_permissions=True)
     # Checkpoint per imported account so one bad account later in the batch
     # does not roll back the mirrors already created for real Xero accounts.
-    frappe.db.commit()  # nosemgrep
+    commit_checkpoint()
 
     return doc.name
 

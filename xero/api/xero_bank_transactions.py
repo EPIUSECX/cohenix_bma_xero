@@ -2,6 +2,7 @@
 # For license information, please see license.txt
 
 import frappe
+from ..utils.transactions import commit_checkpoint, commit_error_state
 from frappe import _
 from frappe.utils import flt
 from ..utils.xero_client import xero_request, get_xero_settings
@@ -206,7 +207,7 @@ def process_xero_bank_transaction(xero_transaction_data, settings):
             erpnext_doc_name = doc.name
             log_message = f"Created Bank Transaction {erpnext_doc_name} from Xero Transaction {xero_transaction_id}"
 
-        frappe.db.commit()  # nosemgrep: per-doc checkpoint in inbound sync; later failures must not undo imported docs
+        commit_checkpoint()
         log_xero_error(
             message=log_message,
             status="Success",
@@ -224,7 +225,7 @@ def process_xero_bank_transaction(xero_transaction_data, settings):
         if is_already_exists_error(str(e), error_traceback):
             if erpnext_doc_name:
                 frappe.db.set_value("Bank Transaction", erpnext_doc_name, "xero_sync_status", "Synced", update_modified=False)
-                frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
+                commit_error_state()
             
             log_xero_error(
                 message=f"Xero Bank Transaction {xero_transaction_id} already exists in ERPNext as {erpnext_doc_name or 'existing document'}. Skipping update.",
@@ -241,7 +242,7 @@ def process_xero_bank_transaction(xero_transaction_data, settings):
             sync_status = "Error"
             if erpnext_doc_name:
                 frappe.db.set_value("Bank Transaction", erpnext_doc_name, "xero_sync_status", sync_status, update_modified=False)
-                frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
+                commit_error_state()
 
             user_message = format_sync_error_message(
                 "Xero Bank Transaction", xero_transaction_id, xero_transaction_id, "Xero to ERPNext", e

@@ -2,6 +2,7 @@
 # For license information, please see license.txt
 
 import frappe
+from ..utils.transactions import commit_checkpoint, commit_error_state, commit_external_outcome
 from frappe import _
 from frappe.utils import flt, getdate
 import hashlib
@@ -283,7 +284,7 @@ def sync_return_to_xero(doc_name, doc_type, **kwargs):
                 {"xero_sync_status": "Pending Prerequisites"},
                 update_modified=False,
             )
-            frappe.db.commit()  # nosemgrep: per-doc status checkpoint in bulk sync
+            commit_checkpoint()
 
             log_xero_error(
                 message=f"{doc_type} {doc_name} sync deferred: {party_type} {party_name} must be synced to Xero first.",
@@ -349,7 +350,7 @@ def sync_return_to_xero(doc_name, doc_type, **kwargs):
                     {"xero_credit_note_id": recovered_id},
                     update_modified=False,
                 )
-                frappe.db.commit()  # nosemgrep: Xero write succeeded; a retried job must see this outcome or it would duplicate
+                commit_external_outcome()
                 log_xero_error(
                     message=(
                         f"Recovered Xero CreditNoteID {recovered_id} for "
@@ -403,7 +404,7 @@ def sync_return_to_xero(doc_name, doc_type, **kwargs):
                     {"xero_credit_note_id": new_xero_id},
                     update_modified=False,
                 )
-                frappe.db.commit()  # nosemgrep: Xero write succeeded; a retried job must see this outcome or it would duplicate
+                commit_external_outcome()
 
                 # Compute hash for change detection
                 data_hash = compute_credit_note_hash(doc)
@@ -418,7 +419,7 @@ def sync_return_to_xero(doc_name, doc_type, **kwargs):
                     },
                     update_modified=False,
                 )
-                frappe.db.commit()  # nosemgrep: Xero write succeeded; a retried job must see this outcome or it would duplicate
+                commit_external_outcome()
 
                 log_xero_error(
                     message=f"Successfully synced {doc_type} (Return) {doc_name} to Xero.",
@@ -448,7 +449,7 @@ def sync_return_to_xero(doc_name, doc_type, **kwargs):
                     {"xero_sync_status": "Synced"},
                     update_modified=False,
                 )
-                frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
+                commit_error_state()
 
             log_xero_error(
                 message=f"{doc_type} (Return) {doc_name} already exists in Xero. No action needed.",
@@ -471,7 +472,7 @@ def sync_return_to_xero(doc_name, doc_type, **kwargs):
                     {"xero_sync_status": sync_status},
                     update_modified=False,
                 )
-                frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
+                commit_error_state()
 
             user_message = format_sync_error_message(
                 doc_type, doc_name, doc_name, "ERPNext to Xero", e
@@ -578,7 +579,7 @@ def void_credit_note_in_xero(doc_name, doc_type):
                 f"{action.capitalize()}d in Xero",
                 update_modified=False,
             )
-            frappe.db.commit()  # nosemgrep: Xero write succeeded; a retried job must see this outcome or it would duplicate
+            commit_external_outcome()
             log_xero_error(
                 message=f"Successfully {action}d {doc_type} {doc_name} in Xero (status: {new_status}).",
                 status="Success",
@@ -1117,7 +1118,7 @@ def process_xero_credit_note(xero_cn_data, settings):
             compute_credit_note_hash(doc), update_modified=False,
         )
 
-        frappe.db.commit()  # nosemgrep: per-doc checkpoint in inbound sync; later failures must not undo imported docs
+        commit_checkpoint()
 
         # Opt-in: post the imported credit note to the GL when auto-submit is
         # enabled. With return_against set above, submitting reconciles the
@@ -1154,7 +1155,7 @@ def process_xero_credit_note(xero_cn_data, settings):
                     "Synced",
                     update_modified=False,
                 )
-                frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
+                commit_error_state()
 
             log_xero_error(
                 message=f"Xero Credit Note {xero_cn_id} ({cn_number}) already exists in ERPNext as {erpnext_doc_name or 'submitted document'}. Skipping update.",
@@ -1182,7 +1183,7 @@ def process_xero_credit_note(xero_cn_data, settings):
                     sync_status,
                     update_modified=False,
                 )
-                frappe.db.commit()  # nosemgrep: terminal sync status must survive the failed job's rollback
+                commit_error_state()
 
             user_message = format_sync_error_message(
                 "Xero Credit Note", xero_cn_id, cn_number, "Xero to ERPNext", e

@@ -4,6 +4,8 @@
 import frappe
 from frappe.utils import now_datetime
 
+from .transactions import commit_error_state
+
 def log_xero_error(message, status="Error", erpnext_doc_type=None, erpnext_doc_name=None, xero_entity_type=None, xero_entity_id=None, direction=None, error_details=None, category=None, retry_count=0, processing_time=None, sync_batch_id=None):
     """
     Creates a Xero Log document.
@@ -56,7 +58,7 @@ def log_xero_error(message, status="Error", erpnext_doc_type=None, erpnext_doc_n
         # Error/Warning entries, so a failure that is about to abort and roll
         # back the transaction still leaves an audit trail in the Xero Log.
         if status in ("Error", "Warning"):
-            frappe.db.commit()  # nosemgrep
+            commit_error_state()
 
     except Exception as e:
         # If logging itself fails, print to stderr and Frappe error log
