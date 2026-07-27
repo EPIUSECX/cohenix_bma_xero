@@ -304,14 +304,48 @@ def monitor_sync_health():
 
 def sync_pending_documents():
     """
-    Hourly task to sync documents that are pending sync to Xero.
-    LITE Mode: Only retries invoices (Sales + Purchase) and payments.
+    Hourly task to re-queue outbound documents stuck in Pending or Error.
+    Terminal statuses (Failed, Skipped) are never retried.
     """
     settings = get_xero_settings()
     if not settings or not settings.enable_xero_sync:
         return
 
     try:
+        # Sync pending Customers and Suppliers (outbound)
+        if settings.get("sync_contacts_to_xero"):
+            for party_type in ("Customer", "Supplier"):
+                pending_parties = frappe.get_all(
+                    party_type,
+                    filters={"xero_sync_status": ["in", ["Pending", "Error"]]},
+                    fields=["name"],
+                )
+                for party in pending_parties:
+                    frappe.enqueue(
+                        "xero.api.xero_contacts.sync_contact_to_xero",
+                        queue="short",
+                        doc_name=party.name,
+                        doc_type=party_type,
+                    )
+
+        # Sync pending Accounts (outbound)
+        if settings.get("enable_sync_to_xero"):
+            pending_accounts = frappe.get_all(
+                "Account",
+                filters={
+                    "is_group": 0,
+                    "disabled": 0,
+                    "xero_sync_status": ["in", ["Pending", "Error"]],
+                },
+                fields=["name"],
+            )
+            for account in pending_accounts:
+                frappe.enqueue(
+                    "xero.api.xero_accounts.sync_account_to_xero",
+                    queue="short",
+                    account_name=account.name,
+                )
+
         # Sync pending Sales Invoices (outbound)
         if settings.get("sync_invoices_to_xero"):
             pending_sales_invoices = frappe.get_all(

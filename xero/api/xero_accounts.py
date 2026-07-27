@@ -286,8 +286,8 @@ def sync_account_to_xero(account_name):
     
     try:
         # Build Xero payload
-        payload = build_xero_account_payload(doc, settings)
-        
+        payload = build_xero_account_payload(doc, settings, is_update=bool(doc.xero_account_id))
+
         if doc.xero_account_id:
             # Update existing - use POST with AccountID in URL
             response = xero_request(
@@ -328,7 +328,17 @@ def sync_account_to_xero(account_name):
         if response and response.get("Accounts"):
             xero_account = response["Accounts"][0]
             xero_account_id = xero_account.get("AccountID")
-            
+
+            # Update payloads omit Status (Xero rejects details+Status in one
+            # request); reconcile it here with a Status-only follow-up.
+            desired_status = "ARCHIVED" if doc.disabled else "ACTIVE"
+            if action == "Updated" and xero_account.get("Status") != desired_status:
+                xero_request(
+                    "POST",
+                    f"Accounts/{xero_account_id}",
+                    data={"Accounts": [{"AccountID": xero_account_id, "Status": desired_status}]}
+                )
+
             # Update ERPNext record with Xero data
             doc.db_set({
                 "xero_account_id": xero_account_id,
@@ -380,18 +390,22 @@ def sync_account_to_xero(account_name):
             )
 
 
-def build_xero_account_payload(doc, settings):
+def build_xero_account_payload(doc, settings, is_update=False):
     """
     Build Xero API payload from ERPNext Account.
     Validates required fields and maps types.
-    
+
     Args:
         doc: ERPNext Account document
         settings: Xero Settings document
-    
+        is_update: True when the payload targets an existing Xero account.
+            Updates must omit Status — Xero rejects any request that changes
+            account details and Status together; Status is reconciled by a
+            follow-up Status-only request instead.
+
     Returns:
         dict: Payload for Xero API
-    
+
     Raises:
         ValueError: If required fields are missing or invalid
     """
@@ -430,11 +444,10 @@ def build_xero_account_payload(doc, settings):
     if doc.xero_account_id:
         payload["AccountID"] = doc.xero_account_id
     
-    # Map Status (disabled in ERPNext = ARCHIVED in Xero)
-    if doc.disabled:
-        payload["Status"] = "ARCHIVED"
-    else:
-        payload["Status"] = "ACTIVE"
+    # Map Status (disabled in ERPNext = ARCHIVED in Xero). Creates only —
+    # see is_update in the docstring.
+    if not is_update:
+        payload["Status"] = "ARCHIVED" if doc.disabled else "ACTIVE"
     
     # Bank account specific fields
     if xero_type == "BANK":
