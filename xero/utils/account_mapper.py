@@ -134,11 +134,12 @@ def run_full_auto_map():
     One-shot full mapping for Topology A (Xero as Source).
 
     1. Fetch ALL Xero accounts (ACTIVE + ARCHIVED).
-    2. Auto-match every Xero account to an ERPNext account (all confidence levels).
+    2. Auto-match every Xero account to an ERPNext account.
     3. For every still-unmatched Xero account, create an ERPNext account,
        preserving the Xero colon-separated hierarchy as group/leaf nodes.
        ARCHIVED Xero accounts are created as disabled ERPNext accounts.
-    4. Write ALL matched + created rows directly to the account_mapping table.
+    4. Write matched + created rows to the account_mapping table. Low
+       (type-only) matches are reported but never persisted.
     5. Set mapping_status = Complete when all ACTIVE Xero accounts are covered.
 
     This function never pushes to Xero and never modifies existing accounts.
@@ -182,8 +183,14 @@ def run_full_auto_map():
         unmatched_xero_sorted, matched, created_accounts, errors, company
     )
 
-    # 4. Write all matched + created rows to the mapping table in one bulk save
-    all_to_write = matched + created_accounts
+    # 4. Write matched + created rows in one bulk save. Low-confidence
+    #    (type-only) matches are report-only: wrong rows are sticky (dedup on
+    #    erpnext_account), so they must be confirmed by a human first.
+    all_to_write = [
+        r for r in matched + created_accounts
+        if r.get("confidence") != CONFIDENCE_LOW
+    ]
+    skipped_low = len(matched) + len(created_accounts) - len(all_to_write)
     added = _bulk_write_mappings(settings, all_to_write, already_mapped_xero_codes, already_mapped_erpnext)
 
     # 5. Refresh mapping status
@@ -204,12 +211,14 @@ def run_full_auto_map():
         dry_run=False
     )
     result["summary"]["written"] = added
+    result["summary"]["low_confidence_skipped"] = skipped_low
     result["summary"]["mapping_status"] = new_status
 
     log_xero_error(
         message=(
             f"Full auto-map complete: {len(matched)} matched, "
             f"{len(created_accounts)} created, {added} written to mapping table, "
+            f"{skipped_low} low-confidence suggestions left for review, "
             f"status={new_status}."
         ),
         status="Info",
@@ -751,6 +760,7 @@ def get_mapping_workspace():
             ename, conf = _find_best_erpnext_match(
                 x.get("AccountID", ""), code, x.get("Name", ""), x.get("Type", ""),
                 erpnext_accounts, claimed, company,
+                xero_system_account=x.get("SystemAccount"),
             )
             if ename:
                 claimed.add(ename)
@@ -1052,7 +1062,8 @@ def _run_matching(xero_accounts, erpnext_accounts, already_mapped_codes,
 
         erpnext_name, confidence = _find_best_erpnext_match(
             xero_id, xero_code, xero_name, xero_type,
-            erpnext_accounts, claimed_erpnext, company
+            erpnext_accounts, claimed_erpnext, company,
+            xero_system_account=xero_acc.get("SystemAccount"),
         )
 
         if erpnext_name:
@@ -1090,7 +1101,8 @@ def _run_matching(xero_accounts, erpnext_accounts, already_mapped_codes,
 
 
 def _find_best_erpnext_match(xero_id, xero_code, xero_name, xero_type,
-                              erpnext_accounts, claimed, company):
+                              erpnext_accounts, claimed, company,
+                              xero_system_account=None):
     """
     Return (erpnext_account_name, confidence) or (None, None).
 
@@ -1101,6 +1113,10 @@ def _find_best_erpnext_match(xero_id, xero_code, xero_name, xero_type,
        (also checks the leaf segment of colon-separated Xero names)
     4. Same root_type + name similarity >= threshold            → Medium
     5. Same root_type only (first unclaimed)                    → Low
+
+    Tier 5 is disabled for Xero system accounts (xero_system_account set) and
+    never picks an ERPNext control account (Receivable/Payable) — a type-only
+    guess there breaks journal sync and is sticky in the mapping grid.
     """
     target_type_info = XERO_ACCOUNT_TYPE_MAP.get(xero_type, {})
     target_root      = target_type_info.get("root_type", "")
@@ -1146,7 +1162,11 @@ def _find_best_erpnext_match(xero_id, xero_code, xero_name, xero_type,
                 best_name       = acc["name"]
                 best_confidence = CONFIDENCE_MEDIUM
             elif best_confidence not in (CONFIDENCE_HIGH, CONFIDENCE_MEDIUM):
-                if best_name is None:
+                if (
+                    best_name is None
+                    and not xero_system_account
+                    and acc.get("account_type") not in ("Receivable", "Payable")
+                ):
                     best_name       = acc["name"]
                     best_confidence = CONFIDENCE_LOW
 

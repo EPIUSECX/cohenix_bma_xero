@@ -80,8 +80,33 @@ ERPNEXT_TO_XERO_TYPE_MAP = {
     ("Liability", "Receivable"): "CURRENT",  # Unusual but possible
 }
 
-# System accounts that should not be synced
-XERO_SYSTEM_ACCOUNTS = ["DEBTORS", "CREDITORS", "BANKCURRENCYGAIN", "GST", "TAX", "HISTORICAL"]
+# Xero system accounts (SystemAccount field) — never synced or auto-mapped.
+# Xero manages these internally and rejects manual journals against most of
+# them, so mapping an ERPNext account onto one silently breaks journal sync.
+# Full enum from the Xero OpenAPI spec (Account.SystemAccount). Non-system
+# accounts carry "" or null — never add "" here.
+XERO_SYSTEM_ACCOUNTS = [
+    "DEBTORS",
+    "CREDITORS",
+    "BANKCURRENCYGAIN",
+    "GST",
+    "GSTONIMPORTS",
+    "HISTORICAL",
+    "REALISEDCURRENCYGAIN",
+    "UNREALISEDCURRENCYGAIN",
+    "RETAINEDEARNINGS",
+    "ROUNDING",
+    "TRACKINGTRANSFERS",
+    "UNPAIDEXPCLM",
+    "WAGEPAYABLES",
+    "CISASSETS",
+    "CISASSET",
+    "CISLABOUR",
+    "CISLABOUREXPENSE",
+    "CISLABOURINCOME",
+    "CISLIABILITY",
+    "CISMATERIALS",
+]
 
 
 # =============================================================================

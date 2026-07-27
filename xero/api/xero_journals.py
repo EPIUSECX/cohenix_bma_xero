@@ -9,8 +9,50 @@ from ..utils.xero_client import xero_request, get_xero_settings
 from ..utils.logging import log_xero_error
 from ..utils.retry_handler import retry_with_exponential_backoff
 from ..utils.sync_status import mark_sync_failure
+from .xero_accounts import validate_account_code
 
 # --- Manual Journal Sync (ERPNext to Xero) ---
+
+def resolve_line_account_code(erpnext_account, account_map, doc_type=None, doc_name=None):
+    """
+    Xero account code for a journal line's ERPNext account.
+
+    The configured mapping row (Xero Settings → account_mapping) wins, except
+    when the account is itself linked to Xero (xero_account_id set) and its
+    own code — account_number sanitised the same way outbound account sync
+    builds Code — disagrees. Then the live code is ground truth: a
+    contradicting row is a configuration error (e.g. auto-mapped onto a Xero
+    system account) and gets a loud Warning. Returns None if no code exists.
+    """
+    mapped_code = account_map.get(erpnext_account)
+    account_number, account_xero_id = frappe.db.get_value(
+        "Account", erpnext_account, ["account_number", "xero_account_id"]
+    ) or (None, None)
+
+    live_code = None
+    if account_xero_id and account_number:
+        try:
+            live_code = validate_account_code(account_number)
+        except ValueError:
+            live_code = None
+
+    if mapped_code and live_code and str(mapped_code).strip() != live_code:
+        log_xero_error(
+            message=(
+                f"Account mapping conflict for {erpnext_account}: the mapping row "
+                f"in Xero Settings says code {mapped_code}, but the account is "
+                f"linked to Xero code {live_code}. Using {live_code} — correct "
+                f"the row under Xero Settings → Mappings."
+            ),
+            status="Warning",
+            erpnext_doc_type=doc_type,
+            erpnext_doc_name=doc_name,
+            category="Mapping Errors",
+        )
+        return live_code
+
+    return mapped_code or account_number
+
 
 @frappe.whitelist()
 def enqueue_sync_journal(doc, method):
@@ -102,8 +144,8 @@ def sync_journal_to_xero(doc_name, doc_type="Journal Entry", **kwargs):
             # number only if it happens to match a Xero code and no explicit
             # mapping exists. NOTE: the Account doctype has no
             # `xero_account_code` column — the mapping lives on Xero Settings.
-            xero_account_code = account_map.get(acc.account) or frappe.db.get_value(
-                "Account", acc.account, "account_number"
+            xero_account_code = resolve_line_account_code(
+                acc.account, account_map, doc_type, doc_name
             )
             if not xero_account_code:
                 raise Exception(
