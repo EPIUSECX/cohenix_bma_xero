@@ -2,6 +2,7 @@
 # For license information, please see license.txt
 
 import frappe
+from xero.utils.xero_client import require_xero_manager
 from frappe.model.document import Document
 from frappe.utils import now
 
@@ -31,6 +32,7 @@ class XeroAccount(Document):
 @frappe.whitelist()
 def get_xero_account_by_code(account_code):
     """Get Xero Account by account code"""
+    require_xero_manager()
     try:
         return frappe.get_doc("Xero Account", account_code)
     except frappe.DoesNotExistError:
@@ -40,6 +42,7 @@ def get_xero_account_by_code(account_code):
 @frappe.whitelist()
 def sync_xero_accounts():
     """Sync all accounts from Xero to local DocType"""
+    require_xero_manager()
     from xero.api.xero_accounts import fetch_xero_accounts
     
     try:

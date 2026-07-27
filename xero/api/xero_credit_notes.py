@@ -208,6 +208,11 @@ def enqueue_sync_return(doc, method):
     ERPNext Sales Invoice (is_return=1) → Xero ACCRECCREDIT
     ERPNext Purchase Invoice (is_return=1) → Xero ACCPAYCREDIT
     """
+    # HI-4: the inbound (Xero -> ERPNext) import sets this flag before submitting
+    # an imported credit note, so this on_submit hook does not bounce it straight
+    # back out to Xero as an update (echo loop).
+    if getattr(doc.flags, "ignore_xero_sync", False):
+        return
     settings = get_xero_settings()
     if not settings.enable_xero_sync or not settings.get("sync_credit_notes"):
         return
@@ -229,7 +234,6 @@ def enqueue_sync_return(doc, method):
         "xero.api.xero_credit_notes.sync_return_to_xero",
         queue="short",
         timeout=600,
-        retry=1,
         doc_name=doc.name,
         doc_type=doc.doctype,
     )
@@ -346,7 +350,6 @@ def sync_return_to_xero(doc_name, doc_type, **kwargs):
                 "xero.api.xero_credit_notes.sync_return_to_xero",
                 queue="short",
                 timeout=600,
-                retry=1,
                 doc_name=doc_name,
                 doc_type=doc_type,
                 enqueue_after_commit=True,
@@ -1230,17 +1233,21 @@ def process_xero_credit_note(xero_cn_data, settings):
         # Credit notes carry Total as a positive figure in Xero; the ERPNext
         # return doc grand_total is negative, so compare magnitudes. Warn (do
         # not block) on divergence beyond a 0.02 tolerance.
+        # 6a: if the ERPNext total diverges from Xero beyond tolerance (e.g. tax
+        # could not be reconstructed), do NOT post to the GL — leave it Draft and
+        # flag it. Posting an under-taxed credit note is silent GL corruption.
         xero_total = flt(xero_cn_data.get("Total", 0))
         erpnext_total = abs(flt(doc.get("grand_total")))
-        if xero_total and abs(erpnext_total - abs(xero_total)) > 0.02:
+        totals_reconcile = not (xero_total and abs(erpnext_total - abs(xero_total)) > 0.02)
+        if not totals_reconcile:
             log_xero_error(
                 message=(
                     f"Total mismatch on inbound credit note {erpnext_doctype} "
                     f"{erpnext_doc_name} (Xero CN {cn_number}): ERPNext "
                     f"|grand_total| {erpnext_total} vs Xero |Total| "
-                    f"{abs(xero_total)}. Review before submitting."
+                    f"{abs(xero_total)}. NOT auto-submitting; left as Draft for review."
                 ),
-                status="Warning",
+                status="Error",
                 xero_entity_id=xero_cn_id,
                 xero_entity_type="CreditNote",
                 erpnext_doc_type=erpnext_doctype,
@@ -1259,6 +1266,14 @@ def process_xero_credit_note(xero_cn_data, settings):
             xero_cn_id,
         )
 
+        # HI-4 (suspenders): stamp the data hash on the imported credit note so
+        # the outbound worker short-circuits on an unchanged inbound doc and a
+        # LATER genuine ERPNext edit is still detected as changed.
+        frappe.db.set_value(
+            doc.doctype, erpnext_doc_name, "xero_data_hash",
+            compute_credit_note_hash(doc), update_modified=False,
+        )
+
         frappe.db.commit()
 
         # Opt-in: post the imported credit note to the GL when auto-submit is
@@ -1267,7 +1282,9 @@ def process_xero_credit_note(xero_cn_data, settings):
         # failed submit leaves it as Draft for manual review.
         from .xero_invoices import maybe_submit_inbound
 
-        maybe_submit_inbound(doc, settings, xero_cn_id, "CreditNote")
+        # Only auto-post when the totals reconcile (see 6a above).
+        if totals_reconcile:
+            maybe_submit_inbound(doc, settings, xero_cn_id, "CreditNote")
 
         log_xero_error(
             message=log_message,

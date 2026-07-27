@@ -14,6 +14,11 @@ from ..utils.retry_handler import retry_with_exponential_backoff
 @frappe.whitelist()
 def enqueue_sync_payment(doc, method):
     """Enqueue background job to sync a Payment Entry to Xero."""
+    # HI-4: the inbound (Xero -> ERPNext) import sets this flag before submitting
+    # an imported Payment Entry, so this on_submit hook does not bounce it back
+    # out to Xero (echo loop / duplicate payment).
+    if getattr(doc.flags, "ignore_xero_sync", False):
+        return
     settings = get_xero_settings()
     if not settings.enable_xero_sync or not settings.get("sync_payments"):
         return
@@ -22,7 +27,6 @@ def enqueue_sync_payment(doc, method):
         "xero.api.xero_payments.sync_payment_to_xero",
         queue="short",
         timeout=600,
-        retry=1,
         doc_name=doc.name,
         doc_type=doc.doctype,
     )
@@ -105,7 +109,24 @@ def sync_payment_to_xero(doc_name, doc_type="Payment Entry", **kwargs):
             # This is a payment against invoice(s)
             sync_invoice_payments(doc, xero_bank_account_id, doc_type, doc_name)
         else:
-            # This is a standalone payment (advance payment, etc.)
+            # Standalone payment (advance, etc.) → Xero Bank Transaction. Gated
+            # OFF by default: this path writes money movements to Xero and had
+            # never actually run (it raised AttributeError before the API call),
+            # so it stays disabled until validated against a sandbox and enabled
+            # explicitly via 'Sync Standalone Payments' on Xero Settings.
+            if not settings.get("sync_payments_standalone"):
+                log_xero_error(
+                    message=(
+                        f"Standalone payment sync is disabled; skipping {doc_type} "
+                        f"{doc_name}. Enable 'Sync Standalone Payments' in Xero "
+                        f"Settings once validated against a sandbox."
+                    ),
+                    status="Info",
+                    erpnext_doc_type=doc_type,
+                    erpnext_doc_name=doc_name,
+                    category="System Monitoring",
+                )
+                return
             sync_standalone_payment(
                 doc, xero_contact_id, xero_bank_account_id, doc_type, doc_name
             )
@@ -223,55 +244,18 @@ def _save_payment_idempotency_map(doc_type, doc_name, idemp_map):
     frappe.db.commit()
 
 
-def _xero_payment_exists_for_invoice(xero_invoice_id):
-    """
-    Defensive check: query Xero directly to see if there is already an
-    AUTHORISED payment against this invoice. Used as a backstop when our
-    local idempotency map is empty (e.g. the map was never written because
-    a previous attempt crashed between the Xero-side success and the local
-    DB commit).
-
-    Returns the existing PaymentID string if found, else None.
-
-    Per Xero API spec, payments can be filtered with
-    where=Invoice.InvoiceID=guid("...") AND Status="AUTHORISED".
-    """
-    if not xero_invoice_id:
-        return None
-    try:
-        params = {
-            "where": (
-                f'Invoice.InvoiceID=guid("{xero_invoice_id}") '
-                'AND Status="AUTHORISED"'
-            )
-        }
-        response = xero_request("GET", "Payments", params=params)
-        payments = (response or {}).get("Payments") or []
-        if payments:
-            # Return first AUTHORISED payment ID; multi-payment cases are
-            # rare and an existing payment is sufficient evidence of dedup.
-            return payments[0].get("PaymentID")
-    except Exception:
-        # Best-effort: if the lookup fails, we fall through and let the
-        # caller proceed with normal PUT. Xero will reject genuine
-        # duplicates with an outstanding-amount error, which is safer
-        # than blocking sync on a transient lookup failure.
-        return None
-    return None
-
-
 def sync_invoice_payments(doc, xero_bank_account_id, doc_type, doc_name):
     """
     Handle payments against specific invoices, idempotently.
 
-    Strategy:
-      1. Load the {xero_invoice_id: xero_payment_id} idempotency map from
-         xero_payment_data. Any reference whose invoice already has a
-         payment ID in this map is skipped (no second PUT).
-      2. For references not in the map, defensively query Xero
-         (GET /Payments?where=Invoice.InvoiceID=...) before creating, so a
-         crash between Xero-side success and local DB commit on a previous
-         attempt does not produce a duplicate Xero payment.
+    Strategy (dedup is scoped to THIS Payment Entry, never the invoice):
+      1. Load the {xero_invoice_id: xero_payment_id} idempotency map from this
+         PE's xero_payment_data. A reference already in this map is skipped.
+      2. For references not in the map, create the payment with a stable
+         Idempotency-Key (PE + invoice) so Xero collapses a retry of THIS PE's
+         payment that crashed between the Xero-side success and the local
+         commit. A different PE gets a different key, so a legitimately separate
+         partial payment is created rather than wrongly deduped.
       3. Persist the map after EACH successful PUT, before processing the
          next reference. This means a partial failure mid-loop leaves a
          consistent map; the retry only re-attempts unsynced references.
@@ -322,30 +306,14 @@ def sync_invoice_payments(doc, xero_bank_account_id, doc_type, doc_name):
             )
             continue
 
-        # --- Idempotency check (Xero-side defensive lookup) ---
-        existing_payment_id = _xero_payment_exists_for_invoice(xero_invoice_id)
-        if existing_payment_id:
-            idemp_map[xero_invoice_id] = existing_payment_id
-            log_xero_error(
-                message=(
-                    f"Payment for {invoice_doctype} {invoice_name} already "
-                    f"exists in Xero (PaymentID={existing_payment_id}); "
-                    f"reattaching to ERPNext map without creating duplicate."
-                ),
-                status="Info",
-                erpnext_doc_type=doc_type,
-                erpnext_doc_name=doc_name,
-                xero_entity_id=existing_payment_id,
-                xero_entity_type="Payment",
-                direction="ERPNext to Xero",
-                category="Duplicate Entity",
-            )
-            # Persist immediately so any subsequent failure does not lose
-            # the discovered link.
-            _save_payment_idempotency_map(doc_type, doc_name, idemp_map)
-            continue
-
         # --- Build payload & create payment ---
+        # Dedup is handled per-Payment-Entry: the local idemp_map above skips a
+        # payment this PE already created (beyond-24h retries), and a stable
+        # Idempotency-Key makes Xero itself collapse a retry of THIS PE's payment
+        # that crashed between the Xero-side success and the local commit. We do
+        # NOT gate on "any AUTHORISED payment on the invoice" — that wrongly
+        # dropped a second, legitimately separate partial payment (a different PE)
+        # and mapped it to the first payment's id, under-recording cash.
         payment_payload = {
             "Invoice": {"InvoiceID": xero_invoice_id},
             "Account": {"AccountID": xero_bank_account_id},
@@ -354,7 +322,11 @@ def sync_invoice_payments(doc, xero_bank_account_id, doc_type, doc_name):
             "Reference": f"{doc.reference_no or doc.name} - {invoice_name}",
         }
 
-        response = xero_request("PUT", "Payments", data={"Payments": [payment_payload]})
+        idempotency_key = f"Payment Entry:{doc_name}:{xero_invoice_id}:create-payment"
+        response = xero_request(
+            "PUT", "Payments", data={"Payments": [payment_payload]},
+            idempotency_key=idempotency_key,
+        )
 
         if not response or not response.get("Payments"):
             raise Exception(
@@ -418,12 +390,15 @@ def sync_standalone_payment(
 
     settings = get_xero_settings()
 
-    # Get account code for the party account
-    party_account = doc.party_account
-    xero_account_code = get_xero_account_code(party_account, settings)
+    # The bank leg is BankAccount (resolved by the caller). The LineItem is coded
+    # to the CONTRA account — the non-bank side of the Payment Entry. Payment
+    # Entry has no `party_account` field; the previous code read that and raised
+    # AttributeError, so this path had never actually run.
+    contra_account = doc.paid_to if doc.payment_type == "Pay" else doc.paid_from
+    xero_account_code = get_xero_account_code(contra_account, settings)
     if not xero_account_code:
         raise Exception(
-            f"Xero Account Code mapping not found for Account: {party_account}"
+            f"Xero Account Code mapping not found for Account: {contra_account}"
         )
 
     # Create bank transaction payload
@@ -450,9 +425,19 @@ def sync_standalone_payment(
     if xero_bank_transaction_id:
         transaction_payload["BankTransactionID"] = xero_bank_transaction_id
 
-    # Make API call
+    # C8: key the create so a lost response after Xero committed does not create
+    # a duplicate bank transaction on retry. Only on create — an update already
+    # targets a specific BankTransactionID.
+    idempotency_key = (
+        None
+        if xero_bank_transaction_id
+        else f"Payment Entry:{doc_name}:create-banktxn"
+    )
     response = xero_request(
-        "PUT", "BankTransactions", data={"BankTransactions": [transaction_payload]}
+        "PUT",
+        "BankTransactions",
+        data={"BankTransactions": [transaction_payload]},
+        idempotency_key=idempotency_key,
     )
 
     if response and response.get("BankTransactions"):
@@ -906,6 +891,10 @@ def process_xero_payment(xero_payment_data, settings):
             doc.update(erpnext_data)
             doc.insert(ignore_permissions=True)
             erpnext_doc_name = doc.name
+
+            # HI-4: mark this inbound-created Payment Entry so its on_submit hook
+            # does not bounce the payment back out to Xero (echo loop / duplicate).
+            doc.flags.ignore_xero_sync = True
 
             # Auto-submit if configured
             if settings.get("auto_submit_payment_entries"):

@@ -4,7 +4,7 @@
 import frappe
 from frappe import _
 from frappe.utils import getdate, nowdate, add_days, flt
-from ..utils.xero_client import xero_request, get_xero_settings
+from ..utils.xero_client import xero_request, get_xero_settings, require_xero_manager
 from ..utils.logging import log_xero_error
 from ..utils.retry_handler import retry_with_exponential_backoff
 
@@ -428,6 +428,7 @@ def sync_aged_receivables_from_xero(contact_id=None, report_date=None):
         contact_id: Specific contact ID to get aged receivables for
         report_date: Date for the aged receivables report
     """
+    require_xero_manager()
     settings = get_xero_settings()
     if not settings.enable_xero_sync: return
     

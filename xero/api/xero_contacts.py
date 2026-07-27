@@ -6,7 +6,7 @@ from frappe import _
 from frappe.utils import get_fullname
 import hashlib
 import re
-from ..utils.xero_client import xero_request, get_xero_settings
+from ..utils.xero_client import xero_request, get_xero_settings, require_xero_manager
 from ..utils.logging import log_xero_error, get_leaf_doctype_value
 from ..utils.retry_handler import retry_with_exponential_backoff
 
@@ -186,7 +186,6 @@ def enqueue_sync_contact(doc_name, doc_type=None):
         "xero.api.xero_contacts.sync_contact_to_xero",
         queue="short",
         timeout=600,
-        retry=1,
         doc_name=doc_name,
         doc_type=doc_type,
     )
@@ -841,6 +840,31 @@ def process_xero_contact(xero_contact_data):
         )
 
 
+def _contact_email_matches(target_doctype, party_name, xero_contact_data):
+    """True when the Xero contact's email matches an email already on the
+    candidate ERPNext party (via a linked Contact). Used as a second signal to
+    gate auto-linking on an otherwise-unsafe bare-name match."""
+    xero_email = (xero_contact_data.get("EmailAddress") or "").strip().lower()
+    if not xero_email:
+        return False
+    linked_contacts = frappe.get_all(
+        "Dynamic Link",
+        filters={
+            "link_doctype": target_doctype,
+            "link_name": party_name,
+            "parenttype": "Contact",
+        },
+        pluck="parent",
+    )
+    for contact in linked_contacts:
+        emails = frappe.get_all(
+            "Contact Email", filters={"parent": contact}, pluck="email_id"
+        )
+        if any((e or "").strip().lower() == xero_email for e in emails):
+            return True
+    return False
+
+
 def sync_xero_contact_to_erpnext(xero_contact_data, target_doctype):
     """Syncs a single Xero contact to the specified ERPNext DocType (Customer or Supplier)."""
     xero_contact_id = xero_contact_data.get("ContactID")
@@ -853,31 +877,69 @@ def sync_xero_contact_to_erpnext(xero_contact_data, target_doctype):
         target_doctype, {"xero_contact_id": xero_contact_id}, "name"
     )
 
-    # 2. If not found by ID, check by name (potential for duplicates!)
+    # 2. If not found by ID, consider a name match — but a bare name match is
+    #    unsafe: two unrelated parties can share a name, and blindly binding the
+    #    Xero id then overwriting fields silently corrupts the wrong master
+    #    record. Only auto-link when (a) the candidate is not already linked to a
+    #    DIFFERENT Xero contact, and (b) a second signal (email) corroborates.
+    #    Otherwise skip and flag for a human to link manually.
     if not erpnext_doc_name:
         field_name = (
             "customer_name" if target_doctype == "Customer" else "supplier_name"
         )
-        erpnext_doc_name = frappe.db.get_value(
-            target_doctype, {field_name: contact_name}, "name"
+        name_match = frappe.db.get_value(
+            target_doctype, {field_name: contact_name},
+            ["name", "xero_contact_id"], as_dict=True,
         )
-        # If found by name, update its xero_contact_id
-        if erpnext_doc_name:
-            frappe.db.set_value(
-                target_doctype,
-                erpnext_doc_name,
-                "xero_contact_id",
-                xero_contact_id,
-                update_modified=False,
-            )
+        if name_match:
+            existing_xid = name_match.get("xero_contact_id")
+            if existing_xid and existing_xid != xero_contact_id:
+                log_xero_error(
+                    message=(
+                        f"Xero Contact {xero_contact_id} ({contact_name}) name-matches "
+                        f"{target_doctype} {name_match.name}, already linked to a DIFFERENT "
+                        f"Xero contact ({existing_xid}). Skipping to avoid a wrong merge."
+                    ),
+                    status="Warning",
+                    category="Duplicate Entity",
+                    xero_entity_id=xero_contact_id,
+                    xero_entity_type="Contact",
+                    erpnext_doc_type=target_doctype,
+                    erpnext_doc_name=name_match.name,
+                    direction="Xero to ERPNext",
+                )
+                return
+            if _contact_email_matches(target_doctype, name_match.name, xero_contact_data):
+                # Name + email corroborate: safe to link this existing record.
+                erpnext_doc_name = name_match.name
+            else:
+                log_xero_error(
+                    message=(
+                        f"Xero Contact {xero_contact_id} ({contact_name}) name-matches "
+                        f"{target_doctype} {name_match.name}, but no corroborating email. "
+                        f"Skipping auto-link to avoid a wrong merge; link manually if correct."
+                    ),
+                    status="Warning",
+                    category="Duplicate Entity",
+                    xero_entity_id=xero_contact_id,
+                    xero_entity_type="Contact",
+                    erpnext_doc_type=target_doctype,
+                    erpnext_doc_name=name_match.name,
+                    direction="Xero to ERPNext",
+                )
+                return
 
     # --- Map Xero Data to ERPNext Fields ---
+    # Only carry non-empty Xero values so a blank Xero field never wipes an
+    # existing ERPNext value on an update.
     erpnext_data = {
         "xero_contact_id": xero_contact_id,
         "xero_sync_status": sync_status,
-        "tax_id": xero_contact_data.get("TaxNumber"),
-        "website": xero_contact_data.get("Website"),
     }
+    if xero_contact_data.get("TaxNumber"):
+        erpnext_data["tax_id"] = xero_contact_data.get("TaxNumber")
+    if xero_contact_data.get("Website"):
+        erpnext_data["website"] = xero_contact_data.get("Website")
 
     # Map ContactStatus to disabled field
     # ACTIVE → disabled=0, ARCHIVED/GDPRREQUEST → disabled=1
@@ -1561,6 +1623,7 @@ def sync_contact_notes_from_xero(batch_size=50, refresh_days=7, call_delay=0.4):
 
     Gated by enable_sync_from_xero + the sync_contact_notes toggle.
     """
+    require_xero_manager()
     import time
     from datetime import datetime
 

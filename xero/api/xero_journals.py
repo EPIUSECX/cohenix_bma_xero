@@ -21,7 +21,6 @@ def enqueue_sync_journal(doc, method):
         "xero.api.xero_journals.sync_journal_to_xero",
         queue="short",
         timeout=600,
-        retry=1,
         doc_name=doc.name,
         doc_type=doc.doctype
     )
@@ -255,7 +254,28 @@ def sync_journal_to_xero(doc_name, doc_type="Journal Entry", **kwargs):
             )
 
 
-@frappe.whitelist()
+def enqueue_delete_journal(doc, method):
+    """Enqueue the void job for a cancelled Journal Entry.
+
+    Wired to the Journal Entry on_cancel doc_event, so it receives (doc, method).
+    The actual void runs on the worker in delete_journal_from_xero(doc_name,
+    doc_type). Previously on_cancel pointed straight at that worker, which Frappe
+    called as (doc, "on_cancel") — the signature mismatch meant journals were
+    never voided in Xero.
+    """
+    settings = get_xero_settings()
+    if not settings.enable_xero_sync or not settings.get("sync_journal_entries"):
+        return
+
+    frappe.enqueue(
+        "xero.api.xero_journals.delete_journal_from_xero",
+        queue="short",
+        timeout=600,
+        doc_name=doc.name,
+        doc_type=doc.doctype,
+    )
+
+
 def delete_journal_from_xero(doc_name, doc_type="Journal Entry"):
     """
     Delete/Void a Manual Journal in Xero when cancelled in ERPNext.

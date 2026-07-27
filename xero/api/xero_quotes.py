@@ -22,7 +22,6 @@ def enqueue_sync_quotation(doc, method):
         "xero.api.xero_quotes.sync_quotation_to_xero",
         queue="short",
         timeout=600,
-        retry=1,
         doc_name=doc.name,
         doc_type=doc.doctype
     )

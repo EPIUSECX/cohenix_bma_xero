@@ -196,8 +196,14 @@ def handle_oauth_callback(code=None, state=None, error=None):
             "access_denied": "Access was denied. Please try connecting again and accept the permissions request.",
             "invalid_client": "Invalid Client ID or Client Secret. Check your Xero Settings credentials.",
         }
-        friendly = error_messages.get(error, f"Xero OAuth error: {error}")
-        frappe.log_error(friendly, "Xero OAuth Error")
+        # Do not reflect the raw provider `error` back into the redirect — it is
+        # attacker-controllable and lands in an HTML-rendering msgprint. Map known
+        # codes to friendly text; unknown codes get a generic message, and the raw
+        # value is kept in the server log only.
+        friendly = error_messages.get(
+            error, "Xero returned an authorization error. Please try connecting again."
+        )
+        frappe.log_error(f"Xero OAuth error param: {error!r}", "Xero OAuth Error")
         _redirect_with_error(friendly)
         return
 

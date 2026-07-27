@@ -161,7 +161,7 @@ doc_events = {
     },
     "Journal Entry": {
         "on_submit": "xero.api.xero_journals.enqueue_sync_journal",
-        "on_cancel": "xero.api.xero_journals.delete_journal_from_xero"
+        "on_cancel": "xero.api.xero_journals.enqueue_delete_journal"
     },
     # NOTE: Bank Transaction outbound sync is intentionally DISABLED — bank
     # movements reach Xero via Payment Entry (-> Payment) and Journal Entry
