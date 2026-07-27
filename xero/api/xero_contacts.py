@@ -999,29 +999,6 @@ def sync_xero_contact_to_erpnext(xero_contact_data, target_doctype):
             erpnext_doc_name = doc.name
             log_message = f"Created {target_doctype} {erpnext_doc_name} from Xero Contact {xero_contact_id}"
 
-        # HI-4: persist the freshly-computed data hash on the inbound path so a
-        # LATER genuine ERPNext edit is correctly detected (and not short-circuited
-        # by enqueue_sync_contact comparing against a stale/empty hash). Computed
-        # after save so address/contact relations resolved above are reflected.
-        try:
-            frappe.db.set_value(
-                target_doctype,
-                erpnext_doc_name,
-                "xero_data_hash",
-                compute_data_hash(doc),
-                update_modified=False,
-            )
-        except Exception:
-            # Hash is an optimisation only; never let it break the inbound sync.
-            log_xero_error(
-                message=f"Could not store xero_data_hash for {target_doctype} {erpnext_doc_name}",
-                status="Warning",
-                erpnext_doc_type=target_doctype,
-                erpnext_doc_name=erpnext_doc_name,
-                category="System Monitoring",
-                error_details=frappe.get_traceback(),
-            )
-
         commit_checkpoint()
         log_xero_error(
             message=log_message,
@@ -1127,6 +1104,32 @@ def sync_xero_contact_to_erpnext(xero_contact_data, target_doctype):
                         error_details=str(address_error),
                     )
 
+        # HI-4: persist the freshly-computed data hash so a LATER genuine
+        # ERPNext edit is correctly detected (and not short-circuited by
+        # enqueue_sync_contact comparing against a stale/empty hash). This MUST
+        # run after the ContactPersons/Address writes above: compute_data_hash
+        # reads the primary contact and address, so hashing before they land
+        # stores a stale digest and the next unrelated save re-pushes to Xero.
+        try:
+            frappe.db.set_value(
+                target_doctype,
+                erpnext_doc_name,
+                "xero_data_hash",
+                compute_data_hash(doc),
+                update_modified=False,
+            )
+            commit_checkpoint()
+        except Exception:
+            # Hash is an optimisation only; never let it break the inbound sync.
+            log_xero_error(
+                message=f"Could not store xero_data_hash for {target_doctype} {erpnext_doc_name}",
+                status="Warning",
+                erpnext_doc_type=target_doctype,
+                erpnext_doc_name=erpnext_doc_name,
+                category="System Monitoring",
+                error_details=frappe.get_traceback(),
+            )
+
     except Exception as e:
         # Log error, but don't stop processing other contacts
         sync_status = "Error"
@@ -1148,6 +1151,28 @@ def sync_xero_contact_to_erpnext(xero_contact_data, target_doctype):
             xero_entity_type="Contact",
             direction="Xero to ERPNext",
             error_details=frappe.get_traceback(),
+        )
+
+
+def _demote_other_primary_contacts(keep_contact, parent_doctype, parent_name):
+    """Clear is_primary_contact on every other Contact linked to the party.
+
+    ERPNext resolves the party's effective email/phone from the primary
+    Contact; two primaries make that resolution order-dependent."""
+    siblings = frappe.db.sql(
+        """
+        SELECT c.name
+        FROM `tabContact` c
+        INNER JOIN `tabDynamic Link` dl ON dl.parent = c.name AND dl.parenttype = 'Contact'
+        WHERE c.is_primary_contact = 1 AND c.name != %s
+        AND dl.link_doctype = %s AND dl.link_name = %s
+    """,
+        (keep_contact, parent_doctype, parent_name),
+        as_dict=True,
+    )
+    for row in siblings:
+        frappe.db.set_value(
+            "Contact", row.name, "is_primary_contact", 0, update_modified=False
         )
 
 
@@ -1200,24 +1225,48 @@ def sync_contact_person_to_erpnext(
             contact_name = scoped[0].name
 
     # Strategy 2: Find by name linked to this specific customer/supplier.
-    # last_name is legitimately empty for company-only contacts, so match it
-    # as an empty string instead of requiring both parts (requiring both made
-    # every amend of a last-name-less contact create a duplicate).
-    if not contact_name and first_name:
+    # Either name part may legitimately be empty, so match both as empty
+    # strings instead of requiring them (requiring both made every amend of a
+    # partially-named contact create a duplicate).
+    if not contact_name and (first_name or last_name):
         contact_result = frappe.db.sql(
             """
             SELECT c.name
             FROM `tabContact` c
             INNER JOIN `tabDynamic Link` dl ON dl.parent = c.name AND dl.parenttype = 'Contact'
-            WHERE c.first_name = %s AND COALESCE(c.last_name, '') = %s
+            WHERE COALESCE(c.first_name, '') = %s AND COALESCE(c.last_name, '') = %s
             AND dl.link_doctype = %s AND dl.link_name = %s
             LIMIT 1
         """,
-            (first_name, last_name or "", parent_doctype, parent_name),
+            (first_name or "", last_name or "", parent_doctype, parent_name),
             as_dict=True,
         )
         if contact_result:
             contact_name = contact_result[0].name
+
+    # Strategy 3: nameless person data (company-only parties — the Xero
+    # contact has an email/phone but no person name). Neither matcher above
+    # can identify it, and inserting a fresh nameless Contact on every sweep
+    # multiplies rows without bound while the party's effective email stays
+    # frozen on the oldest one. Update the party's existing nameless primary
+    # in place instead. Named persons never take this path — a genuinely new
+    # named person must still create its own Contact.
+    if not contact_name and not first_name and not last_name:
+        fallback = frappe.db.sql(
+            """
+            SELECT c.name
+            FROM `tabContact` c
+            INNER JOIN `tabDynamic Link` dl ON dl.parent = c.name AND dl.parenttype = 'Contact'
+            WHERE COALESCE(c.first_name, '') = '' AND COALESCE(c.last_name, '') = ''
+            AND dl.link_doctype = %s AND dl.link_name = %s
+            ORDER BY c.is_primary_contact DESC, c.creation ASC
+            LIMIT 1
+        """,
+            (parent_doctype, parent_name),
+            as_dict=True,
+        )
+        if fallback:
+            contact_name = fallback[0].name
 
     # Prepare contact data - only include fields with values
     contact_data = {}
@@ -1268,6 +1317,16 @@ def sync_contact_person_to_erpnext(
                                     break
 
                             if not phone_exists:
+                                # Xero's number is THE number of its type, so
+                                # demote existing primaries first — two primary
+                                # rows fail Contact validation and abort the
+                                # whole person update.
+                                if phone_type == "DEFAULT":
+                                    for phone_row in contact.phone_nos:
+                                        phone_row.is_primary_phone = 0
+                                if phone_type == "MOBILE":
+                                    for phone_row in contact.phone_nos:
+                                        phone_row.is_primary_mobile_no = 0
                                 contact.append(
                                     "phone_nos",
                                     {
@@ -1350,6 +1409,11 @@ def sync_contact_person_to_erpnext(
 
             contact.insert(ignore_permissions=True)
             action = "Created"
+
+        # A party must have at most one primary Contact — two primaries make
+        # the effective email (get_primary_contact_details) ambiguous.
+        if contact.is_primary_contact:
+            _demote_other_primary_contacts(contact.name, parent_doctype, parent_name)
 
         commit_checkpoint()
 

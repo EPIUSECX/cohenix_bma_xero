@@ -233,8 +233,9 @@ class TestInboundContactSync(unittest.TestCase):
         # The hash must be stored on the inbound path so a later genuine
         # ERPNext edit is detected instead of short-circuited.
         self.assertTrue(stored.xero_data_hash)
-        # Per-document checkpoint persisted through the helper.
-        mocks.checkpoint.assert_called_once()
+        # Per-document checkpoints persisted through the helper (one after the
+        # party save, one after the trailing hash write).
+        self.assertTrue(mocks.checkpoint.called)
         # The insert fires the Customer on_update hook; the suppression flag
         # must stop it from enqueueing an outbound echo of the same data.
         self.assertFalse(_xero_sync_enqueued(mocks.enqueue))
@@ -265,3 +266,66 @@ class TestContactNumberReference(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCompanyOnlyContactPersons(unittest.TestCase):
+    """Company-only Xero contacts carry an email/phone but no person name.
+    Inbound must maintain exactly ONE (nameless) Contact per party — updating
+    it in place on every amend — never inserting another row per sweep, and
+    the party's effective email must follow the Xero side."""
+
+    def setUp(self):
+        self.addCleanup(frappe.db.rollback)
+        _delete_if_exists(INBOUND_CUSTOMER)
+
+    def _process(self, email, phone=None):
+        payload = {
+            "ContactID": CONTACT_ID,
+            "Name": INBOUND_CUSTOMER,
+            "ContactStatus": "ACTIVE",
+            "EmailAddress": email,
+        }
+        if phone:
+            payload["Phones"] = [{"PhoneType": "DEFAULT", "PhoneNumber": phone}]
+        with patch("xero.api.xero_contacts.commit_checkpoint"), \
+             patch("xero.api.xero_contacts.log_xero_error"), \
+             patch("xero.api.xero_contacts.frappe.enqueue"):
+            sync_xero_contact_to_erpnext(payload, "Customer")
+
+    def _linked_contacts(self):
+        customer = frappe.db.get_value("Customer", {"xero_contact_id": CONTACT_ID})
+        return frappe.get_all(
+            "Dynamic Link",
+            filters={
+                "parenttype": "Contact",
+                "link_doctype": "Customer",
+                "link_name": customer,
+            },
+            pluck="parent",
+        )
+
+    def test_amends_update_one_contact_not_multiply(self):
+        self._process("ops@example.com", phone="+27 11 555 0001")
+        first = self._linked_contacts()
+        self.assertEqual(len(first), 1)
+
+        # Two consecutive Xero-side amends: same single Contact, new email.
+        self._process("newops@example.com")
+        self._process("final@example.com")
+        after = self._linked_contacts()
+        self.assertEqual(after, first, "inbound amend must not create more Contacts")
+
+        from xero.api.xero_contacts import get_primary_contact_details
+
+        customer = frappe.db.get_value("Customer", {"xero_contact_id": CONTACT_ID})
+        details = get_primary_contact_details("Customer", customer)
+        self.assertEqual(details.get("email_id"), "final@example.com")
+
+    def test_single_primary_contact_enforced(self):
+        self._process("ops@example.com")
+        contacts = self._linked_contacts()
+        primaries = [
+            c for c in contacts
+            if frappe.db.get_value("Contact", c, "is_primary_contact")
+        ]
+        self.assertEqual(len(primaries), 1)
