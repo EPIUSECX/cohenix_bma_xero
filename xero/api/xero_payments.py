@@ -9,6 +9,7 @@ from ..utils.xero_client import xero_request, get_xero_settings
 from ..utils.logging import log_xero_error
 from ..utils.retry_handler import retry_with_exponential_backoff
 from ..utils.exceptions import XeroApiError
+from ..utils.sync_status import mark_sync_failure
 
 # --- Payment Sync (ERPNext to Xero) ---
 
@@ -29,6 +30,7 @@ def enqueue_sync_payment(doc, method):
         "xero.api.xero_payments.sync_payment_to_xero",
         queue="short",
         timeout=600,
+        enqueue_after_commit=True,
         doc_name=doc.name,
         doc_type=doc.doctype,
     )
@@ -158,30 +160,8 @@ def sync_payment_to_xero(doc_name, doc_type="Payment Entry", **kwargs):
                 direction="ERPNext to Xero",
             )
         else:
-            from ..utils.logging import build_error_details, format_sync_error_message
-
-            # Genuine sync error; permanent Xero rejections go terminal so the
-            # hourly retry task stops re-queuing an unsatisfiable document.
-            sync_status = "Failed" if getattr(e, "is_permanent", False) else "Error"
-            if doc_name and doc_type:
-                frappe.db.set_value(
-                    doc_type,
-                    doc_name,
-                    {"xero_sync_status": sync_status},
-                    update_modified=False,
-                )
-                commit_error_state()
-
-            user_message = format_sync_error_message(
-                doc_type, doc_name, doc_name, "ERPNext to Xero", e
-            )
-
-            log_xero_error(
-                message=user_message,
-                erpnext_doc_type=doc_type,
-                erpnext_doc_name=doc_name,
-                error_details=build_error_details(e, error_traceback),
-                direction="ERPNext to Xero",
+            mark_sync_failure(
+                doc_type, doc_name, e, "ERPNext to Xero", traceback_text=error_traceback
             )
 
 

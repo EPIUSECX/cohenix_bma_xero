@@ -7,6 +7,7 @@ from frappe import _
 from frappe.utils import flt
 from ..utils.xero_client import xero_request, get_xero_settings
 from ..utils.logging import log_xero_error
+from ..utils.sync_status import mark_sync_failure
 from .xero_invoices import parse_xero_date
 
 # --- Bank Transaction Sync (ERPNext to Xero) — DISABLED BY DESIGN ---
@@ -238,24 +239,16 @@ def process_xero_bank_transaction(xero_transaction_data, settings):
                 direction="Xero to ERPNext"
             )
         else:
-            from ..utils.logging import format_sync_error_message
-            sync_status = "Error"
-            if erpnext_doc_name:
-                frappe.db.set_value("Bank Transaction", erpnext_doc_name, "xero_sync_status", sync_status, update_modified=False)
-                commit_error_state()
-
-            user_message = format_sync_error_message(
-                "Xero Bank Transaction", xero_transaction_id, xero_transaction_id, "Xero to ERPNext", e
-            )
-
-            log_xero_error(
-                message=user_message,
-                erpnext_doc_type="Bank Transaction",
-                erpnext_doc_name=erpnext_doc_name,
+            mark_sync_failure(
+                "Bank Transaction",
+                erpnext_doc_name,
+                e,
+                "Xero to ERPNext",
+                source_type="Xero Bank Transaction",
+                source_id=xero_transaction_id,
                 xero_entity_id=xero_transaction_id,
                 xero_entity_type="BankTransaction",
-                direction="Xero to ERPNext",
-                error_details=error_traceback
+                traceback_text=error_traceback,
             )
 
 

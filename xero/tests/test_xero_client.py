@@ -9,8 +9,10 @@ run without a live Xero connection or network access:
   * token refresh — success, refresh-token rotation, 400/401 invalidation
   * concurrent-refresh lock — token reuse instead of a second rotation
   * webhook HMAC signature — accept valid, reject invalid/missing (security)
+  * webhook responses — wire-level HTTP status, post-dedup queued count
   * 429 and 5xx retry with backoff
   * Idempotency-Key propagation on mutating calls
+  * inbound invoice mutex release + refetch_invoice recovery endpoint
 
 Run: bench run-tests --app xero --module xero.tests.test_xero_client
 """
@@ -93,6 +95,12 @@ class FakeCache:
 
     def get_value(self, key):
         return self.store.get(key)
+
+    def set_value(self, key, value, expires_in_sec=None):
+        self.store[key] = value
+
+    def delete_value(self, key):
+        self.store.pop(key, None)
 
     # Defensive no-ops so any incidental cache use during a test doesn't blow up.
     def hget(self, *a, **k):
@@ -270,6 +278,200 @@ class TestXeroRequestRetry(unittest.TestCase):
                    return_value=FakeResponse(200, {"ok": 1})) as get:
             xc.xero_request("GET", "Invoices")
         self.assertNotIn("Idempotency-Key", get.call_args.kwargs["headers"])
+
+
+# ---------------------------------------------------------------------------
+# Webhook handler — wire status + queued count
+# ---------------------------------------------------------------------------
+class TestWebhookHandler(unittest.TestCase):
+    """handle_webhook must set the HTTP status frappe actually reads
+    (frappe.local.response["http_status_code"]) and report the post-dedup
+    queued count, not the raw event count."""
+
+    KEY = "whsec"
+
+    def setUp(self):
+        import frappe
+        self._request = getattr(frappe.local, "request", None)
+        self._response = getattr(frappe.local, "response", None)
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        import frappe
+        frappe.local.request = self._request
+        frappe.local.response = self._response
+
+    def _sign(self, payload):
+        digest = hmac.new(self.KEY.encode(), payload.encode(), hashlib.sha256).digest()
+        return base64.b64encode(digest).decode()
+
+    def _call(self, payload, signature, seen=None, webhook_key="whsec"):
+        import frappe
+        frappe.local.request = SimpleNamespace(
+            headers={"X-Xero-Signature": signature} if signature else {},
+            get_data=lambda as_text=True: payload,
+        )
+        frappe.local.response = frappe._dict()
+        enqueued = []
+        with patch.object(wh, "get_webhook_key", return_value=webhook_key), \
+             patch.object(wh, "log_xero_error") as log, \
+             patch.object(wh, "_webhook_event_already_seen",
+                          side_effect=seen or (lambda e: False)), \
+             patch.object(wh.frappe, "enqueue",
+                          side_effect=lambda *a, **k: enqueued.append(k)):
+            result = wh.handle_webhook()
+        return result, frappe.local.response, log, enqueued
+
+    def test_invalid_signature_sets_wire_401(self):
+        result, response, log, enqueued = self._call('{"events":[]}', "not-a-sig")
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(response.get("http_status_code"), 401)
+        self.assertEqual(enqueued, [])
+        # The rejection must still be recorded in Xero Log
+        self.assertTrue(any(
+            call.kwargs.get("status") == "Error" for call in log.call_args_list
+        ))
+
+    def test_missing_webhook_key_sets_wire_401(self):
+        result, response, log, enqueued = self._call(
+            '{"events":[]}', "sig", webhook_key=None
+        )
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(response.get("http_status_code"), 401)
+
+    def test_invalid_json_sets_wire_400(self):
+        payload = "not-json"
+        result, response, log, enqueued = self._call(payload, self._sign(payload))
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(response.get("http_status_code"), 400)
+
+    def test_queued_count_excludes_replayed_events(self):
+        payload = ('{"events": ['
+                   '{"resourceId": "a"}, {"resourceId": "dup"}, {"resourceId": "b"}'
+                   ']}')
+        result, response, log, enqueued = self._call(
+            payload, self._sign(payload),
+            seen=lambda e: e.get("resourceId") == "dup",
+        )
+        self.assertEqual(result["status"], "success")
+        self.assertNotIn("http_status_code", response)
+        self.assertEqual(len(enqueued), 2)
+        self.assertIn("2 of 3", result["message"])
+
+
+# ---------------------------------------------------------------------------
+# Inbound invoice mutex + refetch recovery
+# ---------------------------------------------------------------------------
+class TestInvoiceLockRelease(unittest.TestCase):
+    """The per-invoice mutex must be acquired atomically (SET NX) and released
+    on every exit path — a leaked lock blocks retries until the TTL expires."""
+
+    def _lock_key(self):
+        import frappe
+        site = getattr(frappe.local, "site", "site")
+        return f"xero_inbound_lock:{site}:inv-1"
+
+    def test_lock_released_on_skip_inside_locked_section(self):
+        import xero.api.xero_invoices as xi
+        cache = FakeCache()
+        settings = SimpleNamespace(get=lambda k, d=None: 1)
+        # No Contact → the skip return fires inside the locked section
+        payload = {"InvoiceID": "inv-1", "Type": "ACCREC", "Status": "AUTHORISED"}
+        with patch.object(xi.frappe, "cache", return_value=cache), \
+             patch.object(xi.frappe.db, "get_value", return_value=None), \
+             patch.object(xi, "log_xero_error"):
+            outcome = xi.process_xero_invoice(payload, settings)
+        self.assertEqual(outcome, "skipped")
+        self.assertNotIn(self._lock_key(), cache.store)
+
+    def test_lock_acquired_atomically_with_ttl(self):
+        """A plain get-then-set pair would let two overlapping sweeps both
+        proceed; the acquire must be a single SET NX EX."""
+        import xero.api.xero_invoices as xi
+        cache = FakeCache()
+        calls = []
+        original_set = cache.set
+
+        def recording_set(key, value, nx=False, ex=None):
+            calls.append({"key": key, "nx": nx, "ex": ex})
+            return original_set(key, value, nx=nx, ex=ex)
+
+        cache.set = recording_set
+        settings = SimpleNamespace(get=lambda k, d=None: 1)
+        payload = {"InvoiceID": "inv-1", "Type": "ACCREC", "Status": "AUTHORISED"}
+        with patch.object(xi.frappe, "cache", return_value=cache), \
+             patch.object(xi.frappe.db, "get_value", return_value=None), \
+             patch.object(xi, "log_xero_error"):
+            xi.process_xero_invoice(payload, settings)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["key"], self._lock_key())
+        self.assertTrue(calls[0]["nx"])
+        self.assertEqual(calls[0]["ex"], xi.INBOUND_LOCK_TTL_SECONDS)
+
+    def test_busy_lock_skips_without_stealing(self):
+        import xero.api.xero_invoices as xi
+        cache = FakeCache()
+        cache.store[self._lock_key()] = "held-by-another-worker"
+        settings = SimpleNamespace(get=lambda k, d=None: 1)
+        payload = {"InvoiceID": "inv-1", "Type": "ACCREC", "Status": "AUTHORISED"}
+        with patch.object(xi.frappe, "cache", return_value=cache), \
+             patch.object(xi, "log_xero_error"):
+            outcome = xi.process_xero_invoice(payload, settings)
+        self.assertEqual(outcome, "skipped")
+        self.assertEqual(
+            cache.store[self._lock_key()],
+            "held-by-another-worker",
+            "a busy lock must never be overwritten or released by the loser",
+        )
+
+
+class TestRefetchInvoice(unittest.TestCase):
+    """refetch_invoice recovers one skipped invoice without ever moving the
+    incremental watermark."""
+
+    VALID_ID = "12345678-1234-1234-1234-123456789abc"
+
+    def _patches(self, xi, xero_response):
+        return [
+            patch("xero.utils.xero_client.require_xero_manager"),
+            patch("xero.utils.xero_client.commit_watermark"),
+            patch.object(xi, "get_xero_settings",
+                         return_value=SimpleNamespace(enable_xero_sync=1)),
+            patch.object(xi, "xero_request", return_value=xero_response),
+            patch.object(xi, "process_xero_invoice", return_value="synced"),
+        ]
+
+    def test_processes_invoice_without_touching_watermark(self):
+        import xero.api.xero_invoices as xi
+        invoice = {"InvoiceID": self.VALID_ID, "Type": "ACCREC"}
+        patches = self._patches(xi, {"Invoices": [invoice]})
+        mocks = [p.start() for p in patches]
+        self.addCleanup(lambda: [p.stop() for p in patches])
+
+        out = xi.refetch_invoice(self.VALID_ID)
+
+        self.assertEqual(out, {"invoice_id": self.VALID_ID, "outcome": "synced"})
+        mocks[4].assert_called_once()
+        self.assertIs(mocks[4].call_args.args[0], invoice)
+        mocks[1].assert_not_called()  # commit_watermark
+        mocks[3].assert_called_once_with("GET", f"Invoices/{self.VALID_ID}")
+
+    def test_rejects_malformed_invoice_id(self):
+        import frappe
+        import xero.api.xero_invoices as xi
+        with patch("xero.utils.xero_client.require_xero_manager"):
+            with self.assertRaises(frappe.ValidationError):
+                xi.refetch_invoice("../Contacts")
+
+    def test_throws_when_invoice_not_in_xero(self):
+        import frappe
+        import xero.api.xero_invoices as xi
+        patches = self._patches(xi, {"Invoices": []})
+        for p in patches:
+            p.start()
+        self.addCleanup(lambda: [p.stop() for p in patches])
+        with self.assertRaises(frappe.ValidationError):
+            xi.refetch_invoice(self.VALID_ID)
 
 
 if __name__ == "__main__":

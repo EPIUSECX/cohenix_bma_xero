@@ -2235,28 +2235,27 @@ def get_unmapped_accounts_from_errors(days=7):
         unmapped_accounts = []
         settings = frappe.get_single("Xero Settings")
         existing_mappings = {row.xero_account_code for row in settings.account_mapping}
-        
+
+        # One live fetch of the Xero chart for the whole loop.
+        xero_accounts_by_code = _fetch_live_xero_accounts_by_code() if account_codes_data else {}
+
         for code_data in account_codes_data:
             account_code = code_data.account_code
-            
+
             # Skip if already mapped
             if account_code in existing_mappings:
                 continue
-            
+
             # Skip if not a valid account code (sometimes error messages have extra text)
             if not account_code or len(account_code) > 10:
                 continue
-            
-            # Fetch Xero Account details
-            xero_account = frappe.db.get_value("Xero Account",
-                                              {"account_code": account_code},
-                                              ["account_code", "account_name", "account_type", "account_id"],
-                                              as_dict=True)
-            
+
+            xero_account = xero_accounts_by_code.get(account_code)
+
             if xero_account:
                 # Get suggestions for this account
-                suggestions = get_account_suggestions(account_code)
-                
+                suggestions = _score_account_suggestions(xero_account)
+
                 unmapped_accounts.append({
                     "xero_code": xero_account.account_code,
                     "xero_name": xero_account.account_name,
@@ -2281,6 +2280,26 @@ def get_unmapped_accounts_from_errors(days=7):
         }
 
 
+def _fetch_live_xero_accounts_by_code():
+    """
+    Fetch the Xero chart of accounts live and index it by Code.
+    Replaces the deleted "Xero Account" cache doctype.
+    """
+    from xero.utils.xero_client import xero_request
+
+    response = xero_request("GET", "Accounts") or {}
+    return {
+        account.get("Code"): frappe._dict(
+            account_code=account.get("Code"),
+            account_name=account.get("Name") or "",
+            account_type=account.get("Type") or "",
+            account_id=account.get("AccountID"),
+        )
+        for account in response.get("Accounts", [])
+        if account.get("Code")
+    }
+
+
 @frappe.whitelist()
 def get_account_suggestions(xero_account_code):
     """
@@ -2288,15 +2307,26 @@ def get_account_suggestions(xero_account_code):
     """
     require_xero_manager()
     try:
-        # Get Xero Account details
-        xero_account = frappe.db.get_value("Xero Account",
-                                          {"account_code": xero_account_code},
-                                          ["account_code", "account_name", "account_type"],
-                                          as_dict=True)
-        
+        xero_account = _fetch_live_xero_accounts_by_code().get(xero_account_code)
+
         if not xero_account:
             return {"success": False, "error": "Xero Account not found", "suggestions": []}
-        
+
+        return _score_account_suggestions(xero_account)
+
+    except Exception as e:
+        frappe.log_error(frappe.get_traceback(), "Get Account Suggestions Error")
+        return {
+            "success": False,
+            "error": str(e),
+            "suggestions": []
+        }
+
+
+def _score_account_suggestions(xero_account):
+    """Score ERPNext accounts against one Xero account (dict with account_code /
+    account_name / account_type). Returns the suggestions payload."""
+    try:
         # Map Xero account types to ERPNext account types
         account_type_map = {
             "REVENUE": ["Income Account"],

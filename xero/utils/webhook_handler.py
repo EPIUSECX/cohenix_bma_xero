@@ -30,7 +30,10 @@ def handle_webhook():
             status="Warning",
             category="Authentication Issues"
         )
-        frappe.response.status_code = 401 # Unauthorized
+        # frappe reads http_status_code from the response dict; assigning
+        # frappe.response.status_code is silently ignored and the wire
+        # status stays 200 — Xero's Intent-to-Receive check then fails.
+        frappe.local.response["http_status_code"] = 401  # Unauthorized
         return {"status": "error", "message": "Webhook key not configured"}
 
     signature = frappe.request.headers.get("X-Xero-Signature")
@@ -43,7 +46,7 @@ def handle_webhook():
             category="Authentication Issues",
             error_details=f"Signature provided: {bool(signature)}, Payload length: {len(raw_payload)}"
         )
-        frappe.response.status_code = 401 # Unauthorized
+        frappe.local.response["http_status_code"] = 401  # Unauthorized
         return {"status": "error", "message": "Invalid signature"}
 
     # 2. Process Payload
@@ -60,15 +63,8 @@ def handle_webhook():
             )
             return {"status": "success", "message": "Empty events array"}
 
-        # Log successful webhook receipt
-        log_xero_error(
-            f"Webhook received with {len(events)} event(s). Signature verified successfully.",
-            status="Success",
-            category="System Monitoring",
-            processing_time=time.time() - start_time
-        )
-
         # Process each event - run in background
+        queued = 0
         for event in events:
             # ME-2: Skip events we've already seen. Xero can redeliver a valid,
             # correctly-signed payload (at-least-once delivery), which would
@@ -81,9 +77,17 @@ def handle_webhook():
                 queue="short",
                 event_data=event
             )
+            queued += 1
+
+        log_xero_error(
+            f"Webhook received with {len(events)} event(s); {queued} queued after replay dedup. Signature verified successfully.",
+            status="Success",
+            category="System Monitoring",
+            processing_time=time.time() - start_time
+        )
 
         # Respond quickly to Xero
-        return {"status": "success", "message": f"{len(events)} webhook event(s) queued for processing"}
+        return {"status": "success", "message": f"{queued} of {len(events)} webhook event(s) queued for processing"}
 
     except json.JSONDecodeError as e:
         log_xero_error(
@@ -93,7 +97,7 @@ def handle_webhook():
             error_details=f"JSONDecodeError: {str(e)}\nPayload: {raw_payload[:500]}",
             processing_time=time.time() - start_time
         )
-        frappe.response.status_code = 400 # Bad Request
+        frappe.local.response["http_status_code"] = 400  # Bad Request
         return {"status": "error", "message": "Invalid JSON payload"}
     except Exception as e:
         log_xero_error(
@@ -103,7 +107,7 @@ def handle_webhook():
             error_details=frappe.get_traceback(),
             processing_time=time.time() - start_time
         )
-        frappe.response.status_code = 500 # Internal Server Error
+        frappe.local.response["http_status_code"] = 500  # Internal Server Error
         return {"status": "error", "message": "Internal server error"}
 
 

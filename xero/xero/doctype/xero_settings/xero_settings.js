@@ -312,48 +312,6 @@ function show_xero_tax_rates_dialog(tax_rates) {
     dialog.show();
 }
 
-// --- Xero Data Sync Functions ---
-
-function sync_xero_accounts(frm) {
-    frappe.show_alert({ message: 'Syncing Xero Accounts...', indicator: 'blue' });
-    
-    frappe.call({
-        method: 'xero.xero.doctype.xero_account.xero_account.sync_xero_accounts',
-        callback: function(r) {
-            if (r.message) {
-                frappe.show_alert({
-                    message: `Sync completed: ${r.message.created} created, ${r.message.updated} updated. You can now select Xero Accounts in mapping tables.`,
-                    indicator: 'green'
-                });
-                frm.refresh_field('account_mapping');
-            }
-        },
-        error: function(r) {
-            frappe.show_alert({ message: 'Failed to sync Xero accounts', indicator: 'red' });
-        }
-    });
-}
-
-function sync_xero_tax_rates(frm) {
-    frappe.show_alert({ message: 'Syncing Xero Tax Rates...', indicator: 'blue' });
-    
-    frappe.call({
-        method: 'xero.xero.doctype.xero_tax_rate.xero_tax_rate.sync_xero_tax_rates',
-        callback: function(r) {
-            if (r.message) {
-                frappe.show_alert({
-                    message: `Sync completed: ${r.message.created} created, ${r.message.updated} updated. You can now select Xero Tax Rates in mapping tables.`,
-                    indicator: 'green'
-                });
-                frm.refresh_field('tax_mapping');
-            }
-        },
-        error: function(r) {
-            frappe.show_alert({ message: 'Failed to sync Xero tax rates', indicator: 'red' });
-        }
-    });
-}
-
 // =============================================================================
 // Account Mapping Setup helpers
 // =============================================================================

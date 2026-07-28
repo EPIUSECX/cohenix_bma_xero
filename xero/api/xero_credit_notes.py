@@ -10,6 +10,7 @@ import json
 from ..utils.xero_client import xero_request, get_xero_settings
 from ..utils.logging import log_xero_error
 from ..utils.retry_handler import retry_with_exponential_backoff
+from ..utils.sync_status import mark_sync_failure
 from .xero_line_builder import build_xero_lines
 
 
@@ -183,6 +184,7 @@ def enqueue_sync_return(doc, method):
         "xero.api.xero_credit_notes.sync_return_to_xero",
         queue="short",
         timeout=600,
+        enqueue_after_commit=True,
         doc_name=doc.name,
         doc_type=doc.doctype,
     )
@@ -460,30 +462,8 @@ def sync_return_to_xero(doc_name, doc_type, **kwargs):
                 direction="ERPNext to Xero",
             )
         else:
-            from ..utils.logging import build_error_details, format_sync_error_message
-
-            # Permanent Xero rejections go terminal ("Failed") so the hourly
-            # retry task stops re-queuing an unsatisfiable document.
-            sync_status = "Failed" if getattr(e, "is_permanent", False) else "Error"
-            if doc_name and doc_type:
-                frappe.db.set_value(
-                    doc_type,
-                    doc_name,
-                    {"xero_sync_status": sync_status},
-                    update_modified=False,
-                )
-                commit_error_state()
-
-            user_message = format_sync_error_message(
-                doc_type, doc_name, doc_name, "ERPNext to Xero", e
-            )
-
-            log_xero_error(
-                message=user_message,
-                erpnext_doc_type=doc_type,
-                erpnext_doc_name=doc_name,
-                error_details=build_error_details(e, error_traceback),
-                direction="ERPNext to Xero",
+            mark_sync_failure(
+                doc_type, doc_name, e, "ERPNext to Xero", traceback_text=error_traceback
             )
 
 
@@ -502,6 +482,7 @@ def enqueue_void_credit_note(doc, method):
     frappe.enqueue(
         "xero.api.xero_credit_notes.void_credit_note_in_xero",
         queue="short",
+        enqueue_after_commit=True,
         doc_name=doc.name,
         doc_type=doc.doctype,
     )
@@ -997,7 +978,12 @@ def process_xero_credit_note(xero_cn_data, settings):
             doc = frappe.new_doc(erpnext_doctype)
             doc.update(erpnext_data)
 
-            # Add line items
+            # Add line items. Inclusive Xero documents carry gross amounts, so
+            # net the per-line tax out of the rate (the taxes row below carries
+            # the tax) — same treatment as inbound invoices.
+            from .xero_line_builder import apply_inbound_taxes, inbound_line_rate
+
+            inclusive = xero_cn_data.get("LineAmountTypes") == "Inclusive"
             line_items = xero_cn_data.get("LineItems", [])
             for line in line_items:
                 item_code = get_or_create_item_from_xero_code(
@@ -1017,13 +1003,13 @@ def process_xero_credit_note(xero_cn_data, settings):
                     continue
 
                 # For credit notes, quantities should be negative in ERPNext
+                net_rate = inbound_line_rate(line, inclusive)
+                qty = abs(flt(line.get("Quantity", 1)))
                 item_dict = {
                     "description": line.get("Description", "Item from Xero"),
-                    "qty": -abs(flt(line.get("Quantity", 1))),  # Negative for return
-                    "rate": flt(line.get("UnitAmount", 0)),
-                    "amount": -abs(
-                        flt(line.get("LineAmount", 0))
-                    ),  # Negative for return
+                    "qty": -qty,  # Negative for return
+                    "rate": net_rate,
+                    "amount": -abs(flt(net_rate * qty)),  # Negative for return
                 }
 
                 # item_name is a 140-char field; Xero descriptions run to 4000.
@@ -1068,6 +1054,11 @@ def process_xero_credit_note(xero_cn_data, settings):
                     xero_entity_type="CreditNote",
                 )
                 return
+
+            # Reconstruct Xero's tax as a negative Actual charge so the return's
+            # |grand_total| matches Xero's Total (the reconcile guard below
+            # otherwise refuses to post it).
+            apply_inbound_taxes(doc, xero_cn_data, erpnext_doctype, sign=-1)
 
             doc.insert(ignore_permissions=True)
             erpnext_doc_name = doc.name
@@ -1128,7 +1119,9 @@ def process_xero_credit_note(xero_cn_data, settings):
 
         # Only auto-post when the totals reconcile (see 6a above).
         if totals_reconcile:
-            maybe_submit_inbound(doc, settings, xero_cn_id, "CreditNote")
+            maybe_submit_inbound(
+                doc, settings, xero_cn_id, "CreditNote", xero_status=cn_status
+            )
 
         log_xero_error(
             message=log_message,
@@ -1172,33 +1165,15 @@ def process_xero_credit_note(xero_cn_data, settings):
                 direction="Xero to ERPNext",
             )
         else:
-            from ..utils.logging import format_sync_error_message
-
-            sync_status = "Error"
-            if erpnext_doc_name:
-                frappe.db.set_value(
-                    erpnext_doctype,
-                    erpnext_doc_name,
-                    "xero_sync_status",
-                    sync_status,
-                    update_modified=False,
-                )
-                commit_error_state()
-
-            user_message = format_sync_error_message(
-                "Xero Credit Note", xero_cn_id, cn_number, "Xero to ERPNext", e
-            )
-
-            log_xero_error(
-                message=user_message,
-                erpnext_doc_type=erpnext_doctype
-                if "erpnext_doctype" in locals()
-                else None,
-                erpnext_doc_name=erpnext_doc_name
-                if "erpnext_doc_name" in locals()
-                else None,
+            mark_sync_failure(
+                erpnext_doctype,
+                erpnext_doc_name,
+                e,
+                "Xero to ERPNext",
+                source_type="Xero Credit Note",
+                source_id=xero_cn_id,
+                source_display=cn_number,
                 xero_entity_id=xero_cn_id,
                 xero_entity_type="CreditNote",
-                direction="Xero to ERPNext",
-                error_details=error_traceback,
+                traceback_text=error_traceback,
             )
