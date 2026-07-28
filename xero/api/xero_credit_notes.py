@@ -2,39 +2,20 @@
 # For license information, please see license.txt
 
 import frappe
+from ..utils.transactions import commit_checkpoint, commit_error_state, commit_external_outcome
 from frappe import _
 from frappe.utils import flt, getdate
 import hashlib
 import json
-import re
 from ..utils.xero_client import xero_request, get_xero_settings
 from ..utils.logging import log_xero_error
 from ..utils.retry_handler import retry_with_exponential_backoff
+from ..utils.sync_status import mark_sync_failure
+from .xero_line_builder import build_xero_lines
 
 
 # --- Validation Functions ---
-
-
-def validate_credit_note_description(description, item_name=None, item_code=None):
-    """
-    Validate and sanitize credit note line item description for Xero.
-    Xero requires: min 1 char, max 4000 chars
-    """
-    description = (description or "").strip()
-
-    # Strip HTML tags if description contains them
-    if description and "<" in description:
-        description = re.sub(r"<[^>]+>", "", description).strip()
-
-    # Fallback if empty
-    if not description:
-        description = item_name or item_code or "Item"
-
-    # Xero max length is 4000 chars
-    if len(description) > 4000:
-        description = description[:3997] + "..."
-
-    return description
+# Line descriptions are validated inside xero_line_builder.build_xero_lines.
 
 
 def validate_credit_note_number(cn_name):
@@ -166,37 +147,6 @@ def credit_note_data_changed(doc):
     return current_hash != stored_hash
 
 
-# --- Helper Functions ---
-
-
-def get_xero_account_code(erpnext_account, settings=None):
-    """Maps an ERPNext account name to a Xero Account Code using the mapping table."""
-    if not settings:
-        settings = get_xero_settings()
-    account_map = settings.get_account_map()
-    return account_map.get(erpnext_account)
-
-
-def map_erpnext_tax_to_xero(erpnext_tax_template, settings=None):
-    """Maps ERPNext tax templates to Xero TaxTypes using the mapping table."""
-    if not erpnext_tax_template:
-        return "NONE"
-
-    if not settings:
-        settings = get_xero_settings()
-    tax_map = settings.get_tax_map()
-    xero_tax_code = tax_map.get(erpnext_tax_template)
-
-    if not xero_tax_code:
-        log_xero_error(
-            f"Xero TaxType mapping not found for ERPNext Tax Template: {erpnext_tax_template}. Defaulting to NONE.",
-            status="Warning",
-        )
-        return "NONE"
-
-    return xero_tax_code
-
-
 # --- Outbound Sync (ERPNext to Xero) ---
 
 
@@ -234,6 +184,7 @@ def enqueue_sync_return(doc, method):
         "xero.api.xero_credit_notes.sync_return_to_xero",
         queue="short",
         timeout=600,
+        enqueue_after_commit=True,
         doc_name=doc.name,
         doc_type=doc.doctype,
     )
@@ -335,7 +286,7 @@ def sync_return_to_xero(doc_name, doc_type, **kwargs):
                 {"xero_sync_status": "Pending Prerequisites"},
                 update_modified=False,
             )
-            frappe.db.commit()
+            commit_checkpoint()
 
             log_xero_error(
                 message=f"{doc_type} {doc_name} sync deferred: {party_type} {party_name} must be synced to Xero first.",
@@ -357,139 +308,23 @@ def sync_return_to_xero(doc_name, doc_type, **kwargs):
             return
 
         # --- Map Line Items ---
-        # Track whether any line carries a Xero TaxType. When it does, Xero
-        # computes the tax itself, so we must NOT also send the ERPNext tax rows
-        # as separate line items (that double-counts VAT).
-        has_line_tax = False
-        line_items = []
-        for item in doc.items:
-            # Get Xero Account Code
-            erpnext_account = (
-                item.income_account
-                if doc_type == "Sales Invoice"
-                else item.expense_account
-            )
-            xero_account_code = get_xero_account_code(erpnext_account, settings)
-            if not xero_account_code:
-                raise Exception(
-                    f"Xero Account Code mapping not found for ERPNext Account: {erpnext_account} "
-                    f"(Item: {item.item_code or item.description})"
-                )
-
-            # Validate description
-            description = validate_credit_note_description(
-                item.description, item.item_name, item.item_code
-            )
-
-            # Build line item
-            # For returns, amounts are negative in ERPNext, but Xero expects positive for credit notes
-            line_item = {
-                "Description": description,
-                "Quantity": abs(item.qty),
-                "UnitAmount": item.rate,
-                "AccountCode": xero_account_code,
-                "LineAmount": abs(item.amount),
-                "TaxType": map_erpnext_tax_to_xero(item.item_tax_template, settings),
-            }
-            if line_item["TaxType"] != "NONE":
-                has_line_tax = True
-
-            # Add ItemCode if item has been synced to Xero
-            if item.item_code:
-                xero_item_id = frappe.db.get_value(
-                    "Item", item.item_code, "xero_item_id"
-                )
-                if xero_item_id:
-                    line_item["ItemCode"] = item.item_code
-
-            # LO-1: Do NOT send DiscountRate. ERPNext's item.rate / item.amount
-            # are ALREADY net of the discount, so also sending DiscountRate
-            # makes Xero apply the discount a SECOND time. We send net rate only.
-            line_items.append(line_item)
-
-        # --- Map Taxes and Charges ---
-        for tax in doc.taxes:
-            # When Xero already computes tax from the line-level TaxType, skip
-            # percentage-based tax rows (e.g. VAT) to avoid double-counting.
-            # Flat "Actual" charges (rate == 0, e.g. freight) are still sent.
-            if has_line_tax and flt(tax.rate):
-                continue
-            tax_account_code = get_xero_account_code(tax.account_head, settings)
-            if not tax_account_code:
-                raise Exception(
-                    f"Xero Account Code mapping not found for Tax/Charge Account: {tax.account_head}"
-                )
-
-            tax_description = validate_credit_note_description(
-                tax.description, "Tax/Charge"
-            )
-
-            tax_line_item = {
-                "Description": tax_description,
-                "Quantity": 1,
-                "UnitAmount": abs(tax.tax_amount_after_discount_amount),
-                "AccountCode": tax_account_code,
-                "TaxType": "NONE",
-            }
-            line_items.append(tax_line_item)
-
-        # CR-7: Detect tax-inclusive ERPNext docs via included_in_print_rate on
-        # the tax rows (the line rate already contains tax). If any row is
-        # inclusive, tell Xero "Inclusive" so it does not add tax on top.
-        line_amount_types = "Exclusive"
-        if any(flt(tax.get("included_in_print_rate")) for tax in doc.taxes):
-            line_amount_types = "Inclusive"
+        # Shared builder: per-line TaxType + explicit TaxAmount (never tax rows
+        # as extra lines), rounding line, and a reconciliation check that
+        # RAISES instead of warn-and-send. absolute=True because ERPNext stores
+        # returns with negative quantities/amounts while Xero credit notes are
+        # positive.
+        built = build_xero_lines(doc, doc_type, settings, absolute=True)
 
         # --- Construct Credit Note Payload ---
         cn_payload = {
             "Type": cn_type,
             "Contact": {"ContactID": xero_contact_id},
             "Date": getdate(doc.posting_date).isoformat(),
-            "LineItems": line_items,
+            "LineItems": built.line_items,
             "CreditNoteNumber": validate_credit_note_number(doc.name),
             "Status": "AUTHORISED",
-            # CR-7: derived from ERPNext tax config rather than hardcoded.
-            "LineAmountTypes": line_amount_types,
+            "LineAmountTypes": built.line_amount_types,
         }
-
-        # --- CR-7: Tax reconciliation guard ---
-        # Compare ERPNext's tax total against the tax represented in the Xero
-        # payload. When has_line_tax is True, percentage tax rows are dropped
-        # (encoded into line TaxTypes for Xero to recompute); otherwise every
-        # tax row was sent explicitly. Warn (do not silently proceed) on any
-        # divergence beyond a 0.02 tolerance.
-        erpnext_tax_total = sum(
-            flt(
-                tax.base_tax_amount_after_discount_amount
-                or tax.tax_amount_after_discount_amount
-            )
-            for tax in doc.taxes
-        )
-        if has_line_tax:
-            sent_tax_total = sum(
-                flt(tax.tax_amount_after_discount_amount)
-                for tax in doc.taxes
-                if flt(tax.rate)
-            )
-        else:
-            sent_tax_total = sum(
-                flt(tax.tax_amount_after_discount_amount) for tax in doc.taxes
-            )
-        if abs(flt(erpnext_tax_total) - flt(sent_tax_total)) > 0.02:
-            log_xero_error(
-                message=(
-                    f"Tax mismatch on outbound credit note {doc_type} "
-                    f"{doc_name}: ERPNext tax total {erpnext_tax_total} vs tax "
-                    f"represented in Xero payload {sent_tax_total} "
-                    f"(LineAmountTypes={line_amount_types}, has_line_tax="
-                    f"{has_line_tax}). Verify tax mapping."
-                ),
-                status="Warning",
-                erpnext_doc_type=doc_type,
-                erpnext_doc_name=doc_name,
-                direction="ERPNext to Xero",
-                category="Validation Errors",
-            )
 
         # Add Reference field for ACCRECCREDIT only
         if cn_type == "ACCRECCREDIT":
@@ -517,7 +352,7 @@ def sync_return_to_xero(doc_name, doc_type, **kwargs):
                     {"xero_credit_note_id": recovered_id},
                     update_modified=False,
                 )
-                frappe.db.commit()
+                commit_external_outcome()
                 log_xero_error(
                     message=(
                         f"Recovered Xero CreditNoteID {recovered_id} for "
@@ -571,7 +406,7 @@ def sync_return_to_xero(doc_name, doc_type, **kwargs):
                     {"xero_credit_note_id": new_xero_id},
                     update_modified=False,
                 )
-                frappe.db.commit()
+                commit_external_outcome()
 
                 # Compute hash for change detection
                 data_hash = compute_credit_note_hash(doc)
@@ -586,7 +421,7 @@ def sync_return_to_xero(doc_name, doc_type, **kwargs):
                     },
                     update_modified=False,
                 )
-                frappe.db.commit()
+                commit_external_outcome()
 
                 log_xero_error(
                     message=f"Successfully synced {doc_type} (Return) {doc_name} to Xero.",
@@ -616,7 +451,7 @@ def sync_return_to_xero(doc_name, doc_type, **kwargs):
                     {"xero_sync_status": "Synced"},
                     update_modified=False,
                 )
-                frappe.db.commit()
+                commit_error_state()
 
             log_xero_error(
                 message=f"{doc_type} (Return) {doc_name} already exists in Xero. No action needed.",
@@ -627,27 +462,8 @@ def sync_return_to_xero(doc_name, doc_type, **kwargs):
                 direction="ERPNext to Xero",
             )
         else:
-            from ..utils.logging import format_sync_error_message
-
-            if doc_name and doc_type:
-                frappe.db.set_value(
-                    doc_type,
-                    doc_name,
-                    {"xero_sync_status": "Error"},
-                    update_modified=False,
-                )
-                frappe.db.commit()
-
-            user_message = format_sync_error_message(
-                doc_type, doc_name, doc_name, "ERPNext to Xero", e
-            )
-
-            log_xero_error(
-                message=user_message,
-                erpnext_doc_type=doc_type,
-                erpnext_doc_name=doc_name,
-                error_details=error_traceback,
-                direction="ERPNext to Xero",
+            mark_sync_failure(
+                doc_type, doc_name, e, "ERPNext to Xero", traceback_text=error_traceback
             )
 
 
@@ -666,6 +482,7 @@ def enqueue_void_credit_note(doc, method):
     frappe.enqueue(
         "xero.api.xero_credit_notes.void_credit_note_in_xero",
         queue="short",
+        enqueue_after_commit=True,
         doc_name=doc.name,
         doc_type=doc.doctype,
     )
@@ -743,7 +560,7 @@ def void_credit_note_in_xero(doc_name, doc_type):
                 f"{action.capitalize()}d in Xero",
                 update_modified=False,
             )
-            frappe.db.commit()
+            commit_external_outcome()
             log_xero_error(
                 message=f"Successfully {action}d {doc_type} {doc_name} in Xero (status: {new_status}).",
                 status="Success",
@@ -1161,7 +978,12 @@ def process_xero_credit_note(xero_cn_data, settings):
             doc = frappe.new_doc(erpnext_doctype)
             doc.update(erpnext_data)
 
-            # Add line items
+            # Add line items. Inclusive Xero documents carry gross amounts, so
+            # net the per-line tax out of the rate (the taxes row below carries
+            # the tax) — same treatment as inbound invoices.
+            from .xero_line_builder import apply_inbound_taxes, inbound_line_rate
+
+            inclusive = xero_cn_data.get("LineAmountTypes") == "Inclusive"
             line_items = xero_cn_data.get("LineItems", [])
             for line in line_items:
                 item_code = get_or_create_item_from_xero_code(
@@ -1181,20 +1003,28 @@ def process_xero_credit_note(xero_cn_data, settings):
                     continue
 
                 # For credit notes, quantities should be negative in ERPNext
+                net_rate = inbound_line_rate(line, inclusive)
+                qty = abs(flt(line.get("Quantity", 1)))
                 item_dict = {
                     "description": line.get("Description", "Item from Xero"),
-                    "qty": -abs(flt(line.get("Quantity", 1))),  # Negative for return
-                    "rate": flt(line.get("UnitAmount", 0)),
-                    "amount": -abs(
-                        flt(line.get("LineAmount", 0))
-                    ),  # Negative for return
+                    "qty": -qty,  # Negative for return
+                    "rate": net_rate,
+                    "amount": -abs(flt(net_rate * qty)),  # Negative for return
                 }
 
+                # item_name is a 140-char field; Xero descriptions run to 4000.
                 if item_code:
                     item_dict["item_code"] = item_code
-                    item_dict["item_name"] = line.get("Description")
+                    item_dict["item_name"] = (line.get("Description") or "")[:140] or None
                 else:
-                    item_dict["item_name"] = line.get("Description", "Xero Item")
+                    item_dict["item_name"] = (line.get("Description") or "Xero Item")[:140]
+                    # C3: description-only lines have no Item to backfill the
+                    # mandatory UOM from; without these the insert fails with
+                    # the bare MandatoryError "uom".
+                    from .xero_invoices import _default_uom
+
+                    item_dict["uom"] = _default_uom()
+                    item_dict["conversion_factor"] = 1
 
                 # Add account
                 if erpnext_doctype == "Sales Invoice":
@@ -1224,6 +1054,11 @@ def process_xero_credit_note(xero_cn_data, settings):
                     xero_entity_type="CreditNote",
                 )
                 return
+
+            # Reconstruct Xero's tax as a negative Actual charge so the return's
+            # |grand_total| matches Xero's Total (the reconcile guard below
+            # otherwise refuses to post it).
+            apply_inbound_taxes(doc, xero_cn_data, erpnext_doctype, sign=-1)
 
             doc.insert(ignore_permissions=True)
             erpnext_doc_name = doc.name
@@ -1274,7 +1109,7 @@ def process_xero_credit_note(xero_cn_data, settings):
             compute_credit_note_hash(doc), update_modified=False,
         )
 
-        frappe.db.commit()
+        commit_checkpoint()
 
         # Opt-in: post the imported credit note to the GL when auto-submit is
         # enabled. With return_against set above, submitting reconciles the
@@ -1284,7 +1119,9 @@ def process_xero_credit_note(xero_cn_data, settings):
 
         # Only auto-post when the totals reconcile (see 6a above).
         if totals_reconcile:
-            maybe_submit_inbound(doc, settings, xero_cn_id, "CreditNote")
+            maybe_submit_inbound(
+                doc, settings, xero_cn_id, "CreditNote", xero_status=cn_status
+            )
 
         log_xero_error(
             message=log_message,
@@ -1311,7 +1148,7 @@ def process_xero_credit_note(xero_cn_data, settings):
                     "Synced",
                     update_modified=False,
                 )
-                frappe.db.commit()
+                commit_error_state()
 
             log_xero_error(
                 message=f"Xero Credit Note {xero_cn_id} ({cn_number}) already exists in ERPNext as {erpnext_doc_name or 'submitted document'}. Skipping update.",
@@ -1328,33 +1165,15 @@ def process_xero_credit_note(xero_cn_data, settings):
                 direction="Xero to ERPNext",
             )
         else:
-            from ..utils.logging import format_sync_error_message
-
-            sync_status = "Error"
-            if erpnext_doc_name:
-                frappe.db.set_value(
-                    erpnext_doctype,
-                    erpnext_doc_name,
-                    "xero_sync_status",
-                    sync_status,
-                    update_modified=False,
-                )
-                frappe.db.commit()
-
-            user_message = format_sync_error_message(
-                "Xero Credit Note", xero_cn_id, cn_number, "Xero to ERPNext", e
-            )
-
-            log_xero_error(
-                message=user_message,
-                erpnext_doc_type=erpnext_doctype
-                if "erpnext_doctype" in locals()
-                else None,
-                erpnext_doc_name=erpnext_doc_name
-                if "erpnext_doc_name" in locals()
-                else None,
+            mark_sync_failure(
+                erpnext_doctype,
+                erpnext_doc_name,
+                e,
+                "Xero to ERPNext",
+                source_type="Xero Credit Note",
+                source_id=xero_cn_id,
+                source_display=cn_number,
                 xero_entity_id=xero_cn_id,
                 xero_entity_type="CreditNote",
-                direction="Xero to ERPNext",
-                error_details=error_traceback,
+                traceback_text=error_traceback,
             )

@@ -4,6 +4,8 @@
 import frappe
 from frappe.utils import now_datetime
 
+from .transactions import commit_error_state
+
 def log_xero_error(message, status="Error", erpnext_doc_type=None, erpnext_doc_name=None, xero_entity_type=None, xero_entity_id=None, direction=None, error_details=None, category=None, retry_count=0, processing_time=None, sync_batch_id=None):
     """
     Creates a Xero Log document.
@@ -56,7 +58,7 @@ def log_xero_error(message, status="Error", erpnext_doc_type=None, erpnext_doc_n
         # Error/Warning entries, so a failure that is about to abort and roll
         # back the transaction still leaves an audit trail in the Xero Log.
         if status in ("Error", "Warning"):
-            frappe.db.commit()
+            commit_error_state()
 
     except Exception as e:
         # If logging itself fails, print to stderr and Frappe error log
@@ -137,9 +139,25 @@ def format_sync_error_message(entity_type, entity_id, entity_name, direction, ex
     :param exception: The caught Exception object
     :return: User-friendly error message string
     """
+    from .exceptions import TaxRepresentationError, XeroApiError
+
     error_str = str(exception)
     error_lower = error_str.lower()
-    
+
+    # Xero API rejections: show the SPECIFIC ValidationErrors messages, all of
+    # them, not the generic outer "A validation exception occurred".
+    if isinstance(exception, XeroApiError):
+        if exception.validation_messages:
+            return (
+                f"Xero rejected {entity_type} {entity_name or entity_id}: "
+                + " | ".join(exception.validation_messages)
+            )
+        return f"Xero rejected {entity_type} {entity_name or entity_id}: {error_str}"
+
+    # Tax representation aborts carry a fully-formed actionable message.
+    if isinstance(exception, TaxRepresentationError):
+        return error_str
+
     # CharacterLengthExceededError — extract the field and limit info
     if "characterlengthexceedederror" in error_lower or "will get truncated" in error_lower or "max characters allowed" in error_lower:
         # Try to extract the specific field info from the error message
@@ -161,13 +179,18 @@ def format_sync_error_message(entity_type, entity_id, entity_name, direction, ex
         
         return f"Character Length Exceeded: {entity_name or entity_id} — a field value is too long for ERPNext"
     
-    # Validation errors from Xero API
+    # Validation errors from Xero API carried as a raw string (legacy paths).
+    # A Xero body has the generic outer Message first and the real reasons in
+    # nested ValidationErrors — so collect ALL "Message" matches and drop the
+    # generic one, instead of re.search returning only the first (C4).
     if "validationexception" in error_lower or "xero api error" in error_lower:
-        # Try to extract the validation message
         import re
-        match = re.search(r'"Message"\s*:\s*"([^"]+)"', error_str)
-        if match:
-            return f"Xero Validation Error: {match.group(1)} ({entity_name or entity_id})"
+        matches = re.findall(r'"Message"\s*:\s*"([^"]+)"', error_str)
+        specific = [m for m in matches if "validation exception" not in m.lower()]
+        if specific:
+            return f"Xero Validation Error: {' | '.join(dict.fromkeys(specific))} ({entity_name or entity_id})"
+        if matches:
+            return f"Xero Validation Error: {matches[0]} ({entity_name or entity_id})"
         return f"Xero Validation Error for {entity_type} {entity_name or entity_id}"
     
     # Account mapping errors
@@ -199,6 +222,22 @@ def format_sync_error_message(entity_type, entity_id, entity_name, direction, ex
         return f"Sync Error for {entity_type} {entity_name or entity_id}: {first_line}"
     
     return f"Failed to sync {entity_type} {entity_name or entity_id}"
+
+
+def build_error_details(exception=None, traceback_text=None):
+    """Compose the Xero Log error_details payload for a failed sync.
+
+    Puts the Xero API response body FIRST (when the exception carries one) so
+    the dashboard's Details dialog shows what Xero actually said — every
+    ValidationErrors entry — followed by the Python traceback.
+    """
+    parts = []
+    body = getattr(exception, "response_body", None)
+    if body:
+        parts.append(f"Xero API response:\n{body}")
+    if traceback_text:
+        parts.append(traceback_text)
+    return "\n\n".join(parts) or None
 
 
 # --- Helper Functions for "Already Exists" Detection ---

@@ -3,6 +3,7 @@
 
 import frappe
 import requests
+from .transactions import commit_checkpoint, commit_error_state, commit_external_outcome
 from frappe.utils import get_site_url, now_datetime, add_to_date, get_datetime
 from json import dumps, loads
 from urllib.parse import urlencode
@@ -19,6 +20,27 @@ XERO_HTTP_TIMEOUT = 30
 
 # HTTP status codes that are safe to retry (transient server-side failures).
 RETRYABLE_STATUS_CODES = {500, 502, 503, 504}
+
+
+def safe_idempotency_key(key):
+    """Make an idempotency key legal as an HTTP header value.
+
+    HTTP headers must be Latin-1 encodable; keys are built from ERPNext
+    document names, and Customers/Suppliers are named by customer_name /
+    supplier_name, so Greek/CJK/emoji names produced a UnicodeEncodeError that
+    permanently killed sync for that party (H5). Keys that already encode are
+    returned UNCHANGED so every existing key stays stable across this fix;
+    non-encodable keys are replaced by their SHA-256 hex digest — deterministic
+    (stable per document) and collision-free in practice.
+    """
+    key = str(key)
+    try:
+        key.encode("latin-1")
+        return key
+    except UnicodeEncodeError:
+        import hashlib
+
+        return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
 def get_xero_settings():
@@ -90,7 +112,10 @@ def set_sync_watermark(entity_key, value):
     data = _load_watermarks()
     data[entity_key] = value
     frappe.db.set_single_value("Xero Settings", "sync_watermarks", dumps(data))
-    frappe.db.commit()
+    # The synced documents behind this watermark are already committed
+    # per-document; the watermark must persist with them even if a later
+    # entity in the same batch job aborts and rolls back.
+    commit_checkpoint()
 
 
 def incremental_since(entity_key):
@@ -125,7 +150,6 @@ def reset_xero_sync_watermarks():
     Use after a mapping change or to backfill historical records."""
     require_xero_manager()
     frappe.db.set_single_value("Xero Settings", "sync_watermarks", "")
-    frappe.db.commit()
     return {"status": "ok", "message": "Xero sync watermarks cleared; next sync will be a full sweep."}
 
 
@@ -252,7 +276,10 @@ def handle_oauth_callback(code=None, state=None, error=None):
         settings.tenant_id = tenant_id
         settings.tenant_name = tenant_name
         settings.save(ignore_permissions=True)
-        frappe.db.commit()
+        # The authorization code was consumed by the one-shot token exchange
+        # above; the tokens must persist even if the rest of this request
+        # fails, or the user has to redo the whole OAuth flow.
+        commit_external_outcome()
 
         frappe.local.response["type"] = "redirect"
         frappe.local.response["location"] = (
@@ -339,7 +366,6 @@ def select_tenant(tenant_id):
     settings.tenant_id = match["id"]
     settings.tenant_name = match["name"]
     settings.save(ignore_permissions=True)
-    frappe.db.commit()
     frappe.msgprint(f"Xero organisation changed to: {match['name']}")
     return {"tenant_id": match["id"], "tenant_name": match["name"]}
 
@@ -437,7 +463,10 @@ def _do_refresh(settings, log_xero_error, time):
             )
             settings.last_token_refresh = now_datetime()
             settings.save(ignore_permissions=True)
-            frappe.db.commit()
+            # Xero rotates the refresh token on every use; if a later failure
+            # in the surrounding job rolled this back, the stored (already
+            # invalidated) token would permanently break the connection.
+            commit_external_outcome()
 
             log_xero_error(
                 message="Xero access token refreshed successfully",
@@ -468,7 +497,10 @@ def _do_refresh(settings, log_xero_error, time):
                     settings.refresh_token = None
                     settings.access_token = None
                     settings.save(ignore_permissions=True)
-                    frappe.db.commit()
+                    # Persist the invalidation before the surrounding job
+                    # aborts, or the dead token would be restored on rollback
+                    # and every subsequent run would retry it and re-alert.
+                    commit_error_state()
 
                     notify_admins_token_failure(
                         "Invalid refresh token - re-authentication required"
@@ -658,7 +690,7 @@ def xero_request(method, endpoint, data=None, params=None, idempotency_key=None,
     settings = get_xero_settings()
     headers = dict(get_xero_client())  # Gets headers with valid token (copy to mutate)
     if idempotency_key:
-        headers["Idempotency-Key"] = str(idempotency_key)
+        headers["Idempotency-Key"] = safe_idempotency_key(idempotency_key)
     if modified_since:
         headers["If-Modified-Since"] = str(modified_since)
     url = f"{XERO_API_BASE_URL}/{endpoint}"
@@ -801,33 +833,38 @@ def xero_request(method, endpoint, data=None, params=None, idempotency_key=None,
                 )
                 time.sleep(wait_time)
             else:
-                # For other HTTP errors (4xx), log details and re-raise
-                error_details = ""
+                # Other HTTP errors (4xx): surface the SPECIFIC reason Xero gave.
+                # Xero nests it in Elements[].ValidationErrors[].Message; the
+                # outer "Message" is always the useless generic one (C4).
+                from .exceptions import XeroApiError, extract_xero_validation_messages
+
+                status_code = e.response.status_code
+                error_data = None
                 try:
                     error_data = e.response.json()
                     error_details = dumps(error_data, indent=2)
                 except Exception:
                     error_details = e.response.text or ""
 
-                # Log to frappe error log
+                validation_messages = extract_xero_validation_messages(error_data)
+                summary = "; ".join(validation_messages) or (
+                    (error_data or {}).get("Message") or e.response.reason or ""
+                )
+
+                # Keep the full body in the Frappe Error Log for forensics. The
+                # Xero Log row is created by the CALLER (which knows the ERPNext
+                # document), so the dashboard row links to the real doc instead
+                # of a doc-less "Unknown" entry.
                 frappe.log_error(
-                    message=f"Xero API Error ({e.response.status_code}) on {method} {url}:\n{error_details}",
+                    message=f"Xero API Error ({status_code}) on {method} {url}:\n{error_details}",
                     title="Xero API Error",
                 )
 
-                # Also log to Xero Log for visibility in the dashboard
-                from ..utils.logging import log_xero_error
-
-                log_xero_error(
-                    message=f"Xero API Error ({e.response.status_code}) on {method} {endpoint}: {error_details[:500]}",
-                    status="Error",
-                    category="Validation Errors",
-                    error_details=error_details,
-                )
-
-                # Include response body in the thrown error so callers can see it
-                frappe.throw(
-                    f"Xero API request failed: {e.response.reason} ({e.response.status_code})\nDetails: {error_details[:3000]}"
+                raise XeroApiError(
+                    f"Xero rejected the request ({status_code}): {summary}",
+                    status_code=status_code,
+                    response_body=error_details,
+                    validation_messages=validation_messages,
                 )
 
         except requests.exceptions.RequestException as e:
@@ -851,11 +888,15 @@ def xero_request(method, endpoint, data=None, params=None, idempotency_key=None,
             )
             frappe.throw(f"Network error communicating with Xero: {e}")
 
-        except Exception as e:
+        except Exception:
+            # Log for forensics but RE-RAISE the original exception: replacing
+            # it with "An unexpected error occurred in the Xero client." erased
+            # the type and message the operator needed (e.g. the
+            # UnicodeEncodeError behind H5) and got miscategorised downstream.
             frappe.log_error(
                 message=frappe.get_traceback(), title="Xero Client Unexpected Error"
             )
-            frappe.throw("An unexpected error occurred in the Xero client.")
+            raise
 
     # This part should not be reached if the loop completes, but as a fallback:
     frappe.throw("Failed to get a valid response from Xero after multiple retries.")

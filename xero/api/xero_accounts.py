@@ -2,6 +2,7 @@
 # For license information, please see license.txt
 
 import frappe
+from ..utils.transactions import commit_checkpoint, commit_error_state
 from frappe import _
 from frappe.utils import now_datetime
 import hashlib
@@ -9,6 +10,7 @@ import re
 from ..utils.xero_client import xero_request, get_xero_settings, require_xero_manager
 from ..utils.logging import log_xero_error
 from ..utils.retry_handler import retry_with_exponential_backoff
+from ..utils.sync_status import mark_sync_failure
 
 # Mapping from Xero Account Types to ERPNext Root Types / Account Types
 XERO_ACCOUNT_TYPE_MAP = {
@@ -78,8 +80,33 @@ ERPNEXT_TO_XERO_TYPE_MAP = {
     ("Liability", "Receivable"): "CURRENT",  # Unusual but possible
 }
 
-# System accounts that should not be synced
-XERO_SYSTEM_ACCOUNTS = ["DEBTORS", "CREDITORS", "BANKCURRENCYGAIN", "GST", "TAX", "HISTORICAL"]
+# Xero system accounts (SystemAccount field) — never synced or auto-mapped.
+# Xero manages these internally and rejects manual journals against most of
+# them, so mapping an ERPNext account onto one silently breaks journal sync.
+# Full enum from the Xero OpenAPI spec (Account.SystemAccount). Non-system
+# accounts carry "" or null — never add "" here.
+XERO_SYSTEM_ACCOUNTS = [
+    "DEBTORS",
+    "CREDITORS",
+    "BANKCURRENCYGAIN",
+    "GST",
+    "GSTONIMPORTS",
+    "HISTORICAL",
+    "REALISEDCURRENCYGAIN",
+    "UNREALISEDCURRENCYGAIN",
+    "RETAINEDEARNINGS",
+    "ROUNDING",
+    "TRACKINGTRANSFERS",
+    "UNPAIDEXPCLM",
+    "WAGEPAYABLES",
+    "CISASSETS",
+    "CISASSET",
+    "CISLABOUR",
+    "CISLABOUREXPENSE",
+    "CISLABOURINCOME",
+    "CISLIABILITY",
+    "CISMATERIALS",
+]
 
 
 # =============================================================================
@@ -230,18 +257,24 @@ def enqueue_sync_account(doc, method=None):
     if not settings.enable_sync_to_xero:
         return
     
-    # Skip group accounts (only sync ledger accounts)
+    # Group accounts never sync (only ledger accounts do). Mark them Skipped
+    # so they don't sit in "Pending" forever and show up as sync backlog.
     if doc.is_group:
+        if doc.xero_sync_status != "Skipped":
+            frappe.db.set_value(
+                "Account", doc.name, "xero_sync_status", "Skipped", update_modified=False
+            )
         return
-    
+
     # Skip if no changes since last sync
     if doc.xero_sync_status == "Synced" and not account_data_changed(doc):
         return
-    
+
     # Enqueue the actual sync
     frappe.enqueue(
         "xero.api.xero_accounts.sync_account_to_xero",
         queue="short",
+        enqueue_after_commit=True,
         account_name=doc.name
     )
 
@@ -264,8 +297,10 @@ def sync_account_to_xero(account_name):
     if not settings.enable_sync_to_xero:
         return
     
-    # Skip group accounts
+    # Group accounts never sync — mark Skipped so the backlog stays honest.
     if doc.is_group:
+        if doc.xero_sync_status != "Skipped":
+            doc.db_set("xero_sync_status", "Skipped", update_modified=False)
         log_xero_error(
             message=f"Skipping group account {doc.name} - only ledger accounts can sync to Xero",
             status="Info",
@@ -276,8 +311,8 @@ def sync_account_to_xero(account_name):
     
     try:
         # Build Xero payload
-        payload = build_xero_account_payload(doc, settings)
-        
+        payload = build_xero_account_payload(doc, settings, is_update=bool(doc.xero_account_id))
+
         if doc.xero_account_id:
             # Update existing - use POST with AccountID in URL
             response = xero_request(
@@ -289,19 +324,46 @@ def sync_account_to_xero(account_name):
         else:
             # Create new - use PUT. Pass a stable idempotency key so a retry after
             # a network timeout does not create a duplicate account in Xero.
-            response = xero_request(
-                "PUT",
-                "Accounts",
-                data={"Accounts": [payload]},
-                idempotency_key=f"Account:{doc.name}:create"
-            )
+            try:
+                response = xero_request(
+                    "PUT",
+                    "Accounts",
+                    data={"Accounts": [payload]},
+                    idempotency_key=f"Account:{doc.name}:create"
+                )
+            except Exception as e:
+                msgs = " ".join([str(e)] + list(getattr(e, "validation_messages", None) or []))
+                if "unique code" not in msgs.lower():
+                    raise
+                # Distinct ERPNext names can sanitize to the same 10-char code
+                # ("Expenses Included In [Asset] Valuation" -> "ExpensesIn").
+                # Re-pick against the codes actually in Xero and retry once.
+                from ..utils.account_mapper import _fetch_xero_accounts_raw, _xero_code_for
+                used = {a.get("Code") for a in _fetch_xero_accounts_raw() if a.get("Code")}
+                payload["Code"] = _xero_code_for(doc, used)
+                response = xero_request(
+                    "PUT",
+                    "Accounts",
+                    data={"Accounts": [payload]},
+                    idempotency_key=f"Account:{doc.name}:create:{payload['Code']}"
+                )
             action = "Created"
         
         # Process response
         if response and response.get("Accounts"):
             xero_account = response["Accounts"][0]
             xero_account_id = xero_account.get("AccountID")
-            
+
+            # Update payloads omit Status (Xero rejects details+Status in one
+            # request); reconcile it here with a Status-only follow-up.
+            desired_status = "ARCHIVED" if doc.disabled else "ACTIVE"
+            if action == "Updated" and xero_account.get("Status") != desired_status:
+                xero_request(
+                    "POST",
+                    f"Accounts/{xero_account_id}",
+                    data={"Accounts": [{"AccountID": xero_account_id, "Status": desired_status}]}
+                )
+
             # Update ERPNext record with Xero data
             doc.db_set({
                 "xero_account_id": xero_account_id,
@@ -348,34 +410,27 @@ def sync_account_to_xero(account_name):
                 direction="ERPNext to Xero"
             )
         else:
-            from ..utils.logging import format_sync_error_message
-            # API or other error - mark as error
-            doc.db_set("xero_sync_status", "Error")
-            user_message = format_sync_error_message(
-                "Account", doc.name, doc.name, "ERPNext to Xero", e
-            )
-            log_xero_error(
-                message=user_message,
-                status="Error",
-                erpnext_doc_type="Account",
-                erpnext_doc_name=doc.name,
-                direction="ERPNext to Xero",
-                error_details=error_traceback
+            mark_sync_failure(
+                "Account", doc.name, e, "ERPNext to Xero", traceback_text=error_traceback
             )
 
 
-def build_xero_account_payload(doc, settings):
+def build_xero_account_payload(doc, settings, is_update=False):
     """
     Build Xero API payload from ERPNext Account.
     Validates required fields and maps types.
-    
+
     Args:
         doc: ERPNext Account document
         settings: Xero Settings document
-    
+        is_update: True when the payload targets an existing Xero account.
+            Updates must omit Status — Xero rejects any request that changes
+            account details and Status together; Status is reconciled by a
+            follow-up Status-only request instead.
+
     Returns:
         dict: Payload for Xero API
-    
+
     Raises:
         ValueError: If required fields are missing or invalid
     """
@@ -414,11 +469,10 @@ def build_xero_account_payload(doc, settings):
     if doc.xero_account_id:
         payload["AccountID"] = doc.xero_account_id
     
-    # Map Status (disabled in ERPNext = ARCHIVED in Xero)
-    if doc.disabled:
-        payload["Status"] = "ARCHIVED"
-    else:
-        payload["Status"] = "ACTIVE"
+    # Map Status (disabled in ERPNext = ARCHIVED in Xero). Creates only —
+    # see is_update in the docstring.
+    if not is_update:
+        payload["Status"] = "ARCHIVED" if doc.disabled else "ACTIVE"
     
     # Bank account specific fields
     if xero_type == "BANK":
@@ -760,7 +814,7 @@ def process_xero_account(xero_account_data, company):
             erpnext_doc_name = doc.name
             log_message = f"Created Account {erpnext_doc_name} from Xero Account {xero_account_id}"
         
-        frappe.db.commit()
+        commit_checkpoint()
         log_xero_error(
             message=log_message,
             status="Success",
@@ -778,7 +832,7 @@ def process_xero_account(xero_account_data, company):
         if is_already_exists_error(str(e), error_traceback):
             if erpnext_doc_name:
                 frappe.db.set_value("Account", erpnext_doc_name, "xero_sync_status", "Synced", update_modified=False)
-                frappe.db.commit()
+                commit_error_state()
             
             log_xero_error(
                 message=f"Xero Account {xero_account_id} ({xero_name}) already exists in ERPNext. Skipping update.",
@@ -791,18 +845,17 @@ def process_xero_account(xero_account_data, company):
                 direction="Xero to ERPNext"
             )
         else:
-            from ..utils.logging import format_sync_error_message
-            user_message = format_sync_error_message(
-                "Xero Account", xero_account_id, xero_name, "Xero to ERPNext", e
-            )
-            log_xero_error(
-                message=user_message,
-                erpnext_doc_type="Account",
-                erpnext_doc_name=erpnext_doc_name,
+            mark_sync_failure(
+                "Account",
+                erpnext_doc_name,
+                e,
+                "Xero to ERPNext",
+                source_type="Xero Account",
+                source_id=xero_account_id,
+                source_display=xero_name,
                 xero_entity_id=xero_account_id,
                 xero_entity_type="Account",
-                direction="Xero to ERPNext",
-                error_details=error_traceback
+                traceback_text=error_traceback,
             )
 
 

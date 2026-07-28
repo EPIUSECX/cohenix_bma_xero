@@ -175,13 +175,9 @@ def get_entity_sync_status():
         #   masters with disabled flag -> not disabled
         #   other masters (Customer, Supplier) -> all records
         if entity in TRANSACTIONAL:
-            total = frappe.db.sql(
-                f"SELECT COUNT(*) FROM `tab{entity}` WHERE docstatus = 1"
-            )[0][0]
+            total = frappe.db.count(entity, {"docstatus": 1})
         elif entity in MASTER_DISABLED:
-            total = frappe.db.sql(
-                f"SELECT COUNT(*) FROM `tab{entity}` WHERE disabled = 0"
-            )[0][0]
+            total = frappe.db.count(entity, {"disabled": 0})
         else:
             total = frappe.db.count(entity)
 
@@ -206,27 +202,21 @@ def get_entity_sync_status():
         
         if xero_field:
             # Count synced documents -- exclude cancelled records
-            synced = frappe.db.sql(f"""
-                SELECT COUNT(*) FROM `tab{entity}`
-                WHERE {xero_field} IS NOT NULL AND {xero_field} != ''
-                AND docstatus != 2
-            """)[0][0]
-            
+            synced = frappe.db.count(
+                entity, {xero_field: ("is", "set"), "docstatus": ("!=", 2)}
+            )
+
             # Count pending/error documents if sync status field exists
             sync_status_field = "xero_sync_status"
             try:
                 if frappe.db.has_column(entity, sync_status_field):
-                    pending = frappe.db.sql(f"""
-                        SELECT COUNT(*) FROM `tab{entity}`
-                        WHERE {sync_status_field} = 'Pending'
-                        AND docstatus != 2
-                    """)[0][0]
+                    pending = frappe.db.count(
+                        entity, {sync_status_field: "Pending", "docstatus": ("!=", 2)}
+                    )
 
-                    errors = frappe.db.sql(f"""
-                        SELECT COUNT(*) FROM `tab{entity}`
-                        WHERE {sync_status_field} = 'Error'
-                        AND docstatus != 2
-                    """)[0][0]
+                    errors = frappe.db.count(
+                        entity, {sync_status_field: "Error", "docstatus": ("!=", 2)}
+                    )
             except Exception:
                 # Table doesn't exist or column missing, skip
                 pass
@@ -593,30 +583,26 @@ def bulk_retry_failed_jobs(entity_type=None, date_range=None):
     """Retry multiple failed jobs in bulk"""
     require_xero_manager()
     try:
-        conditions = ["status = 'Error'"]
-        params = []
-        
+        filters = [["status", "=", "Error"]]
+
         if entity_type:
-            conditions.append("erpnext_doc_type = %s")
-            params.append(entity_type)
-        
+            filters.append(["erpnext_doc_type", "=", entity_type])
+
         if date_range:
             date_range = json.loads(date_range) if isinstance(date_range, str) else date_range
             if date_range.get('from_date'):
-                conditions.append("timestamp >= %s")
-                params.append(date_range['from_date'])
+                filters.append(["timestamp", ">=", date_range['from_date']])
             if date_range.get('to_date'):
-                conditions.append("timestamp <= %s")
-                params.append(date_range['to_date'])
-        
+                filters.append(["timestamp", "<=", date_range['to_date']])
+
         # Get failed logs
-        failed_logs = frappe.db.sql(f"""
-            SELECT name, erpnext_doc_type, erpnext_doc_name
-            FROM `tabXero Log`
-            WHERE {' AND '.join(conditions)}
-            ORDER BY timestamp DESC
-            LIMIT 100
-        """, params, as_dict=True)
+        failed_logs = frappe.get_all(
+            "Xero Log",
+            filters=filters,
+            fields=["name", "erpnext_doc_type", "erpnext_doc_name"],
+            order_by="timestamp desc",
+            limit=100,
+        )
         
         retry_count = 0
         for log in failed_logs:
@@ -2249,28 +2235,27 @@ def get_unmapped_accounts_from_errors(days=7):
         unmapped_accounts = []
         settings = frappe.get_single("Xero Settings")
         existing_mappings = {row.xero_account_code for row in settings.account_mapping}
-        
+
+        # One live fetch of the Xero chart for the whole loop.
+        xero_accounts_by_code = _fetch_live_xero_accounts_by_code() if account_codes_data else {}
+
         for code_data in account_codes_data:
             account_code = code_data.account_code
-            
+
             # Skip if already mapped
             if account_code in existing_mappings:
                 continue
-            
+
             # Skip if not a valid account code (sometimes error messages have extra text)
             if not account_code or len(account_code) > 10:
                 continue
-            
-            # Fetch Xero Account details
-            xero_account = frappe.db.get_value("Xero Account",
-                                              {"account_code": account_code},
-                                              ["account_code", "account_name", "account_type", "account_id"],
-                                              as_dict=True)
-            
+
+            xero_account = xero_accounts_by_code.get(account_code)
+
             if xero_account:
                 # Get suggestions for this account
-                suggestions = get_account_suggestions(account_code)
-                
+                suggestions = _score_account_suggestions(xero_account)
+
                 unmapped_accounts.append({
                     "xero_code": xero_account.account_code,
                     "xero_name": xero_account.account_name,
@@ -2295,6 +2280,26 @@ def get_unmapped_accounts_from_errors(days=7):
         }
 
 
+def _fetch_live_xero_accounts_by_code():
+    """
+    Fetch the Xero chart of accounts live and index it by Code.
+    Replaces the deleted "Xero Account" cache doctype.
+    """
+    from xero.utils.xero_client import xero_request
+
+    response = xero_request("GET", "Accounts") or {}
+    return {
+        account.get("Code"): frappe._dict(
+            account_code=account.get("Code"),
+            account_name=account.get("Name") or "",
+            account_type=account.get("Type") or "",
+            account_id=account.get("AccountID"),
+        )
+        for account in response.get("Accounts", [])
+        if account.get("Code")
+    }
+
+
 @frappe.whitelist()
 def get_account_suggestions(xero_account_code):
     """
@@ -2302,15 +2307,26 @@ def get_account_suggestions(xero_account_code):
     """
     require_xero_manager()
     try:
-        # Get Xero Account details
-        xero_account = frappe.db.get_value("Xero Account",
-                                          {"account_code": xero_account_code},
-                                          ["account_code", "account_name", "account_type"],
-                                          as_dict=True)
-        
+        xero_account = _fetch_live_xero_accounts_by_code().get(xero_account_code)
+
         if not xero_account:
             return {"success": False, "error": "Xero Account not found", "suggestions": []}
-        
+
+        return _score_account_suggestions(xero_account)
+
+    except Exception as e:
+        frappe.log_error(frappe.get_traceback(), "Get Account Suggestions Error")
+        return {
+            "success": False,
+            "error": str(e),
+            "suggestions": []
+        }
+
+
+def _score_account_suggestions(xero_account):
+    """Score ERPNext accounts against one Xero account (dict with account_code /
+    account_name / account_type). Returns the suggestions payload."""
+    try:
         # Map Xero account types to ERPNext account types
         account_type_map = {
             "REVENUE": ["Income Account"],

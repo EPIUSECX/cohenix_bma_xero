@@ -18,6 +18,7 @@ Reference: https://developer.xero.com/documentation/api/accounting/items
 """
 
 import frappe
+from ..utils.transactions import commit_checkpoint, commit_error_state, commit_external_outcome
 from frappe import _
 from frappe.utils import flt
 import hashlib
@@ -25,6 +26,7 @@ import re
 from ..utils.xero_client import xero_request, get_xero_settings
 from ..utils.logging import log_xero_error, get_leaf_doctype_value
 from ..utils.retry_handler import retry_with_exponential_backoff
+from ..utils.sync_status import mark_sync_failure
 from .xero_invoices import get_xero_account_code  # Reuse account mapping
 
 # --- Xero API Field Limits ---
@@ -58,13 +60,17 @@ def get_or_create_item_for_xero_line(item_code, description, settings=None, is_s
         if linked:
             return linked
 
-    # 3. Create a minimal non-stock item
+    # 3. Create a minimal non-stock item. Clamp synthesised codes to Xero's
+    #    30-char Code limit — a longer code creates an Item that can never
+    #    round-trip back out (outbound validation rejects it on every retry).
     if not code:
         slug = re.sub(r"[^A-Za-z0-9]+", "-", (description or "Item")).strip("-")
-        code = (f"XERO-{slug}" if slug else "XERO-ITEM")[:140]
+        code = (f"XERO-{slug}" if slug else "XERO-ITEM")
+        code = code[:XERO_ITEM_CODE_MAX_LENGTH].rstrip("-")
     base, n = code, 1
     while frappe.db.exists("Item", code):
-        code = f"{base[:135]}-{n}"
+        suffix = f"-{n}"
+        code = f"{base[:XERO_ITEM_CODE_MAX_LENGTH - len(suffix)]}{suffix}"
         n += 1
 
     item_group = frappe.db.get_value("Item Group", {"is_group": 0}, "name") or "All Item Groups"
@@ -490,6 +496,7 @@ def enqueue_sync_item(doc, method=None):
         "xero.api.xero_items.sync_item_to_xero",
         queue="short",
         timeout=600,
+        enqueue_after_commit=True,
         item_code=item_code,
     )
 
@@ -626,7 +633,7 @@ def sync_item_to_xero(item_code, **kwargs):
                     },
                     update_modified=False,
                 )
-                frappe.db.commit()
+                commit_external_outcome()
 
                 log_xero_error(
                     message=f"Successfully synced Item {item_code} to Xero.",
@@ -647,7 +654,7 @@ def sync_item_to_xero(item_code, **kwargs):
         frappe.db.set_value(
             "Item", item_code, "xero_sync_status", "Error", update_modified=False
         )
-        frappe.db.commit()
+        commit_error_state()
         log_xero_error(
             message=f"Validation error syncing Item {item_code}: {str(e)}",
             status="Error",
@@ -671,7 +678,7 @@ def sync_item_to_xero(item_code, **kwargs):
                     "Synced",
                     update_modified=False,
                 )
-                frappe.db.commit()
+                commit_error_state()
             log_xero_error(
                 message=f"Item {item_code} already exists in Xero. No action needed.",
                 status="Info",
@@ -681,27 +688,8 @@ def sync_item_to_xero(item_code, **kwargs):
                 direction="ERPNext to Xero",
             )
         else:
-            from ..utils.logging import format_sync_error_message
-
-            # Update sync status on error
-            if item_code:
-                frappe.db.set_value(
-                    "Item",
-                    item_code,
-                    "xero_sync_status",
-                    "Error",
-                    update_modified=False,
-                )
-                frappe.db.commit()
-            user_message = format_sync_error_message(
-                "Item", item_code, item_code, "ERPNext to Xero", e
-            )
-            log_xero_error(
-                message=user_message,
-                erpnext_doc_type="Item",
-                erpnext_doc_name=item_code,
-                error_details=error_traceback,
-                direction="ERPNext to Xero",
+            mark_sync_failure(
+                "Item", item_code, e, "ERPNext to Xero", traceback_text=error_traceback
             )
             raise  # Re-raise for retry decorator
 
@@ -1094,7 +1082,7 @@ def process_xero_item(xero_item_data, settings):
                 f"Created Item {erpnext_doc_name} from Xero Item {xero_item_id}"
             )
 
-        frappe.db.commit()
+        commit_checkpoint()
         log_xero_error(
             message=log_message,
             status="Success",
@@ -1119,7 +1107,7 @@ def process_xero_item(xero_item_data, settings):
                     "Synced",
                     update_modified=False,
                 )
-                frappe.db.commit()
+                commit_error_state()
 
             log_xero_error(
                 message=f"Xero Item {xero_item_id} already exists in ERPNext as {erpnext_doc_name or 'existing item'}. Skipping update.",
@@ -1132,28 +1120,15 @@ def process_xero_item(xero_item_data, settings):
                 direction="Xero to ERPNext",
             )
         else:
-            from ..utils.logging import format_sync_error_message
-
-            if erpnext_doc_name:
-                frappe.db.set_value(
-                    "Item",
-                    erpnext_doc_name,
-                    "xero_sync_status",
-                    "Error",
-                    update_modified=False,
-                )
-                frappe.db.commit()
-
-            user_message = format_sync_error_message(
-                "Xero Item", xero_item_id, item_code, "Xero to ERPNext", e
-            )
-
-            log_xero_error(
-                message=user_message,
-                erpnext_doc_type="Item",
-                erpnext_doc_name=erpnext_doc_name,
+            mark_sync_failure(
+                "Item",
+                erpnext_doc_name,
+                e,
+                "Xero to ERPNext",
+                source_type="Xero Item",
+                source_id=xero_item_id,
+                source_display=item_code,
                 xero_entity_id=xero_item_id,
                 xero_entity_type="Item",
-                direction="Xero to ERPNext",
-                error_details=error_traceback,
+                traceback_text=error_traceback,
             )

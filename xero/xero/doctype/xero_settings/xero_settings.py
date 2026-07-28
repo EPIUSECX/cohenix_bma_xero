@@ -190,7 +190,6 @@ class XeroSettings(Document):
 
         self.connection_status = status
         self.save(ignore_permissions=True)
-        frappe.db.commit()
         return {"status": status}
 
     @frappe.whitelist()
@@ -202,7 +201,6 @@ class XeroSettings(Document):
         self.tenant_id = None
         self.connection_status = "Disconnected"
         self.save(ignore_permissions=True)
-        frappe.db.commit()
         frappe.msgprint("Disconnected from Xero. Tokens have been cleared.")
 
     @frappe.whitelist()
@@ -275,7 +273,6 @@ class XeroSettings(Document):
                     "Code"
                 ):
                     existing_row.xero_account_code = xero_match.get("Code")
-                    existing_row.xero_account_id = xero_match.get("AccountID")
                     existing_row.xero_account_name = xero_match.get("Name")
                     updated += 1
             elif erp_acc_name not in existing_erp_accounts_in_map:
@@ -286,14 +283,12 @@ class XeroSettings(Document):
                         {
                             "erpnext_account": erp_acc_name,
                             "xero_account_code": xero_match.get("Code"),
-                            "xero_account_id": xero_match.get("AccountID"),
                             "xero_account_name": xero_match.get("Name"),
                         },
                     )
                     added += 1
 
         doc.save(ignore_permissions=True)
-        frappe.db.commit()
         frappe.msgprint(
             f"Account mapping updated: {added} added, {updated} updated. Please review and fill any missing Xero Account Codes manually."
         )
@@ -342,7 +337,6 @@ class XeroSettings(Document):
                 added += 1
 
         doc.save(ignore_permissions=True)
-        frappe.db.commit()
         frappe.msgprint(
             f"Tax mapping updated: {added} ERPNext templates added. Please review and enter the corresponding Xero TaxType Codes."
         )
@@ -353,7 +347,8 @@ class XeroSettings(Document):
         Quickly map multiple Xero accounts to ERPNext accounts.
 
         Args:
-                mappings: JSON string or list of dicts with {xero_code, erpnext_account}
+                mappings: JSON string or list of dicts with
+                        {xero_code, erpnext_account, xero_name (optional)}
                 auto_retry: Boolean to trigger retry of failed syncs after mapping
 
         Returns:
@@ -376,6 +371,7 @@ class XeroSettings(Document):
         for mapping in mappings:
             xero_code = mapping.get("xero_code")
             erpnext_account = mapping.get("erpnext_account")
+            xero_name = mapping.get("xero_name") or ""
 
             if not xero_code or not erpnext_account:
                 continue
@@ -383,19 +379,6 @@ class XeroSettings(Document):
             # Validate ERPNext account exists
             if not frappe.db.exists("Account", erpnext_account):
                 frappe.throw(f"ERPNext Account '{erpnext_account}' does not exist")
-
-            # Get Xero Account details
-            xero_account = frappe.db.get_value(
-                "Xero Account",
-                {"account_code": xero_code},
-                ["name", "account_id", "account_name"],
-                as_dict=True,
-            )
-
-            if not xero_account:
-                frappe.throw(
-                    f"Xero Account with code '{xero_code}' not found. Please sync Xero Accounts first."
-                )
 
             # Check if mapping already exists
             existing_row = next(
@@ -410,9 +393,8 @@ class XeroSettings(Document):
             if existing_row:
                 # Update existing mapping
                 existing_row.erpnext_account = erpnext_account
-                existing_row.xero_account = xero_account.name
-                existing_row.xero_account_id = xero_account.account_id
-                existing_row.xero_account_name = xero_account.account_name
+                if xero_name:
+                    existing_row.xero_account_name = xero_name
                 mappings_updated += 1
             else:
                 # Add new mapping
@@ -420,16 +402,13 @@ class XeroSettings(Document):
                     "account_mapping",
                     {
                         "erpnext_account": erpnext_account,
-                        "xero_account": xero_account.name,
                         "xero_account_code": xero_code,
-                        "xero_account_id": xero_account.account_id,
-                        "xero_account_name": xero_account.account_name,
+                        "xero_account_name": xero_name,
                     },
                 )
                 mappings_added += 1
 
         doc.save(ignore_permissions=True)
-        frappe.db.commit()
 
         # Clear cache to ensure new mappings are used immediately
         frappe.cache().delete_value("xero_account_map")

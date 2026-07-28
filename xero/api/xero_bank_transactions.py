@@ -2,10 +2,12 @@
 # For license information, please see license.txt
 
 import frappe
+from ..utils.transactions import commit_checkpoint, commit_error_state
 from frappe import _
 from frappe.utils import flt
 from ..utils.xero_client import xero_request, get_xero_settings
 from ..utils.logging import log_xero_error
+from ..utils.sync_status import mark_sync_failure
 from .xero_invoices import parse_xero_date
 
 # --- Bank Transaction Sync (ERPNext to Xero) — DISABLED BY DESIGN ---
@@ -206,7 +208,7 @@ def process_xero_bank_transaction(xero_transaction_data, settings):
             erpnext_doc_name = doc.name
             log_message = f"Created Bank Transaction {erpnext_doc_name} from Xero Transaction {xero_transaction_id}"
 
-        frappe.db.commit()
+        commit_checkpoint()
         log_xero_error(
             message=log_message,
             status="Success",
@@ -224,7 +226,7 @@ def process_xero_bank_transaction(xero_transaction_data, settings):
         if is_already_exists_error(str(e), error_traceback):
             if erpnext_doc_name:
                 frappe.db.set_value("Bank Transaction", erpnext_doc_name, "xero_sync_status", "Synced", update_modified=False)
-                frappe.db.commit()
+                commit_error_state()
             
             log_xero_error(
                 message=f"Xero Bank Transaction {xero_transaction_id} already exists in ERPNext as {erpnext_doc_name or 'existing document'}. Skipping update.",
@@ -237,24 +239,16 @@ def process_xero_bank_transaction(xero_transaction_data, settings):
                 direction="Xero to ERPNext"
             )
         else:
-            from ..utils.logging import format_sync_error_message
-            sync_status = "Error"
-            if erpnext_doc_name:
-                frappe.db.set_value("Bank Transaction", erpnext_doc_name, "xero_sync_status", sync_status, update_modified=False)
-                frappe.db.commit()
-
-            user_message = format_sync_error_message(
-                "Xero Bank Transaction", xero_transaction_id, xero_transaction_id, "Xero to ERPNext", e
-            )
-
-            log_xero_error(
-                message=user_message,
-                erpnext_doc_type="Bank Transaction",
-                erpnext_doc_name=erpnext_doc_name,
+            mark_sync_failure(
+                "Bank Transaction",
+                erpnext_doc_name,
+                e,
+                "Xero to ERPNext",
+                source_type="Xero Bank Transaction",
+                source_id=xero_transaction_id,
                 xero_entity_id=xero_transaction_id,
                 xero_entity_type="BankTransaction",
-                direction="Xero to ERPNext",
-                error_details=error_traceback
+                traceback_text=error_traceback,
             )
 
 

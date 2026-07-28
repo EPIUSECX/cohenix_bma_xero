@@ -58,3 +58,12 @@ jspm_packages/
 CLAUDE.md
 AGENTS.md
 .claude/
+
+# Local development material — never ship in the marketplace package.
+# The offline test suite in xero/tests/ IS tracked and ships; live-Xero
+# harnesses, data fixtures, session reports, and one-off scripts go in dev/.
+dev/
+xero/xero/doctype/*/test_*.py
+XERO_E2E_*.md
+XERO_FIX_BRIEF.md
+xero/docs/frappe_marketplace_audit_*

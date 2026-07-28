@@ -7,7 +7,7 @@ app_publisher = "EPI-USE Global Services"
 app_description = "Integrate ERPNext with Xero Accounting"
 app_email = "support@epiuse.com"
 app_license = "mit"
-# required_apps = []
+required_apps = ["erpnext"]
 
 # Includes in <head>
 # ------------------
