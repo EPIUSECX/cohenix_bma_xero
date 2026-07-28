@@ -233,7 +233,11 @@ def process_xero_purchase_order(xero_order_data, settings):
     """Creates or updates an ERPNext Purchase Order from Xero order data."""
     from .xero_invoices import get_erpnext_tax_from_xero_type, parse_xero_date
     from .xero_items import get_or_create_item_for_xero_line
-    from .xero_line_builder import apply_inbound_taxes, inbound_line_rate
+    from .xero_line_builder import (
+        apply_inbound_taxes,
+        inbound_line_rate,
+        log_inbound_total_mismatch,
+    )
     
     xero_order_id = xero_order_data.get("PurchaseOrderID")
     order_number = xero_order_data.get("PurchaseOrderNumber")
@@ -365,27 +369,9 @@ def process_xero_purchase_order(xero_order_data, settings):
         erpnext_doc_name = doc.name
         log_message = f"Created Purchase Order {erpnext_doc_name} from Xero Order {xero_order_id} ({order_number})"
 
-        # Flag a total that does not reconcile with Xero (missing tax mapping,
-        # skipped lines). POs import as drafts so nothing posts to the GL, but
-        # a silent price divergence must still be operator-visible.
-        xero_total = frappe.utils.flt(xero_order_data.get("Total", 0))
-        erpnext_total = frappe.utils.flt(doc.get("grand_total"))
-        if xero_total and abs(erpnext_total - xero_total) > 0.02:
-            log_xero_error(
-                message=(
-                    f"Total mismatch on inbound Purchase Order {erpnext_doc_name} "
-                    f"(Xero PO {order_number}): ERPNext grand_total {erpnext_total} "
-                    f"vs Xero Total {xero_total}. Check tax mappings for the "
-                    "order's TaxTypes."
-                ),
-                status="Error",
-                xero_entity_id=xero_order_id,
-                xero_entity_type="PurchaseOrder",
-                erpnext_doc_type="Purchase Order",
-                erpnext_doc_name=erpnext_doc_name,
-                direction="Xero to ERPNext",
-                category="Validation Errors",
-            )
+        log_inbound_total_mismatch(
+            doc, xero_order_data, "PurchaseOrder", xero_order_id, order_number
+        )
 
         commit_checkpoint()
         log_xero_error(

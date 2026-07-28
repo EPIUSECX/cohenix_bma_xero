@@ -16,13 +16,11 @@ from ..utils.xero_client import (
 )
 from ..utils.logging import log_xero_error
 from ..utils.retry_handler import retry_with_exponential_backoff
-from ..utils.exceptions import TaxRepresentationError
 from ..utils.sync_status import mark_sync_failure
 from .xero_line_builder import (
     apply_inbound_taxes,
     build_xero_lines,
     inbound_line_rate,
-    validate_invoice_description,
 )
 
 
@@ -30,6 +28,10 @@ from .xero_line_builder import (
 # else (DRAFT, SUBMITTED awaiting approval, DELETED, VOIDED) must never post
 # to the ERPNext GL, no matter what auto_submit_inbound says.
 XERO_POSTED_STATUSES = ("AUTHORISED", "PAID")
+
+# Lifetime of the per-invoice inbound mutex. Long enough to outlast one
+# import, short enough that a killed worker's lock frees itself.
+INBOUND_LOCK_TTL_SECONDS = 120
 
 
 def maybe_submit_inbound(doc, settings, xero_entity_id, xero_entity_type, xero_status=None):
@@ -1376,10 +1378,13 @@ def process_xero_invoice(xero_invoice_data, settings):
         "Sales Invoice" if invoice_type == "ACCREC" else "Purchase Invoice"
     )
 
-    # Use a per-Xero-ID mutex via cache to prevent duplicate creation when
-    # the hourly task and a manual sync overlap.
-    lock_key = f"xero_inbound_lock_{xero_invoice_id}"
-    if frappe.cache().get_value(lock_key):
+    # Per-Xero-ID mutex preventing duplicate creation when the hourly task and
+    # a manual sync overlap. One atomic SET NX EX: a get-then-set pair leaves a
+    # window in which both workers see no lock and both proceed. Raw set/delete
+    # skip the site prefix set_value applies, so scope the key by hand.
+    cache = frappe.cache()
+    lock_key = f"xero_inbound_lock:{getattr(frappe.local, 'site', 'site')}:{xero_invoice_id}"
+    if not cache.set(lock_key, "1", nx=True, ex=INBOUND_LOCK_TTL_SECONDS):
         log_xero_error(
             message=f"Inbound sync for Xero Invoice {xero_invoice_id} already in progress — skipping duplicate.",
             status="Info",
@@ -1387,16 +1392,15 @@ def process_xero_invoice(xero_invoice_data, settings):
             direction="Xero to ERPNext",
         )
         return "skipped"
-    frappe.cache().set_value(lock_key, True, expires_in_sec=120)  # 2-minute lock
     try:
         return _process_xero_invoice_locked(
             xero_invoice_data, settings, erpnext_doctype,
             xero_invoice_id, invoice_number,
         )
     finally:
-        # Every exit path must release the mutex — a leaked lock blocks
-        # retries of this invoice for the full 2-minute TTL.
-        frappe.cache().delete_value(lock_key)
+        # Every exit path must release the mutex — a leaked lock blocks retries
+        # of this invoice until the TTL expires.
+        cache.delete(lock_key)
 
 
 def _process_xero_invoice_locked(

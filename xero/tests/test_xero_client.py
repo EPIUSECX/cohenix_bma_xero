@@ -363,8 +363,13 @@ class TestWebhookHandler(unittest.TestCase):
 # Inbound invoice mutex + refetch recovery
 # ---------------------------------------------------------------------------
 class TestInvoiceLockRelease(unittest.TestCase):
-    """The per-invoice mutex must be released on every exit path — a leaked
-    lock blocks retries of that invoice for the full 2-minute TTL."""
+    """The per-invoice mutex must be acquired atomically (SET NX) and released
+    on every exit path — a leaked lock blocks retries until the TTL expires."""
+
+    def _lock_key(self):
+        import frappe
+        site = getattr(frappe.local, "site", "site")
+        return f"xero_inbound_lock:{site}:inv-1"
 
     def test_lock_released_on_skip_inside_locked_section(self):
         import xero.api.xero_invoices as xi
@@ -377,19 +382,47 @@ class TestInvoiceLockRelease(unittest.TestCase):
              patch.object(xi, "log_xero_error"):
             outcome = xi.process_xero_invoice(payload, settings)
         self.assertEqual(outcome, "skipped")
-        self.assertNotIn("xero_inbound_lock_inv-1", cache.store)
+        self.assertNotIn(self._lock_key(), cache.store)
+
+    def test_lock_acquired_atomically_with_ttl(self):
+        """A plain get-then-set pair would let two overlapping sweeps both
+        proceed; the acquire must be a single SET NX EX."""
+        import xero.api.xero_invoices as xi
+        cache = FakeCache()
+        calls = []
+        original_set = cache.set
+
+        def recording_set(key, value, nx=False, ex=None):
+            calls.append({"key": key, "nx": nx, "ex": ex})
+            return original_set(key, value, nx=nx, ex=ex)
+
+        cache.set = recording_set
+        settings = SimpleNamespace(get=lambda k, d=None: 1)
+        payload = {"InvoiceID": "inv-1", "Type": "ACCREC", "Status": "AUTHORISED"}
+        with patch.object(xi.frappe, "cache", return_value=cache), \
+             patch.object(xi.frappe.db, "get_value", return_value=None), \
+             patch.object(xi, "log_xero_error"):
+            xi.process_xero_invoice(payload, settings)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["key"], self._lock_key())
+        self.assertTrue(calls[0]["nx"])
+        self.assertEqual(calls[0]["ex"], xi.INBOUND_LOCK_TTL_SECONDS)
 
     def test_busy_lock_skips_without_stealing(self):
         import xero.api.xero_invoices as xi
         cache = FakeCache()
-        cache.store["xero_inbound_lock_inv-1"] = True  # held by another worker
+        cache.store[self._lock_key()] = "held-by-another-worker"
         settings = SimpleNamespace(get=lambda k, d=None: 1)
         payload = {"InvoiceID": "inv-1", "Type": "ACCREC", "Status": "AUTHORISED"}
         with patch.object(xi.frappe, "cache", return_value=cache), \
              patch.object(xi, "log_xero_error"):
             outcome = xi.process_xero_invoice(payload, settings)
         self.assertEqual(outcome, "skipped")
-        self.assertIn("xero_inbound_lock_inv-1", cache.store)
+        self.assertEqual(
+            cache.store[self._lock_key()],
+            "held-by-another-worker",
+            "a busy lock must never be overwritten or released by the loser",
+        )
 
 
 class TestRefetchInvoice(unittest.TestCase):

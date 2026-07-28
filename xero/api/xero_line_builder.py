@@ -29,6 +29,7 @@ import frappe
 from frappe.utils import cint, flt
 
 from ..utils.exceptions import TaxRepresentationError
+from ..utils.logging import log_xero_error
 
 # Sub-cent tolerance used when deciding whether an amount is "zero".
 EPSILON = 0.005
@@ -380,3 +381,38 @@ def apply_inbound_taxes(doc, xero_data, erpnext_doctype, sign=1):
         row["category"] = "Total"
         row["add_deduct_tax"] = "Add"
     doc.append("taxes", row)
+
+
+def log_inbound_total_mismatch(
+    doc, xero_data, xero_entity_type, xero_entity_id, xero_reference
+):
+    """Log an Error when an imported document's total diverges from Xero's.
+
+    For draft-only doctypes (quotations, purchase orders) that never reach the
+    GL: nothing is blocked, but a silent price divergence — usually a missing
+    tax mapping or a skipped line — must stay operator-visible. Invoices and
+    credit notes use their own guard, which additionally withholds submission.
+
+    Returns True when a mismatch was logged.
+    """
+    xero_total = flt(xero_data.get("Total", 0))
+    erpnext_total = flt(doc.get("grand_total"))
+    if not xero_total or abs(erpnext_total - xero_total) <= TOTAL_TOLERANCE:
+        return False
+
+    log_xero_error(
+        message=(
+            f"Total mismatch on inbound {doc.doctype} {doc.name} "
+            f"(Xero {xero_entity_type} {xero_reference}): ERPNext grand_total "
+            f"{erpnext_total} vs Xero Total {xero_total}. Check the tax mappings "
+            f"for this document's TaxTypes."
+        ),
+        status="Error",
+        xero_entity_id=xero_entity_id,
+        xero_entity_type=xero_entity_type,
+        erpnext_doc_type=doc.doctype,
+        erpnext_doc_name=doc.name,
+        direction="Xero to ERPNext",
+        category="Validation Errors",
+    )
+    return True
