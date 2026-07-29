@@ -28,7 +28,6 @@ full monitoring dashboard.
 **Xero → ERPNext (inbound)**
 - Chart of Accounts, Contacts (and contact notes), Items, Invoices, Bills,
   Credit Notes, Payments, Bank Transactions
-- Financial reports (Trial Balance, P&L, Balance Sheet) for reconciliation
 
 **Operations**
 - Sync dashboard: health overview, manual/bulk sync triggers, per-entity status,
@@ -103,7 +102,7 @@ All configuration lives in **Xero Settings** (single doctype):
   payments, journal entries, purchase orders, quotations).
 - **Enable Sync FROM Xero (Xero → ERPNext)** — inbound master switch, with
   per-entity checkboxes (contacts, contact notes, items, invoices, bills,
-  credit notes, payments, chart of accounts, financial reports).
+  credit notes, payments, chart of accounts).
 - **Automatic Synchronization** — scheduled/auto sync, webhooks, rate-limit
   tracking, incremental (changed-records-only) sync.
 

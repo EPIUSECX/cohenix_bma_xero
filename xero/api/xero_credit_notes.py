@@ -3,7 +3,6 @@
 
 import frappe
 from ..utils.transactions import commit_checkpoint, commit_error_state, commit_external_outcome
-from frappe import _
 from frappe.utils import flt, getdate
 import hashlib
 import json
@@ -150,7 +149,8 @@ def credit_note_data_changed(doc):
 # --- Outbound Sync (ERPNext to Xero) ---
 
 
-@frappe.whitelist()
+# doc_event handler: takes the Document the hook passes, so it is not
+# HTTP-callable. Manual syncs go through xero.api.manual_sync instead.
 def enqueue_sync_return(doc, method):
     """
     Enqueue background job to sync a return document (Credit Note) to Xero.
@@ -251,12 +251,10 @@ def sync_return_to_xero(doc_name, doc_type, **kwargs):
             cn_type = "ACCRECCREDIT"
             party_type = "Customer"
             party_name = doc.customer
-            party_account_field = "debit_to"
         elif doc_type == "Purchase Invoice":
             cn_type = "ACCPAYCREDIT"
             party_type = "Supplier"
             party_name = doc.supplier
-            party_account_field = "credit_to"
         else:
             return  # Not a return document we handle here
 

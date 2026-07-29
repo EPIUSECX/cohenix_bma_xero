@@ -19,7 +19,6 @@ Reference: https://developer.xero.com/documentation/api/accounting/items
 
 import frappe
 from ..utils.transactions import commit_checkpoint, commit_error_state, commit_external_outcome
-from frappe import _
 from frappe.utils import flt
 import hashlib
 import re
@@ -436,7 +435,8 @@ def get_erpnext_account_from_xero_code(xero_code, settings):
 # --- Enqueue Function ---
 
 
-@frappe.whitelist()
+# doc_event handler: takes the Document the hook passes, so it is not
+# HTTP-callable. Manual syncs go through xero.api.manual_sync instead.
 def enqueue_sync_item(doc, method=None):
     """
     Enqueue background job to sync Item to Xero.

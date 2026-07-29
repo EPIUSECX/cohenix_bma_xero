@@ -3,7 +3,6 @@
 
 import frappe
 from ..utils.transactions import commit_checkpoint, commit_error_state
-from frappe import _
 from frappe.utils import flt
 from ..utils.xero_client import xero_request, get_xero_settings
 from ..utils.logging import log_xero_error

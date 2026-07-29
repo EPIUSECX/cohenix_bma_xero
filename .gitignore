@@ -67,3 +67,7 @@ xero/xero/doctype/*/test_*.py
 XERO_E2E_*.md
 XERO_FIX_BRIEF.md
 xero/docs/frappe_marketplace_audit_*
+
+# Frappe Marketplace submission package — listing copy and assets that are
+# pasted into the Frappe Cloud listing form, not part of the shipped app.
+docs/marketplace/

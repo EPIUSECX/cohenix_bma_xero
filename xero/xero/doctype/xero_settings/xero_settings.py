@@ -54,7 +54,6 @@ class XeroSettings(Document):
         sync_credit_notes: DF.Check
         sync_credit_notes_from_xero: DF.Check
         sync_credit_notes_to_xero: DF.Check
-        sync_financial_reports: DF.Check
         sync_frequency: DF.Literal["Hourly", "Daily", "Weekly"] | None
         sync_invoices: DF.Check
         sync_invoices_from_xero: DF.Check
@@ -140,7 +139,6 @@ class XeroSettings(Document):
             self.sync_credit_notes_from_xero = 0
             self.sync_payments_from_xero = 0
             # Extended entities (inbound only)
-            self.sync_financial_reports = 0
             self.sync_chart_of_accounts = 0
 
         # --- Cascade: clear direction masters and auto-sync if global switch is OFF ---
@@ -211,9 +209,6 @@ class XeroSettings(Document):
 
         doc = frappe.get_doc("Xero Settings", self.name)  # Explicitly reload
 
-        from xero.api.xero_accounts import (
-            sync_accounts_from_xero,
-        )  # Fetch Xero accounts
         from xero.utils.xero_client import xero_request
 
         # 1. Fetch Xero Accounts (ensure they are created/updated in ERPNext first)
@@ -232,12 +227,9 @@ class XeroSettings(Document):
             "Account", filters={"is_group": 0}, fields=["name", "account_number"]
         )
 
-        # 3. Prepare Xero data lookup (by code and ID)
+        # 3. Prepare Xero data lookup (by code)
         xero_lookup_by_code = {
             acc.get("Code"): acc for acc in xero_accounts if acc.get("Code")
-        }
-        xero_lookup_by_id = {
-            acc.get("AccountID"): acc for acc in xero_accounts if acc.get("AccountID")
         }
 
         # 4. Update mapping table
@@ -599,3 +591,17 @@ def apply_mapping_workspace(decisions):
     from xero.utils.account_mapper import apply_mapping_workspace as _impl
 
     return _impl(decisions)
+
+
+@frappe.whitelist()
+def quick_map_accounts(mappings, auto_retry=False):
+    """Map several Xero accounts to ERPNext accounts at once (Quick Mapping dialog).
+
+    Unlike the wrappers above, the implementation is a Document method and writes
+    the mapping rows itself, so the Xero-manager guard has to be applied here.
+    """
+    from xero.utils.xero_client import require_xero_manager
+
+    require_xero_manager()
+    settings = frappe.get_single("Xero Settings")
+    return settings.quick_map_accounts(mappings, auto_retry=auto_retry)

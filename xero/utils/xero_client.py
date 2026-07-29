@@ -144,15 +144,6 @@ def commit_watermark(entity_key, run_started_at):
     set_sync_watermark(entity_key, value)
 
 
-@frappe.whitelist()
-def reset_xero_sync_watermarks():
-    """Clear all incremental watermarks so the next run does a full sync.
-    Use after a mapping change or to backfill historical records."""
-    require_xero_manager()
-    frappe.db.set_single_value("Xero Settings", "sync_watermarks", "")
-    return {"status": "ok", "message": "Xero sync watermarks cleared; next sync will be a full sweep."}
-
-
 def get_redirect_uri():
     """Returns the OAuth2 redirect URI from settings or default."""
     settings = get_xero_settings()
@@ -185,9 +176,7 @@ def get_auth_url():
         "scope": (
             "openid profile email offline_access "
             "accounting.invoices accounting.payments accounting.banktransactions accounting.manualjournals "
-            "accounting.contacts accounting.settings "
-            "accounting.reports.balancesheet.read accounting.reports.profitandloss.read "
-            "accounting.reports.aged.read accounting.reports.trialbalance.read"
+            "accounting.contacts accounting.settings"
         ),
         "state": state,
     }
@@ -709,7 +698,6 @@ def xero_request(method, endpoint, data=None, params=None, idempotency_key=None,
 
     retry_count = 0
     response = None
-    start_time = time.time()
 
     while retry_count < max_retries:
         # Proactively stay under the per-minute limit before every attempt.
@@ -900,63 +888,3 @@ def xero_request(method, endpoint, data=None, params=None, idempotency_key=None,
 
     # This part should not be reached if the loop completes, but as a fallback:
     frappe.throw("Failed to get a valid response from Xero after multiple retries.")
-
-
-def check_xero_entity_exists(entity_type, entity_id):
-    """
-    Check if an entity exists in Xero by its ID.
-
-    :param entity_type: Type of entity (e.g., 'Invoices', 'Contacts', 'Items')
-    :param entity_id: Xero entity ID (GUID)
-    :return: Boolean indicating if entity exists
-    """
-    try:
-        # Try to get the entity from Xero
-        response = xero_request("GET", f"{entity_type}/{entity_id}")
-        return response is not None
-    except Exception as e:
-        # If 404 or other error, entity doesn't exist
-        error_str = str(e).lower()
-        if "404" in error_str or "not found" in error_str:
-            return False
-        # For other errors, log but assume it might exist (cautious approach)
-        frappe.log_error(
-            f"Error checking if {entity_type} {entity_id} exists: {str(e)}",
-            "Xero Entity Check",
-        )
-        return True  # Assume exists to avoid duplicates
-
-
-def get_xero_entity_by_number(entity_type, number_field, number_value):
-    """
-    Search for an entity in Xero by a unique number/code.
-
-    :param entity_type: Type of entity (e.g., 'Invoices', 'Contacts')
-    :param number_field: Field name to search (e.g., 'InvoiceNumber', 'ContactNumber')
-    :param number_value: Value to search for
-    :return: Entity data if found, None otherwise
-    """
-    try:
-        # Use where clause to search
-        response = xero_request(
-            "GET", entity_type, params={"where": f'{number_field}=="{number_value}"'}
-        )
-
-        if response and entity_type in response and len(response[entity_type]) > 0:
-            return response[entity_type][0]
-        return None
-    except Exception as e:
-        frappe.log_error(
-            f"Error searching {entity_type} by {number_field}={number_value}: {str(e)}",
-            "Xero Search Error",
-        )
-        return None
-
-
-# Example Usage (to be called from api modules):
-# def get_accounts():
-#     return xero_request("GET", "Accounts")
-#
-# def create_invoice(invoice_data):
-#     # Xero API expects data often wrapped, e.g., {"Invoices": [invoice_data]}
-#     return xero_request("PUT", "Invoices", data={"Invoices": [invoice_data]})

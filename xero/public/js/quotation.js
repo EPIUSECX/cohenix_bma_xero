@@ -8,11 +8,11 @@ frappe.ui.form.on('Quotation', {
 
                 frm.add_custom_button(__('Sync to Xero'), function() {
                     frappe.call({
-                        method: 'xero.api.xero_quotes.enqueue_sync_quotation',
-                        args: { doc: frm.doc, method: 'on_submit' },
+                        method: 'xero.api.manual_sync.sync_document_to_xero',
+                        args: { doctype: frm.doc.doctype, docname: frm.doc.name },
                         callback: function(r) {
                             if (r.message) {
-                                frappe.msgprint(__('Quotation sync to Xero has been queued.'));
+                                frappe.msgprint(r.message);
                             }
                         }
                     });

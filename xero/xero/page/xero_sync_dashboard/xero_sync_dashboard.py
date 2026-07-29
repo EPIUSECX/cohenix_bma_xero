@@ -4,8 +4,8 @@
 import frappe
 from xero.utils.xero_client import require_xero_manager
 import json
-from datetime import datetime, timedelta
-from frappe.utils import now_datetime, add_days, add_to_date, get_datetime, flt, cint
+from datetime import timedelta
+from frappe.utils import now_datetime, add_days, add_to_date, cint
 from frappe import _
 
 @frappe.whitelist()
@@ -579,138 +579,6 @@ def trigger_manual_sync(entity_type, filters=None, sync_type="full"):
         }
 
 @frappe.whitelist()
-def bulk_retry_failed_jobs(entity_type=None, date_range=None):
-    """Retry multiple failed jobs in bulk"""
-    require_xero_manager()
-    try:
-        filters = [["status", "=", "Error"]]
-
-        if entity_type:
-            filters.append(["erpnext_doc_type", "=", entity_type])
-
-        if date_range:
-            date_range = json.loads(date_range) if isinstance(date_range, str) else date_range
-            if date_range.get('from_date'):
-                filters.append(["timestamp", ">=", date_range['from_date']])
-            if date_range.get('to_date'):
-                filters.append(["timestamp", "<=", date_range['to_date']])
-
-        # Get failed logs
-        failed_logs = frappe.get_all(
-            "Xero Log",
-            filters=filters,
-            fields=["name", "erpnext_doc_type", "erpnext_doc_name"],
-            order_by="timestamp desc",
-            limit=100,
-        )
-        
-        retry_count = 0
-        for log in failed_logs:
-            try:
-                retry_failed_job(log.name)
-                retry_count += 1
-            except Exception as e:
-                frappe.log_error(f"Bulk retry failed for {log.name}: {str(e)}")
-                continue
-        
-        return {
-            "success": True,
-            "retried_count": retry_count,
-            "total_failed": len(failed_logs)
-        }
-        
-    except Exception as e:
-        frappe.log_error(frappe.get_traceback(), "Bulk Retry Error")
-        return {
-            "success": False,
-            "error": str(e)
-        }
-
-@frappe.whitelist()
-def get_sync_configuration():
-    """Get current sync configuration"""
-    require_xero_manager()
-    try:
-        settings = frappe.get_single("Xero Settings")
-        
-        # Count account and tax mappings from child DocTypes
-        account_mappings = frappe.db.count("Xero Account Mapping") if frappe.db.exists("DocType", "Xero Account Mapping") else 0
-        tax_mappings = frappe.db.count("Xero Tax Mapping") if frappe.db.exists("DocType", "Xero Tax Mapping") else 0
-        
-        # Get sync settings with safe attribute access
-        config = {
-            "connection": {
-                "connected": bool(getattr(settings, 'access_token', None) and getattr(settings, 'tenant_id', None)),
-                "tenant_name": getattr(settings, 'tenant_name', None),
-                "client_id": getattr(settings, 'client_id', None)[:10] + "..." if getattr(settings, 'client_id', None) else None,
-                "last_token_refresh": getattr(settings, 'last_token_refresh', None)
-            },
-            "sync_settings": {
-                "auto_sync_enabled": getattr(settings, 'enable_xero_sync', False),
-                "sync_frequency": 30,  # Default value
-                "batch_size": 50,      # Default value
-                "max_retries": 3       # Default value
-            },
-            "mappings": {
-                "accounts": account_mappings,
-                "taxes": tax_mappings
-            }
-        }
-        
-        return config
-        
-    except Exception as e:
-        frappe.log_error(frappe.get_traceback(), "Get Sync Configuration Error")
-        return {
-            "connection": {
-                "connected": False,
-                "tenant_name": None,
-                "client_id": None,
-                "last_token_refresh": None
-            },
-            "sync_settings": {
-                "auto_sync_enabled": False,
-                "sync_frequency": 30,
-                "batch_size": 50,
-                "max_retries": 3
-            },
-            "mappings": {
-                "accounts": 0,
-                "taxes": 0
-            },
-            "error": str(e)
-        }
-
-@frappe.whitelist()
-def update_sync_settings(settings_data):
-    """Update sync settings"""
-    require_xero_manager()
-    try:
-        if isinstance(settings_data, str):
-            settings_data = json.loads(settings_data)
-        
-        settings = frappe.get_single("Xero Settings")
-        
-        # Update sync settings
-        for key, value in settings_data.items():
-            if hasattr(settings, key):
-                setattr(settings, key, value)
-        
-        settings.save()
-        
-        return {
-            "success": True,
-            "message": "Sync settings updated successfully"
-        }
-        
-    except Exception as e:
-        frappe.log_error(frappe.get_traceback(), "Update Sync Settings Error")
-        return {
-            "success": False,
-            "error": str(e)
-        }
-
-@frappe.whitelist()
 def get_logs(start=0, page_length=20, filters=None):
     """Enhanced log retrieval with advanced filtering"""
     require_xero_manager()
@@ -889,45 +757,6 @@ def retry_failed_job(log_name):
         return {
             "success": False,
             "error": str(e)
-        }
-
-@frappe.whitelist()
-def get_sync_queue_status():
-    """Get current sync queue status"""
-    require_xero_manager()
-    try:
-        # Get queue statistics
-        queue_stats = frappe.db.sql("""
-            SELECT
-                status,
-                COUNT(*) as count,
-                MIN(creation) as oldest_job,
-                MAX(creation) as newest_job
-            FROM `tabRQ Job`
-            WHERE job_name LIKE '%xero%'
-            GROUP BY status
-        """, as_dict=True)
-        
-        # Get recent job history
-        recent_jobs = frappe.db.sql("""
-            SELECT
-                name, job_name, status, creation, started_at, ended_at,
-                TIMESTAMPDIFF(SECOND, started_at, COALESCE(ended_at, NOW())) as duration
-            FROM `tabRQ Job`
-            WHERE job_name LIKE '%xero%'
-            ORDER BY creation DESC
-            LIMIT 10
-        """, as_dict=True)
-        
-        return {
-            "queue_stats": queue_stats,
-            "recent_jobs": recent_jobs
-        }
-    except Exception:
-        # RQ Job table might not exist or have different structure
-        return {
-            "queue_stats": [],
-            "recent_jobs": []
         }
 
 @frappe.whitelist()
@@ -1288,7 +1117,6 @@ def export_logs(filters=None):
     require_xero_manager()
     try:
         import csv
-        import os
         from frappe.utils.file_manager import save_file
         
         # Get logs with filters
@@ -1341,224 +1169,6 @@ def export_logs(filters=None):
             "success": False,
             "error": str(e)
         }
-
-@frappe.whitelist()
-def get_health_monitoring_metrics():
-    """Get comprehensive health monitoring metrics"""
-    require_xero_manager()
-    try:
-        from datetime import datetime, timedelta
-        
-        now = now_datetime()
-        one_hour_ago = add_to_date(now, hours=-1)
-        one_day_ago = add_to_date(now, days=-1)
-        seven_days_ago = add_to_date(now, days=-7)
-        
-        # Error rate trends
-        error_trends = frappe.db.sql("""
-            SELECT 
-                DATE_FORMAT(timestamp, '%%Y-%%m-%%d %%H:00:00') as hour,
-                COUNT(*) as total,
-                SUM(CASE WHEN status = 'Error' THEN 1 ELSE 0 END) as errors,
-                SUM(CASE WHEN status = 'Success' THEN 1 ELSE 0 END) as success
-            FROM `tabXero Log`
-            WHERE timestamp >= %s
-            GROUP BY DATE_FORMAT(timestamp, '%%Y-%%m-%%d %%H:00:00')
-            ORDER BY hour DESC
-            LIMIT 168
-        """, (seven_days_ago,), as_dict=True)
-        
-        # Error by category
-        error_by_category = frappe.db.sql("""
-            SELECT 
-                COALESCE(category, 'Uncategorized') as category,
-                COUNT(*) as count,
-                COUNT(*) * 100.0 / (SELECT COUNT(*) FROM `tabXero Log` WHERE status = 'Error' AND timestamp >= %s) as percentage
-            FROM `tabXero Log`
-            WHERE status = 'Error'
-            AND timestamp >= %s
-            GROUP BY category
-            ORDER BY count DESC
-        """, (seven_days_ago, seven_days_ago), as_dict=True)
-        
-        # API performance metrics
-        api_performance = frappe.db.sql("""
-            SELECT 
-                AVG(processing_time) as avg_time,
-                MAX(processing_time) as max_time,
-                MIN(processing_time) as min_time,
-                COUNT(*) as total_calls,
-                SUM(CASE WHEN processing_time > 5 THEN 1 ELSE 0 END) as slow_calls
-            FROM `tabXero Log`
-            WHERE processing_time IS NOT NULL
-            AND timestamp >= %s
-        """, (one_day_ago,), as_dict=True)
-        
-        # Rate limiting metrics
-        rate_limit_hits = frappe.db.sql("""
-            SELECT 
-                DATE_FORMAT(timestamp, '%%Y-%%m-%%d %%H:00:00') as hour,
-                COUNT(*) as hits
-            FROM `tabXero Log`
-            WHERE category = 'Rate Limiting'
-            AND timestamp >= %s
-            GROUP BY DATE_FORMAT(timestamp, '%%Y-%%m-%%d %%H:00:00')
-            ORDER BY hour DESC
-        """, (seven_days_ago,), as_dict=True)
-        
-        # Token refresh metrics
-        token_metrics = frappe.db.sql("""
-            SELECT 
-                COUNT(*) as total_refreshes,
-                SUM(CASE WHEN status = 'Success' THEN 1 ELSE 0 END) as successful,
-                SUM(CASE WHEN status = 'Error' THEN 1 ELSE 0 END) as failed,
-                MAX(timestamp) as last_refresh
-            FROM `tabXero Log`
-            WHERE message LIKE '%%token refresh%%'
-            AND timestamp >= %s
-        """, (seven_days_ago,), as_dict=True)
-        
-        # Stuck jobs (running > 1 hour)
-        stuck_jobs = []
-        try:
-            stuck_jobs = frappe.db.sql("""
-                SELECT
-                    name, job_name, status, creation, started_at,
-                    TIMESTAMPDIFF(MINUTE, COALESCE(started_at, creation), NOW()) as duration_minutes
-                FROM `tabRQ Job`
-                WHERE status IN ('started', 'queued')
-                AND job_name LIKE '%%xero%%'
-                AND TIMESTAMPDIFF(MINUTE, COALESCE(started_at, creation), NOW()) > 60
-                ORDER BY duration_minutes DESC
-            """, as_dict=True)
-        except Exception:
-            pass  # RQ Job table might not exist
-        
-        # Calculate uptime percentage (last 24h) -- only real sync outcomes
-        # (Success / Error); Info and Warning rows are not failures and must not
-        # deflate the uptime figure.
-        total_operations_24h = frappe.db.count("Xero Log", filters={
-            "timestamp": [">=", one_day_ago],
-            "status": ["in", ["Success", "Error"]]
-        })
-        successful_operations_24h = frappe.db.count("Xero Log", filters={
-            "timestamp": [">=", one_day_ago],
-            "status": "Success"
-        })
-        uptime_percentage = (successful_operations_24h / total_operations_24h * 100) if total_operations_24h > 0 else 100
-        
-        return {
-            "error_trends": error_trends,
-            "error_by_category": error_by_category,
-            "api_performance": api_performance[0] if api_performance else {},
-            "rate_limit_hits": rate_limit_hits,
-            "token_metrics": token_metrics[0] if token_metrics else {},
-            "stuck_jobs": stuck_jobs,
-            "uptime_percentage": round(uptime_percentage, 2),
-            "total_operations_24h": total_operations_24h,
-            "successful_operations_24h": successful_operations_24h
-        }
-        
-    except Exception as e:
-        frappe.log_error(frappe.get_traceback(), "Get Health Monitoring Metrics Error")
-        return {"error": str(e)}
-
-@frappe.whitelist()
-def get_data_integrity_metrics():
-    """Get data integrity validation results"""
-    require_xero_manager()
-    try:
-        # Orphaned invoices (have Xero ID but no sync status)
-        orphaned_invoices = frappe.db.sql("""
-            SELECT COUNT(*) as count, 'Sales Invoice' as doctype
-            FROM `tabSales Invoice`
-            WHERE xero_invoice_id IS NOT NULL AND xero_invoice_id != ''
-            AND (xero_sync_status IS NULL OR xero_sync_status = '')
-            UNION ALL
-            SELECT COUNT(*) as count, 'Purchase Invoice' as doctype
-            FROM `tabPurchase Invoice`
-            WHERE xero_invoice_id IS NOT NULL AND xero_invoice_id != ''
-            AND (xero_sync_status IS NULL OR xero_sync_status = '')
-        """, as_dict=True)
-        
-        # Documents marked as synced but missing Xero IDs
-        missing_ids = frappe.db.sql("""
-            SELECT COUNT(*) as count, 'Sales Invoice' as doctype
-            FROM `tabSales Invoice`
-            WHERE xero_sync_status = 'Synced'
-            AND (xero_invoice_id IS NULL OR xero_invoice_id = '')
-            UNION ALL
-            SELECT COUNT(*) as count, 'Purchase Invoice' as doctype
-            FROM `tabPurchase Invoice`
-            WHERE xero_sync_status = 'Synced'
-            AND (xero_invoice_id IS NULL OR xero_invoice_id = '')
-        """, as_dict=True)
-        
-        # Pending prerequisites count
-        pending_prerequisites = frappe.db.sql("""
-            SELECT COUNT(*) as count, 'Sales Invoice' as doctype
-            FROM `tabSales Invoice`
-            WHERE xero_sync_status = 'Pending Prerequisites'
-            UNION ALL
-            SELECT COUNT(*) as count, 'Purchase Invoice' as doctype
-            FROM `tabPurchase Invoice`
-            WHERE xero_sync_status = 'Pending Prerequisites'
-        """, as_dict=True)
-        
-        # Documents with errors
-        documents_with_errors = frappe.db.sql("""
-            SELECT COUNT(*) as count, 'Sales Invoice' as doctype
-            FROM `tabSales Invoice`
-            WHERE xero_sync_status = 'Error'
-            UNION ALL
-            SELECT COUNT(*) as count, 'Purchase Invoice' as doctype
-            FROM `tabPurchase Invoice`
-            WHERE xero_sync_status = 'Error'
-        """, as_dict=True)
-        
-        # Recent validation errors
-        validation_errors = frappe.db.sql("""
-            SELECT 
-                erpnext_doc_type,
-                erpnext_doc_name,
-                message,
-                timestamp
-            FROM `tabXero Log`
-            WHERE category = 'Validation Errors'
-            AND timestamp >= DATE_SUB(NOW(), INTERVAL 7 DAY)
-            ORDER BY timestamp DESC
-            LIMIT 20
-        """, as_dict=True)
-        
-        # Mapping errors
-        mapping_errors = frappe.db.sql("""
-            SELECT 
-                message,
-                COUNT(*) as count
-            FROM `tabXero Log`
-            WHERE category = 'Mapping Errors'
-            AND timestamp >= DATE_SUB(NOW(), INTERVAL 7 DAY)
-            GROUP BY message
-            ORDER BY count DESC
-            LIMIT 10
-        """, as_dict=True)
-        
-        return {
-            "orphaned_invoices": orphaned_invoices,
-            "missing_ids": missing_ids,
-            "pending_prerequisites": pending_prerequisites,
-            "documents_with_errors": documents_with_errors,
-            "validation_errors": validation_errors,
-            "mapping_errors": mapping_errors,
-            "total_orphaned": sum([o.get('count', 0) for o in orphaned_invoices]),
-            "total_missing_ids": sum([m.get('count', 0) for m in missing_ids]),
-            "total_pending": sum([p.get('count', 0) for p in pending_prerequisites]),
-            "total_errors": sum([e.get('count', 0) for e in documents_with_errors])
-        }
-        
-    except Exception as e:
-        frappe.log_error(frappe.get_traceback(), "Get Data Integrity Metrics Error")
-        return {"error": str(e)}
 
 @frappe.whitelist()
 def get_sync_performance_metrics():
@@ -1841,8 +1451,6 @@ def get_last_sync_attempts():
     """
     require_xero_manager()
     try:
-        from datetime import datetime, timedelta
-        
         # Get sync attempts from the last 7 days
         seven_days_ago = add_days(now_datetime(), -7)
         
@@ -2211,7 +1819,6 @@ def get_unmapped_accounts_from_errors(days=7):
     """
     require_xero_manager()
     try:
-        from datetime import timedelta
         cutoff_date = add_days(now_datetime(), -int(days))
         
         # Extract unique AccountCodes from error messages

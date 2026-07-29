@@ -93,13 +93,6 @@ def sync_all_enabled():
             from .api.xero_quotes import sync_quotes_from_xero
             sync_quotes_from_xero()
 
-        if settings.get("sync_financial_reports"):
-            from .api.xero_reports import sync_financial_reports_from_xero
-            try:
-                sync_financial_reports_from_xero()
-            except AttributeError:
-                pass  # Function may not exist in all versions
-
         log_xero_error(
             message="Daily sync task completed successfully.", status="Success"
         )
