@@ -10,12 +10,15 @@ frappe.ui.form.on('Payment Entry', {
 
                     frm.add_custom_button(__('Sync to Xero'), function() {
                         frappe.call({
-                            method: 'xero.api.xero_payments.enqueue_sync_payment_entry',
+                            method: 'xero.api.manual_sync.sync_document_to_xero',
                             args: {
-                                doc_name: frm.doc.name
+                                doctype: frm.doc.doctype,
+                                docname: frm.doc.name
                             },
                             callback: function(r) {
-                                // Message shown by enqueue function
+                                if (r.message) {
+                                    frappe.msgprint(r.message);
+                                }
                             },
                             error: function(r) {
                                 frappe.msgprint(__('Error queuing sync job. Check console.'));

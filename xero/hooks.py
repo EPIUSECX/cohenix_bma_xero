@@ -55,7 +55,6 @@ doctype_js = {
     "Journal Entry": "xero/public/js/journal_entry.js",
     "Item": "xero/public/js/item.js",
     "Payment Entry": "xero/public/js/payment_entry.js",
-    "Credit Note": "xero/public/js/credit_note.js",
     "Quotation": "xero/public/js/quotation.js",
     "Bank Transaction": "xero/public/js/bank_transaction.js"
 }

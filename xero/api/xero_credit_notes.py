@@ -149,7 +149,8 @@ def credit_note_data_changed(doc):
 # --- Outbound Sync (ERPNext to Xero) ---
 
 
-@frappe.whitelist()
+# doc_event handler: takes the Document the hook passes, so it is not
+# HTTP-callable. Manual syncs go through xero.api.manual_sync instead.
 def enqueue_sync_return(doc, method):
     """
     Enqueue background job to sync a return document (Credit Note) to Xero.

@@ -12,7 +12,8 @@ from .xero_invoices import get_xero_account_code, map_erpnext_tax_to_xero
 
 # --- Quote Sync (ERPNext to Xero) ---
 
-@frappe.whitelist()
+# doc_event handler: takes the Document the hook passes, so it is not
+# HTTP-callable. Manual syncs go through xero.api.manual_sync instead.
 def enqueue_sync_quotation(doc, method):
     """Enqueue background job to sync a Quotation to Xero."""
     settings = get_xero_settings()

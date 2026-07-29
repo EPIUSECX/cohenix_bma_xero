@@ -8,8 +8,13 @@ frappe.ui.form.on('Journal Entry', {
 
                 frm.add_custom_button(__('Sync to Xero'), function() {
                     frappe.call({
-                        method: 'xero.api.xero_journals.enqueue_sync_journal_entry',
-                        args: { doc_name: frm.doc.name },
+                        method: 'xero.api.manual_sync.sync_document_to_xero',
+                        args: { doctype: frm.doc.doctype, docname: frm.doc.name },
+                        callback: function(r) {
+                            if (r.message) {
+                                frappe.msgprint(r.message);
+                            }
+                        },
                         error: function(r) {
                             frappe.msgprint(__('Error queuing sync job. Check console.'));
                             console.error(r);

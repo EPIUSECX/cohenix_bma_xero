@@ -54,7 +54,8 @@ def resolve_line_account_code(erpnext_account, account_map, doc_type=None, doc_n
     return mapped_code or account_number
 
 
-@frappe.whitelist()
+# doc_event handler: takes the Document the hook passes, so it is not
+# HTTP-callable. Manual syncs go through xero.api.manual_sync instead.
 def enqueue_sync_journal(doc, method):
     """Enqueue background job to sync a Journal Entry to Xero."""
     settings = get_xero_settings()

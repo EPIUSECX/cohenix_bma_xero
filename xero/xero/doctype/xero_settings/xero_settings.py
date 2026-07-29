@@ -591,3 +591,17 @@ def apply_mapping_workspace(decisions):
     from xero.utils.account_mapper import apply_mapping_workspace as _impl
 
     return _impl(decisions)
+
+
+@frappe.whitelist()
+def quick_map_accounts(mappings, auto_retry=False):
+    """Map several Xero accounts to ERPNext accounts at once (Quick Mapping dialog).
+
+    Unlike the wrappers above, the implementation is a Document method and writes
+    the mapping rows itself, so the Xero-manager guard has to be applied here.
+    """
+    from xero.utils.xero_client import require_xero_manager
+
+    require_xero_manager()
+    settings = frappe.get_single("Xero Settings")
+    return settings.quick_map_accounts(mappings, auto_retry=auto_retry)

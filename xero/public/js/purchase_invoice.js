@@ -7,14 +7,14 @@ frappe.ui.form.on('Purchase Invoice', {
 
                 frm.add_custom_button(__('Sync to Xero'), function() {
                     frappe.call({
-                        method: 'xero.api.xero_invoices.enqueue_sync_invoice',
+                        method: 'xero.api.manual_sync.sync_document_to_xero',
                         args: {
-                            doc_name: frm.doc.name,
-                            doc_type: frm.doc.doctype
+                            doctype: frm.doc.doctype,
+                            docname: frm.doc.name
                         },
                         callback: function(r) {
                             if (r.message) {
-                                // Message already shown by enqueue_sync_invoice
+                                frappe.msgprint(r.message);
                             }
                         },
                         error: function(r) {

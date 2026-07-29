@@ -13,7 +13,8 @@ from ..utils.sync_status import mark_sync_failure
 # --- Payment Sync (ERPNext to Xero) ---
 
 
-@frappe.whitelist()
+# doc_event handler: takes the Document the hook passes, so it is not
+# HTTP-callable. Manual syncs go through xero.api.manual_sync instead.
 def enqueue_sync_payment(doc, method):
     """Enqueue background job to sync a Payment Entry to Xero."""
     # HI-4: the inbound (Xero -> ERPNext) import sets this flag before submitting

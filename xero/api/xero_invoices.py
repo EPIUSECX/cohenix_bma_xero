@@ -262,7 +262,8 @@ def invoice_data_changed(doc):
 # --- Invoice Sync (ERPNext to Xero) ---
 
 
-@frappe.whitelist()
+# doc_event handler: takes the Document the hook passes, so it is not
+# HTTP-callable. Manual syncs go through xero.api.manual_sync instead.
 def enqueue_sync_invoice_or_return(doc, method):
     """
     Wrapper function for on_submit event.

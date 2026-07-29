@@ -6,22 +6,11 @@ frappe.ui.form.on('Bank Transaction', {
             if (!enabled) return;
 
             if (frm.doc.docstatus === 1) {
-                frm.add_custom_button(__('Sync to Xero'), function() {
-                    frappe.call({
-                        method: 'xero.api.xero_bank_transactions.sync_bank_transaction_to_xero',
-                        args: { doc_name: frm.doc.name, doc_type: frm.doc.doctype },
-                        callback: function(r) {
-                            if (r.message) {
-                                frappe.msgprint(__('Bank Transaction sync initiated. Check Xero Log for status.'));
-                                frm.reload_doc();
-                            }
-                        },
-                        error: function(r) {
-                            frappe.msgprint(__('Failed to sync Bank Transaction to Xero: ') + r.message);
-                        }
-                    });
-                }, __('Xero'));
-
+                // No 'Sync to Xero' button: outbound Bank Transaction sync is
+                // disabled by design. The Payment Entry or Journal Entry this
+                // is reconciled against already moves the Xero bank balance,
+                // so pushing it as well would double-count. See the note in
+                // xero/api/xero_bank_transactions.py.
                 frm.add_custom_button(__('Reconcile with Xero'), function() {
                     let d = new frappe.ui.Dialog({
                         title: __('Reconcile Bank Transactions'),
