@@ -185,9 +185,7 @@ def get_auth_url():
         "scope": (
             "openid profile email offline_access "
             "accounting.invoices accounting.payments accounting.banktransactions accounting.manualjournals "
-            "accounting.contacts accounting.settings "
-            "accounting.reports.balancesheet.read accounting.reports.profitandloss.read "
-            "accounting.reports.aged.read accounting.reports.trialbalance.read"
+            "accounting.contacts accounting.settings"
         ),
         "state": state,
     }

@@ -54,7 +54,6 @@ class XeroSettings(Document):
         sync_credit_notes: DF.Check
         sync_credit_notes_from_xero: DF.Check
         sync_credit_notes_to_xero: DF.Check
-        sync_financial_reports: DF.Check
         sync_frequency: DF.Literal["Hourly", "Daily", "Weekly"] | None
         sync_invoices: DF.Check
         sync_invoices_from_xero: DF.Check
@@ -140,7 +139,6 @@ class XeroSettings(Document):
             self.sync_credit_notes_from_xero = 0
             self.sync_payments_from_xero = 0
             # Extended entities (inbound only)
-            self.sync_financial_reports = 0
             self.sync_chart_of_accounts = 0
 
         # --- Cascade: clear direction masters and auto-sync if global switch is OFF ---

@@ -42,7 +42,6 @@
   "sync_credit_notes_from_xero",
   "sync_payments_from_xero",
   "sync_chart_of_accounts",
-  "sync_financial_reports",
   "section_break_defaults",
   "create_payment_entry_on_sync",
   "default_bank_account",
@@ -340,14 +339,6 @@
    "fieldname": "sync_chart_of_accounts",
    "fieldtype": "Check",
    "label": "  Chart of Accounts \u2190 Xero"
-  },
-  {
-   "default": "0",
-   "depends_on": "eval:doc.enable_xero_sync && doc.enable_sync_from_xero",
-   "description": "Pull financial reports (Balance Sheet, P&L) from Xero into ERPNext.",
-   "fieldname": "sync_financial_reports",
-   "fieldtype": "Check",
-   "label": "  Financial Reports \u2190 Xero"
   },
   {
    "collapsible": 1,

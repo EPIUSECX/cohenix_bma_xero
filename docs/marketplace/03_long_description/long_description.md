@@ -21,8 +21,7 @@ Journals, and Customers, Suppliers, Items, Accounts, Credit Notes, Quotations,
 and Purchase Orders all flow across as their Xero counterparts.
 
 **Xero → ERPNext:** import your Chart of Accounts, Contacts (including notes),
-Items, Invoices, Bills, Credit Notes, Payments, and Bank Transactions, plus
-Trial Balance, P&L, and Balance Sheet figures for reconciliation.
+Items, Invoices, Bills, Credit Notes, Payments, and Bank Transactions.
 
 **Built for real operations:**
 
