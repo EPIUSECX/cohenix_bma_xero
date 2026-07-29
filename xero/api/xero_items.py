@@ -19,7 +19,6 @@ Reference: https://developer.xero.com/documentation/api/accounting/items
 
 import frappe
 from ..utils.transactions import commit_checkpoint, commit_error_state, commit_external_outcome
-from frappe import _
 from frappe.utils import flt
 import hashlib
 import re

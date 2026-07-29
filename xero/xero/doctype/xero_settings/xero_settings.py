@@ -209,9 +209,6 @@ class XeroSettings(Document):
 
         doc = frappe.get_doc("Xero Settings", self.name)  # Explicitly reload
 
-        from xero.api.xero_accounts import (
-            sync_accounts_from_xero,
-        )  # Fetch Xero accounts
         from xero.utils.xero_client import xero_request
 
         # 1. Fetch Xero Accounts (ensure they are created/updated in ERPNext first)
@@ -230,12 +227,9 @@ class XeroSettings(Document):
             "Account", filters={"is_group": 0}, fields=["name", "account_number"]
         )
 
-        # 3. Prepare Xero data lookup (by code and ID)
+        # 3. Prepare Xero data lookup (by code)
         xero_lookup_by_code = {
             acc.get("Code"): acc for acc in xero_accounts if acc.get("Code")
-        }
-        xero_lookup_by_id = {
-            acc.get("AccountID"): acc for acc in xero_accounts if acc.get("AccountID")
         }
 
         # 4. Update mapping table

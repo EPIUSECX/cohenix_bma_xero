@@ -4,7 +4,6 @@
 import frappe
 from ..utils.transactions import commit_checkpoint, commit_error_state, commit_external_outcome
 from frappe import _
-from frappe.utils import get_fullname
 import hashlib
 import re
 from ..utils.xero_client import xero_request, get_xero_settings, require_xero_manager

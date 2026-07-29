@@ -4,16 +4,11 @@
 import frappe
 from ..utils.transactions import commit_checkpoint, commit_error_state, commit_external_outcome
 from frappe import _
-from frappe.utils import flt, getdate, nowdate, now_datetime
-from frappe.model.mapper import get_mapped_doc
+from frappe.utils import flt, getdate
 import hashlib
 import json
 import re
-from ..utils.xero_client import (
-    xero_request,
-    get_xero_settings,
-    check_xero_entity_exists,
-)
+from ..utils.xero_client import xero_request, get_xero_settings
 from ..utils.logging import log_xero_error
 from ..utils.retry_handler import retry_with_exponential_backoff
 from ..utils.sync_status import mark_sync_failure
@@ -404,12 +399,10 @@ def sync_invoice_to_xero(doc_name, doc_type, **kwargs):
             xero_invoice_type = "ACCREC"  # Accounts Receivable
             contact_party_type = "Customer"
             contact_party_name = doc.customer
-            party_account_field = "debit_to"  # Account receivable
         elif doc_type == "Purchase Invoice":
             xero_invoice_type = "ACCPAY"  # Accounts Payable
             contact_party_type = "Supplier"
             contact_party_name = doc.supplier
-            party_account_field = "credit_to"  # Account payable
         else:
             raise ValueError("Unsupported DocType for Xero Invoice sync.")
 
@@ -719,11 +712,9 @@ def void_invoice_in_xero(doc_name, doc_type):
         # AUTHORISED → VOIDED
         if xero_status in ["DRAFT", "SUBMITTED"]:
             new_status = "DELETED"
-            action = "delete"
             action_past = "Deleted"
         else:
             new_status = "VOIDED"
-            action = "void"
             action_past = "Voided"
 
         invoice_payload = {"InvoiceID": xero_invoice_id, "Status": new_status}
@@ -822,7 +813,6 @@ def check_invoice_payments():
 
             xero_invoice = xero_inv_data["Invoices"][0]
             xero_status = xero_invoice.get("Status")
-            amount_paid = flt(xero_invoice.get("AmountPaid", 0.0))
             amount_due = flt(xero_invoice.get("AmountDue", 0.0))
 
             # Load the ERPNext invoice doc once — needed by both branches below.
@@ -891,30 +881,6 @@ def check_invoice_payments():
 
 
 # --- Helper Functions ---
-
-
-# Cache for mappings to avoid fetching settings repeatedly within a request/job
-# HI-2: Removed allow_guest=True. This exposed the account/tax mapping
-# (internal Chart-of-Accounts structure) to unauthenticated callers. No guest
-# JS relies on it (verified: no references in any .js file), so requiring an
-# authenticated session is safe.
-@frappe.whitelist()
-def get_cached_mapping(map_type):
-    """Gets account or tax mapping from cache or settings."""
-    cache_key = f"xero_{map_type}_map"
-    mapping = frappe.cache().get_value(cache_key)
-    if mapping is None:
-        settings = get_xero_settings()
-        if map_type == "account":
-            mapping = settings.get_account_map()
-        elif map_type == "tax":
-            mapping = settings.get_tax_map()
-        else:
-            mapping = {}
-        frappe.cache().set_value(
-            cache_key, mapping
-        )  # Cache for short duration? e.g., 5 mins
-    return mapping
 
 
 def get_xero_account_code(erpnext_account, settings=None):

@@ -3,7 +3,6 @@
 
 import frappe
 from ..utils.transactions import commit_checkpoint, commit_error_state, commit_external_outcome
-from frappe import _
 from frappe.utils import getdate, flt, now
 from ..utils.xero_client import xero_request, get_xero_settings
 from ..utils.logging import log_xero_error
@@ -62,7 +61,6 @@ def sync_payment_to_xero(doc_name, doc_type="Payment Entry", **kwargs):
 
     try:
         doc = frappe.get_doc(doc_type, doc_name)
-        xero_payment_id = doc.get("xero_payment_id")
 
         # --- Basic Validation ---
         if doc.docstatus != 1:
