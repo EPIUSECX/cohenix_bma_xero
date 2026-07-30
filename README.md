@@ -76,8 +76,8 @@ bench --site your-site run-tests --app xero
    **Authorize with Xero**. Sign in and select the organisation (tenant).
 
 The app requests granular accounting scopes (invoices, payments, bank
-transactions, manual journals, contacts, settings, and read-only report scopes)
-plus `offline_access` for token refresh. Tokens are stored encrypted and refresh
+transactions, manual journals, contacts, and settings) plus `offline_access`
+for token refresh. Tokens are stored encrypted and refresh
 automatically; System Managers are emailed if refresh fails.
 
 > [!IMPORTANT]
