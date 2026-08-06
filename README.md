@@ -1,4 +1,19 @@
+<div align="center">
+
+<img src="xero/public/images/xerologo.png" height="160" alt="Xero Integration for ERPNext logo">
+
 # Xero Integration for ERPNext
+
+**Bidirectional accounting sync between ERPNext and Xero**
+
+[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/EPIUSECX/cohenix_bma_xero/releases)
+[![CI](https://github.com/EPIUSECX/cohenix_bma_xero/actions/workflows/ci.yml/badge.svg)](https://github.com/EPIUSECX/cohenix_bma_xero/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/badge/tests-119%20passing-brightgreen.svg)](#testing)
+[![Status](https://img.shields.io/badge/status-beta-orange.svg)](#known-limitations-beta)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](license.txt)
+[![Frappe v16](https://img.shields.io/badge/frappe-v16-0089ff.svg)](https://frappeframework.com)
+
+</div>
 
 Bidirectional accounting sync between ERPNext and Xero: invoices, bills, payments,
 journals, contacts, items, chart of accounts, credit notes, quotations, purchase
@@ -43,7 +58,8 @@ full monitoring dashboard.
 ## Requirements
 
 - Frappe Framework **v16** and ERPNext **v16** (`frappe>=16.0.0,<17.0.0`)
-- Python 3.10+
+- Python **3.14** — Frappe v16 pins `>=3.14,<3.15` and uses PEP 695 syntax, so
+  earlier interpreters cannot build it
 - A Xero account plus a [Xero developer app](https://developer.xero.com/) (OAuth2 web app)
 - Access to a **non-live Xero organisation** (e.g. the Xero Demo Company) for testing
 
@@ -198,6 +214,20 @@ and Xero's error detail.
 - One Xero organisation (tenant) per ERPNext site is the tested configuration.
 
 ## Testing
+
+**119 tests across 8 modules, all passing** (4 skipped), verified on Frappe and
+ERPNext v16:
+
+| Module | Tests | Covers |
+| --- | ---: | --- |
+| `test_xero_client` | 23 | OAuth token refresh and rotation, webhook HMAC verification, retry/backoff, idempotency keys |
+| `test_inbound_behavior` | 21 | Account-type mapping and inbound auto-submit guards |
+| `test_invoice_sync` | 17 | Outbound invoice validation and change-detection hashing |
+| `test_contact_sync` | 14 | Customer ↔ Xero Contact round trip, loop-prevention guards |
+| `test_manual_sync` | 12 | Operator-triggered sync paths |
+| `test_sync_status` | 12 | Sync state tracking and dashboard status |
+| `test_account_mapper` | 11 | Chart-of-accounts mapping rules |
+| `test_pending_retry` | 9 | Queued retry handling |
 
 The shipped suite is fully offline — every test mocks the Xero HTTP layer and
 rolls back its writes, so it is safe on any site:
