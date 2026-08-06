@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  static-checks:
+    name: Static checks
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: pip
+      - name: Byte-compile every module
+        run: python -m compileall -q xero
+      - name: Validate every JSON file
+        run: git ls-files '*.json' -z | xargs -0 -n1 python -m json.tool >/dev/null
+      - name: Check the install helper parses
+        run: bash -n .github/helper/install.sh
+
+  server-tests:
+    name: Frappe v16 / Python ${{ matrix.python-version }}
+    runs-on: ubuntu-22.04
+    needs: static-checks
+    strategy:
+      fail-fast: false
+      matrix:
+        # Frappe v16 pins >=3.14,<3.15 and uses PEP 695 syntax, so an earlier
+        # interpreter cannot even build it.
+        python-version: ["3.14"]
+    services:
+      mariadb:
+        image: mariadb:10.6
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mariadb-admin ping -proot"
+          --health-interval=5s
+          --health-timeout=2s
+          --health-retries=10
+    env:
+      APP_NAME: xero
+      FRAPPE_BRANCH: version-16
+      ERPNEXT_BRANCH: version-16
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - name: Add test host
+        run: echo "127.0.0.1 test_site" | sudo tee -a /etc/hosts
+      - name: Install bench and application stack
+        run: bash .github/helper/install.sh
+      - name: Run server tests
+        working-directory: /home/runner/frappe-bench
+        run: |
+          bench --site test_site set-config allow_tests true
+          bench --site test_site run-tests --app "$APP_NAME"
