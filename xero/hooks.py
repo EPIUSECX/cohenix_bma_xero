@@ -14,7 +14,7 @@ required_apps = ["erpnext"]
 add_to_apps_screen = [
  	{
  		"name": "xero",
- 		"logo": "/assets/xero/Xero_software_logo.svg",
+ 		"logo": "/assets/xero/images/xerologo.png",
  		"title": "Xero Integration",
  		"route": "/desk",
  		#"has_permission": "liftlogic.api.permission.has_app_permission"
