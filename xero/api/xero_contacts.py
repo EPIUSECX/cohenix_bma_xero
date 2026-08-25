@@ -971,6 +971,13 @@ def sync_xero_contact_to_erpnext(xero_contact_data, target_doctype):
         if erpnext_doc_name:
             # Update existing document
             doc = frappe.get_doc(target_doctype, erpnext_doc_name)
+            # A gym household's Customer name is composed by Lift Logic from the
+            # main member and their active dependants. Letting inbound overwrite
+            # it would diverge from the member records until the next member save
+            # snapped it back — a slow flip-flop with no obvious cause. Every
+            # other field from Xero still applies.
+            if doc.get("gym_main_member"):
+                erpnext_data.pop("customer_name", None)
             doc.update(erpnext_data)
             # HI-4: suppress the outbound on_update->enqueue hook for this
             # inbound write so we don't bounce the same data straight back to Xero.
