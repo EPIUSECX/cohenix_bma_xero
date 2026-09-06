@@ -15,9 +15,8 @@
  "parenttype": null,
  "restrict_to_domain": null,
  "role": "System Manager",
+ "script": "xero_sync_dashboard.js",
  "standard": "Yes",
- "style": "xero_sync_dashboard.css",
  "system_page": 0,
- "title": "Xero Sync Dashboard",
- "script": "xero_sync_dashboard.js"
+ "title": "Xero Sync Dashboard"
 }

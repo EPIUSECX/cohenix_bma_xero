@@ -5,8 +5,22 @@ import frappe
 from xero.utils.xero_client import require_xero_manager
 import json
 from datetime import timedelta
-from frappe.utils import now_datetime, add_days, add_to_date, cint
+from frappe.utils import now_datetime, add_days, add_to_date, cint, get_datetime
 from frappe import _
+
+# Xero invalidates a refresh token 60 days after it was last used.
+REFRESH_TOKEN_DAYS = 60
+
+
+def _rq_jobs_queryable():
+    """RQ Job is a virtual doctype: the DocType record exists but `tabRQ Job`
+    does not, so frappe.db.exists("DocType", "RQ Job") is not a usable guard —
+    querying anyway makes Frappe print a stack trace on every call."""
+    try:
+        return bool(frappe.db.table_exists("RQ Job"))
+    except Exception:
+        return False
+
 
 @frappe.whitelist()
 def get_dashboard_overview():
@@ -18,10 +32,23 @@ def get_dashboard_overview():
         connection_status = {
             "connected": bool(settings.access_token and settings.tenant_id),
             "tenant_name": settings.tenant_name or "Not Connected",
+            "tenant_id": settings.tenant_id,
             "last_sync": settings.last_sync_time,
             "sync_enabled": settings.enable_xero_sync,
             "sync_to_xero_enabled": settings.enable_sync_to_xero,
-            "sync_from_xero_enabled": settings.enable_sync_from_xero
+            "sync_from_xero_enabled": settings.enable_sync_from_xero,
+            "token_expiry": settings.token_expiry,
+            "last_token_refresh": settings.last_token_refresh,
+            # Xero refresh tokens live 60 days from the last refresh and roll
+            # forward on every call, so this is the date the connection dies
+            # if nothing syncs in the meantime.
+            "refresh_token_expiry": (
+                add_days(get_datetime(settings.last_token_refresh), REFRESH_TOKEN_DAYS)
+                if settings.last_token_refresh
+                else None
+            ),
+            "auto_sync": settings.enable_auto_sync,
+            "sync_frequency": settings.sync_frequency,
         }
         
         # Get sync statistics for last 24 hours
@@ -376,15 +403,16 @@ def get_system_health():
     success_rate = (success_recent / total_recent * 100) if total_recent > 0 else 100
     
     # Check for stuck jobs (jobs older than 1 hour)
-    try:
+    stuck_jobs = 0
+    if _rq_jobs_queryable():
+      try:
         stuck_jobs = frappe.db.sql("""
             SELECT COUNT(*) FROM `tabRQ Job`
             WHERE status IN ('started', 'queued')
             AND creation < %s
             AND job_name LIKE '%xero%'
         """, (now_datetime() - timedelta(hours=1),))[0][0]
-    except Exception:
-        # RQ Job table might not exist or have different structure
+      except Exception:
         stuck_jobs = 0
     
     # Check error rate trend
@@ -428,6 +456,8 @@ def get_system_health():
 def get_active_sync_jobs():
     """Get currently active sync jobs"""
     require_xero_manager()
+    if not _rq_jobs_queryable():
+        return []
     try:
         active_jobs = frappe.db.sql("""
             SELECT
@@ -765,7 +795,7 @@ def get_queue_status():
     require_xero_manager()
     try:
         # Check if RQ Job table exists
-        if not frappe.db.exists("DocType", "RQ Job"):
+        if not _rq_jobs_queryable():
             return {
                 "queues": [{
                     'name': 'default',
@@ -2029,3 +2059,310 @@ def _score_account_suggestions(xero_account):
             "error": str(e),
             "suggestions": []
         }
+
+# ---------------------------------------------------------------------------
+# Attention rollup
+#
+# The dashboard's spine. The old page had eight tabs and left the reader to
+# work out what to do; this groups every outstanding failure by ROOT CAUSE and
+# names the one action that clears each group. All of it is SQL over Xero Log —
+# nothing here calls Xero, so it is safe on the first paint even when the
+# connection is dead.
+# ---------------------------------------------------------------------------
+
+ATTENTION_WINDOW_DAYS = 7
+# Past this many attempts on the same document, another retry is not a fix.
+REPEAT_FAILURE_THRESHOLD = 3
+# A pathological log should slow the page down, not take it out.
+MAX_OUTSTANDING_SCANNED = 2000
+
+SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2}
+
+
+def _and_more(names, shown=3):
+    """'200, 260, 404 and three more' — for listing examples without a wall."""
+    words = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine"]
+    head = ", ".join(str(n) for n in names[:shown])
+    rest = len(names) - shown
+    if rest <= 0:
+        return head
+    count = words[rest - 1] if rest <= len(words) else str(rest)
+    return f"{head} and {count} more"
+
+
+def _plural(n, singular, plural=None):
+    return singular if n == 1 else (plural or singular + "s")
+
+
+def _outstanding_errors(cutoff):
+    """Errors whose document has not since synced clean.
+
+    Same definition as get_recent_errors: take the latest real outcome
+    (Success/Error) per document and keep it only if that outcome is Error, so
+    anything re-synced successfully drops out on its own.
+    """
+    return frappe.db.sql("""
+        SELECT name, message, erpnext_doc_type, erpnext_doc_name,
+               timestamp, direction, attempts
+        FROM (
+            SELECT name,
+                   COALESCE(message, '') AS message,
+                   erpnext_doc_type,
+                   erpnext_doc_name,
+                   timestamp,
+                   COALESCE(direction, 'Unknown') AS direction,
+                   status,
+                   COUNT(*) OVER (
+                       PARTITION BY erpnext_doc_type, erpnext_doc_name
+                   ) AS attempts,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY erpnext_doc_type, erpnext_doc_name
+                       ORDER BY timestamp DESC, name DESC
+                   ) AS rn
+            FROM `tabXero Log`
+            WHERE timestamp >= %s
+              AND erpnext_doc_type IS NOT NULL
+              AND erpnext_doc_type != 'Unknown'
+              AND erpnext_doc_name IS NOT NULL
+              AND erpnext_doc_name != 'Unknown'
+              AND status IN ('Success', 'Error')
+        ) ranked
+        WHERE rn = 1 AND status = 'Error'
+        ORDER BY timestamp DESC
+        LIMIT %s
+    """, (cutoff, MAX_OUTSTANDING_SCANNED), as_dict=True)
+
+
+def _unmapped_account_codes(cutoff):
+    """Xero account codes that show up in errors and have no mapping row.
+
+    get_unmapped_accounts_from_errors() answers the same question but fetches
+    the live Xero chart to decorate each code, which is a network round trip
+    and fails outright when the token is dead. The dashboard only needs the
+    codes and their weight, so this stays local; the mapping dialog calls the
+    richer one when the user actually opens it.
+    """
+    rows = frappe.db.sql("""
+        SELECT SUBSTRING_INDEX(
+                   SUBSTRING_INDEX(message, 'AccountCode ', -1), ' ', 1
+               ) AS code,
+               COUNT(*) AS line_count
+        FROM `tabXero Log`
+        WHERE (message LIKE %(p1)s OR message LIKE %(p2)s)
+          AND timestamp >= %(cutoff)s
+          AND status IN ('Warning', 'Error')
+        GROUP BY code
+        ORDER BY line_count DESC
+    """, {
+        "p1": "%No account mapping%",
+        "p2": "%Account Code mapping not found%",
+        "cutoff": cutoff,
+    }, as_dict=True)
+
+    try:
+        mapped = {
+            row.xero_account_code
+            for row in frappe.get_single("Xero Settings").account_mapping
+        }
+    except Exception:
+        mapped = set()
+
+    # Codes are parsed out of free text, so drop anything that cannot be one.
+    return [
+        row for row in rows
+        if row.code and len(row.code) <= 10 and row.code not in mapped
+    ]
+
+
+def _classify(message):
+    """Bucket an error message by the thing a person would have to go fix."""
+    m = (message or "").lower()
+    if "contactid" in m or ("contact" in m and "not found" in m):
+        return "contact"
+    if "not found in erpnext" in m and "item" in m:
+        return "item"
+    if "account mapping" in m or "account code mapping" in m:
+        return "account"       # counted by _unmapped_account_codes instead
+    if "tax" in m and ("rate" in m or "type" in m):
+        return "tax"
+    if "token" in m or "unauthor" in m or "401" in m:
+        return "auth"
+    if "rate limit" in m or "throttle" in m or "429" in m:
+        return "ratelimit"
+    return "other"
+
+
+BUCKET_COPY = {
+    "contact": {
+        "severity": "high",
+        "title": "Rejected: the Xero contact does not exist",
+        "suffix": "no matching Xero contact",
+        "sentence": "Xero will not take a document whose contact it has never seen. Sync the customer or supplier first — retrying these on their own fails the same way.",
+        "action": {"label": "Sync contacts", "kind": "sync_entity", "entity": "Customer"},
+    },
+    "item": {
+        "severity": "medium",
+        "title": "References items that are not in ERPNext",
+        "suffix": "items missing in ERPNext",
+        "sentence": "The item codes on the Xero side have no ERPNext record. Create them, or leave this entity out of the sync.",
+        "action": {"label": "Review", "kind": "logs"},
+    },
+    "tax": {
+        "severity": "high",
+        "title": "Rejected on tax rate",
+        "suffix": "tax rate rejected by Xero",
+        "sentence": "Xero refused the tax rate or tax type on at least one line. This needs the tax mapping fixed, not a retry.",
+        "action": {"label": "Tax mapping", "kind": "route", "route": ["Form", "Xero Settings"]},
+    },
+    "auth": {
+        "severity": "high",
+        "title": "Authorisation refused",
+        "suffix": "authorisation refused",
+        "sentence": "Xero rejected the token on these calls. Reconnect before anything else — every other failure below may just be this one.",
+        "action": {"label": "Reconnect", "kind": "reconnect"},
+    },
+    "ratelimit": {
+        "severity": "low",
+        "title": "Xero rate limit reached",
+        "suffix": "rate limited by Xero",
+        "sentence": "Xero throttled the connection. These retry safely once the window resets.",
+        "action": {"label": "Retry", "kind": "retry"},
+    },
+    "other": {
+        "severity": "medium",
+        "title": "Failed with no common cause",
+        "suffix": "no common cause",
+        "sentence": "These do not share a root cause, so they need reading one at a time.",
+        "action": {"label": "Review", "kind": "logs"},
+    },
+}
+
+
+@frappe.whitelist()
+def get_attention_items():
+    """Everything outstanding, grouped by what would actually fix it."""
+    require_xero_manager()
+    try:
+        cutoff = add_days(now_datetime(), -ATTENTION_WINDOW_DAYS)
+        items = []
+
+        # --- unmapped account codes -------------------------------------
+        codes = _unmapped_account_codes(cutoff)
+        if codes:
+            lines = sum(c.line_count for c in codes)
+            items.append({
+                "key": "unmapped_accounts",
+                "severity": "high",
+                "count": len(codes),
+                "title": "Unmapped Xero account codes",
+                "detail": (
+                    f"{_and_more([c.code for c in codes])} "
+                    f"{'has' if len(codes) == 1 else 'have'} no ERPNext account. "
+                    f"{lines} {_plural(lines, 'line')} dropped this week — "
+                    "the documents still posted, just short."
+                ),
+                "action": {"label": "Map accounts", "kind": "map_accounts", "primary": True},
+                "secondary": {"label": "View logs", "kind": "logs",
+                              "filters": {"message": "account mapping"}},
+            })
+
+        # --- outstanding errors, grouped by root cause -------------------
+        outstanding = _outstanding_errors(cutoff)
+        buckets = {}
+        repeats = []
+        for err in outstanding:
+            bucket = _classify(err.message)
+            if bucket == "account":
+                continue  # already carried by the unmapped-codes item
+            buckets.setdefault(bucket, []).append(err)
+            if cint(err.attempts) >= REPEAT_FAILURE_THRESHOLD:
+                repeats.append(err)
+
+        for bucket, errs in buckets.items():
+            copy = BUCKET_COPY[bucket]
+            doctypes = sorted({e.erpnext_doc_type for e in errs})
+            action = dict(copy["action"])
+            if action["kind"] == "logs":
+                action["filters"] = {"status": "Error"}
+            if action["kind"] == "retry":
+                action["log_names"] = [e.name for e in errs]
+            items.append({
+                "key": f"bucket_{bucket}",
+                "severity": copy["severity"],
+                "count": len(errs),
+                # Lower-casing the whole title flattened "Xero" and "ERPNext",
+                # so each bucket carries a ready-cased fragment instead.
+                "title": f"{', '.join(doctypes)} — {copy['suffix']}"
+                         if len(doctypes) <= 2 else copy["title"],
+                "detail": copy["sentence"],
+                "action": action,
+                "doctypes": doctypes,
+                "examples": [
+                    {"doctype": e.erpnext_doc_type, "name": e.erpnext_doc_name,
+                     "message": e.message, "log": e.name}
+                    for e in errs[:5]
+                ],
+            })
+
+        # --- documents that keep failing the same way --------------------
+        # The one thing the old page could never tell you: stop retrying.
+        if repeats:
+            worst = max(cint(e.attempts) for e in repeats)
+            first = repeats[0]
+            items.append({
+                "key": "repeat_failures",
+                "severity": "high",
+                "count": len(repeats),
+                "title": f"Failed {worst} times over, unchanged",
+                "detail": (
+                    f"{len(repeats)} {_plural(len(repeats), 'document')} "
+                    f"{'has' if len(repeats) == 1 else 'have'} been rejected on every "
+                    "attempt this week with the same error. Another retry will not "
+                    + ("clear this — it needs reading."
+                       if len(repeats) == 1
+                       else "clear these — one of them needs reading.")
+                ),
+                "action": {
+                    "label": "Open first", "kind": "open_doc",
+                    "doctype": first.erpnext_doc_type, "name": first.erpnext_doc_name,
+                },
+                "examples": [
+                    {"doctype": e.erpnext_doc_type, "name": e.erpnext_doc_name,
+                     "message": e.message, "attempts": cint(e.attempts)}
+                    for e in repeats[:5]
+                ],
+            })
+
+        # --- jobs that never came back -----------------------------------
+        stuck = 0
+        if _rq_jobs_queryable():
+            try:
+                stuck = frappe.db.sql("""
+                    SELECT COUNT(*) FROM `tabRQ Job`
+                    WHERE status IN ('started', 'queued')
+                      AND creation < %s
+                      AND job_name LIKE '%%xero%%'
+                """, (now_datetime() - timedelta(hours=1),))[0][0]
+            except Exception:
+                stuck = 0
+        if stuck:
+            items.append({
+                "key": "stuck_jobs",
+                "severity": "medium",
+                "count": stuck,
+                "title": "Sync jobs stuck over an hour",
+                "detail": (
+                    f"{stuck} {_plural(stuck, 'job')} queued or started more than an "
+                    "hour ago and never finished. Usually a dead worker."
+                ),
+                "action": {"label": "View queue", "kind": "route",
+                           "route": ["List", "RQ Job"]},
+            })
+
+        items.sort(key=lambda i: (SEVERITY_ORDER.get(i["severity"], 9), -i["count"]))
+        return {"items": items, "total": len(items),
+                "window_days": ATTENTION_WINDOW_DAYS}
+
+    except Exception as e:
+        frappe.log_error(frappe.get_traceback(), "Xero Attention Items Error")
+        return {"items": [], "total": 0, "error": str(e)}
