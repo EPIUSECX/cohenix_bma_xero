@@ -1,0 +1,23 @@
+{
+ "app": "xero",
+ "creation": "2026-10-14 15:44:32.920061",
+ "docstatus": 0,
+ "doctype": "Dock",
+ "idx": 0,
+ "items": [
+  {
+   "added": 1,
+   "hidden": 0,
+   "icon": "integrations-puzzle-duotone",
+   "link_to": "Xero",
+   "link_type": "Sidebar",
+   "title": "Xero"
+  }
+ ],
+ "modified": "2026-10-14 15:44:32.920061",
+ "modified_by": "Administrator",
+ "name": "xero",
+ "owner": "Administrator",
+ "standard": 1,
+ "user": ""
+}

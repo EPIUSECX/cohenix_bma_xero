@@ -1,3 +1,5 @@
+// Rendered by the Frappe UI page in frontend/ (loaded by xero_pages.bundle.js): a Desk Page that
+// hands a Vue 3 app its main section. Desk keeps the page head, the menu and the title.
 frappe.pages["xero-sync-dashboard"].on_page_load = function (wrapper) {
 	frappe.ui.make_app_page({
 		parent: wrapper,
@@ -28,9 +30,5 @@ frappe.pages["xero-sync-dashboard"].on_page_load = function (wrapper) {
 };
 
 frappe.pages["xero-sync-dashboard"].on_page_show = function (wrapper) {
-	const $parent = $(wrapper).find(".layout-main-section").empty();
-	frappe.require("xero_dashboard.bundle.js").then(() => {
-		window.xero_dashboard?.unmount?.();
-		window.xero_dashboard = new frappe.ui.XeroDashboard({ wrapper: $parent, page: wrapper.page });
-	});
+	frappe.require("xero_pages.bundle.js").then(() => xero.mount_page("xero-sync-dashboard", wrapper));
 };

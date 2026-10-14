@@ -1,0 +1,21 @@
+/* Frappe UI 1.0's base, components and utilities. postcss-scope.js keeps all of it under `.xero-ui`
+   and leaves the design tokens to Desk, so the page matches the Desk around them. */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* A full-bleed dashboard: Desk pads a Page's main section, which would frame the three columns in a
+   card of whitespace. The Desk page gets the `xero-page` class from xero_pages.bundle.js. */
+.xero-page .page-body,
+.xero-page .layout-main,
+.xero-page .layout-main-section-wrapper,
+.xero-page .layout-main-section {
+	padding: 0;
+	margin: 0;
+	max-width: none;
+}
+.xero-page .page-content,
+.xero-page .container.page-body {
+	max-width: none;
+	padding: 0;
+}

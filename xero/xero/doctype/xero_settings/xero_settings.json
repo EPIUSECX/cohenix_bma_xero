@@ -373,7 +373,7 @@
    "fieldname": "mapping_setup_info",
    "fieldtype": "HTML",
    "label": "Mapping Setup Info",
-   "options": "<div class='xero-mapping-info'></div>"
+   "options": "<div class=\"xero-mapping-info\"></div>"
   },
   {
    "collapsible": 1,
@@ -596,7 +596,7 @@
    "fieldtype": "HTML",
    "hidden": 1,
    "label": "Directional Sync Warning",
-   "options": "<div class='alert alert-warning'><strong>Important:</strong> The directional master toggles act as safety gates. Disabling 'Sync TO Xero' prevents ALL writes to Xero, even if entity-level toggles are enabled.</div>"
+   "options": "<div class=\"alert alert-warning\"><strong>Important:</strong> The directional master toggles act as safety gates. Disabling Sync TO Xero prevents ALL writes to Xero, even if entity-level toggles are enabled.</div>"
   }
  ],
  "issingle": 1,

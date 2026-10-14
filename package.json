@@ -1,0 +1,9 @@
+{
+	"private": true,
+	"name": "xero",
+	"description": "Xero integration. `bench build` runs the build script below; the Desk pages live in frontend/.",
+	"scripts": {
+		"postinstall": "cd frontend && yarn install --check-files",
+		"build": "cd frontend && yarn build"
+	}
+}

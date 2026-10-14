@@ -12,14 +12,15 @@ required_apps = ["erpnext"]
 # Includes in <head>
 # ------------------
 add_to_apps_screen = [
- 	{
- 		"name": "xero",
- 		"logo": "/assets/xero/images/xerologo.png",
- 		"title": "Xero Integration",
- 		"route": "/desk",
- 		#"has_permission": "liftlogic.api.permission.has_app_permission"
- 	}
- ]
+	{
+		"name": "xero",
+		"logo": "/assets/xero/images/xero-logo.svg",
+		"title": "Xero",
+		"route": "/desk/xero-sync-dashboard",
+		"has_permission": "xero.permissions.has_app_permission",
+		"sequence_id": 40,
+	}
+]
 # include js, css files in header of desk.html
 app_include_css = [
     "/assets/xero/css/xero_dashboard.css"
@@ -136,6 +137,10 @@ after_migrate = "xero.setup.custom_fields.setup_custom_fields"
 # Document Events
 # ---------------
 # Hook on document methods and events
+
+# Boot
+# ----
+boot_session = "xero.boot.boot_session"
 
 doc_events = {
 	"Sales Invoice": {
