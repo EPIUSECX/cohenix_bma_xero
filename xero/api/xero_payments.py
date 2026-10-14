@@ -2,8 +2,9 @@
 # For license information, please see license.txt
 
 import frappe
+from frappe import _
 from ..utils.transactions import commit_checkpoint, commit_error_state, commit_external_outcome
-from frappe.utils import getdate, flt, now
+from frappe.utils import add_to_date, getdate, flt, now, now_datetime
 from ..utils.xero_client import xero_request, get_xero_settings
 from ..utils.logging import log_xero_error
 from ..utils.retry_handler import retry_with_exponential_backoff
@@ -614,6 +615,120 @@ def sync_payments_from_xero(invoice_id=None):
         )
 
 
+def retry_waiting_payments(limit=50):
+    """Fetch again the payments that were skipped because their invoice was not ready.
+
+    The incremental payments sweep only asks Xero for payments changed since its
+    watermark, so a payment skipped while its invoice was missing or Draft is never
+    offered again on its own. The warnings written by _log_payment_waiting are the
+    backlog: each names the Xero invoice the payment is waiting for. For every such
+    invoice this checks the local database first (no Xero call), and only when the
+    invoice now exists and is submitted does it run the targeted fetch, which has no
+    watermark and de-duplicates on PaymentID, so repeating it is safe.
+
+    Bounded three ways so it can never turn into a full re-fetch: at most cputime         unlimited
+filesize        unlimited
+datasize        unlimited
+stacksize       7MB
+coredumpsize    0kB
+addressspace    unlimited
+memorylocked    unlimited
+maxproc         2666
+descriptors     1048576
+    invoices per run, only warnings from the last WAITING_WINDOW_DAYS days, and each
+    invoice is tried at most once every RETRY_COOLDOWN_SECONDS.
+    """
+    settings = get_xero_settings()
+    if not settings or not settings.enable_xero_sync or not settings.get("sync_payments_from_xero"):
+        return 0
+
+    rows = frappe.get_all(
+        "Xero Log",
+        filters={
+            "status": "Warning",
+            "category": "Missing Prerequisites",
+            "xero_entity_type": "Payment",
+            "error_details": ("like", f"{WAITING_MARKER}%"),
+            "timestamp": (">", add_to_date(now_datetime(), days=-WAITING_WINDOW_DAYS)),
+        },
+        fields=["xero_entity_id", "error_details"],
+        order_by="timestamp desc",
+        limit_page_length=5000,
+    )
+
+    waiting = {}  # xero invoice id -> payment ids still without a Payment Entry
+    for row in rows:
+        invoice_id = (row.error_details or "")[len(WAITING_MARKER):].strip()
+        if invoice_id and row.xero_entity_id:
+            waiting.setdefault(invoice_id, set()).add(row.xero_entity_id)
+
+    cache = frappe.cache()
+    retried = 0
+    for invoice_id, payment_ids in waiting.items():
+        if retried >= limit:
+            break
+        if all(frappe.db.exists("Payment Entry", {"xero_payment_id": pid}) for pid in payment_ids):
+            continue  # everything for this invoice has landed
+        ready = any(
+            frappe.db.get_value(dt, {"xero_invoice_id": invoice_id}, "docstatus") == 1
+            for dt in ("Sales Invoice", "Purchase Invoice")
+        )
+        if not ready:
+            continue
+        key = f"xero_payment_retry:{invoice_id}"
+        if cache.get_value(key):
+            continue
+        cache.set_value(key, 1, expires_in_sec=RETRY_COOLDOWN_SECONDS)
+        try:
+            sync_payments_from_xero(invoice_id=invoice_id)
+            retried += 1
+        except Exception:
+            log_xero_error(
+                message=f"Retrying waiting payments for Xero invoice {invoice_id} failed",
+                xero_entity_id=invoice_id,
+                xero_entity_type="Invoice",
+                direction="Xero to ERPNext",
+                error_details=frappe.get_traceback(),
+            )
+    return retried
+
+
+
+WAITING_MARKER = "xero_invoice_id="
+WAITING_WINDOW_DAYS = 30
+RETRY_COOLDOWN_SECONDS = 6 * 60 * 60
+
+
+def _log_payment_waiting(message, xero_payment_id, xero_invoice_id=None, **log_kwargs):
+    """Record a payment that cannot post yet, at most once a day per payment.
+
+    A payment that has to wait (its invoice is missing, still Draft or cancelled) is
+    fetched again on every sweep. Logging it each time buried the dashboard under
+    thousands of identical rows, so the same warning is only written once per 24 hours.
+    """
+    if frappe.db.exists(
+        "Xero Log",
+        {
+            "xero_entity_id": xero_payment_id,
+            "status": "Warning",
+            "message": message,
+            "timestamp": (">", add_to_date(now_datetime(), hours=-24)),
+        },
+    ):
+        return
+    log_xero_error(
+        message=message,
+        status="Warning",
+        xero_entity_id=xero_payment_id,
+        xero_entity_type="Payment",
+        direction="Xero to ERPNext",
+        category="Missing Prerequisites",
+        # The log row is the durable backlog: retry_waiting_payments reads the invoice back from here.
+        error_details=f"{WAITING_MARKER}{xero_invoice_id}" if xero_invoice_id else None,
+        **log_kwargs,
+    )
+
+
 def process_xero_payment(xero_payment_data, settings):
     """Creates or updates an ERPNext Payment Entry from Xero payment data."""
     import json
@@ -712,13 +827,31 @@ def process_xero_payment(xero_payment_data, settings):
             invoice_doctype = "Purchase Invoice"
 
     if not invoice_doc:
-        log_xero_error(
-            message=f"Cannot sync payment from Xero: The invoice this payment is linked to has not been synced to ERPNext yet. Please sync invoices first.",
-            status="Warning",
-            xero_entity_id=xero_payment_id,
-            xero_entity_type="Payment",
-            direction="Xero to ERPNext",
-            category="Missing Prerequisites",
+        _log_payment_waiting(
+            f"Cannot sync payment from Xero: Xero invoice {xero_invoice_id} has not been synced to ERPNext yet. "
+            "Sync invoices first; the payment is picked up on a later run.",
+            xero_payment_id,
+            xero_invoice_id=xero_invoice_id,
+        )
+        return
+
+    # A Payment Entry can only reference a submitted invoice. Inbound invoices stay Draft
+    # unless auto-submit is on, so the payment waits for someone to submit the invoice.
+    # That is an expected wait, not a failure: report it once, with the invoice named.
+    if invoice_doc.docstatus != 1:
+        state = _("Draft") if invoice_doc.docstatus == 0 else _("Cancelled")
+        advice = (
+            "Review and submit the invoice (or turn on Auto submit inbound in Xero Settings); "
+            "the payment is picked up on a later run."
+            if invoice_doc.docstatus == 0
+            else "A cancelled invoice cannot take a payment."
+        )
+        _log_payment_waiting(
+            f"Payment waiting: {invoice_doc.doctype} {invoice_doc.name} is {state} in ERPNext. {advice}",
+            xero_payment_id,
+            xero_invoice_id=xero_invoice_id,
+            erpnext_doc_type=invoice_doc.doctype,
+            erpnext_doc_name=invoice_doc.name,
         )
         return
 

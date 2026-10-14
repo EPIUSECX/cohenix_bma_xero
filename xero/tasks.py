@@ -126,6 +126,12 @@ def check_payments():
         # Single canonical pathway for payment detection
         sync_payments_from_xero()
 
+        # Payments skipped earlier because their invoice was missing or Draft are not offered
+        # again by the incremental sweep; pick up the ones whose invoice is ready now.
+        from .api.xero_payments import retry_waiting_payments
+
+        retry_waiting_payments()
+
         log_xero_error(
             message="Hourly payment check completed successfully.", status="Success"
         )
