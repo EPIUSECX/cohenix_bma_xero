@@ -1465,6 +1465,10 @@ def _process_xero_invoice_locked(
             "xero_sync_status": "Pending",
             "company": company,
             "posting_date": posting_date,
+            # Without this ERPNext treats the posting date as "now" and resets it to the day
+            # of every re-save, so an imported draft ends up on the date it last synced and
+            # posts to the wrong period. Xero's Date is the source of truth.
+            "set_posting_time": 1,
             "due_date": due_date,
             "currency": xero_invoice_data.get("CurrencyCode", "USD"),
             "conversion_rate": flt(xero_invoice_data.get("CurrencyRate", 1.0)),

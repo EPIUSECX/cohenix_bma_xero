@@ -420,6 +420,24 @@ def refresh_access_token():
                 pass
 
 
+def _store_tokens(access_token, refresh_token, expires_in):
+    """Persist a refreshed token pair without the document's optimistic-lock check."""
+    from frappe.utils.password import set_encrypted_password
+
+    for field, value in (("access_token", access_token), ("refresh_token", refresh_token)):
+        set_encrypted_password("Xero Settings", "Xero Settings", value, field)
+        # Frappe keeps the mask in tabSingles; the dashboard reads it to decide "connected".
+        frappe.db.set_single_value("Xero Settings", field, "*" * 5)
+    frappe.db.set_single_value(
+        "Xero Settings",
+        {
+            "token_expiry": add_to_date(now_datetime(), seconds=expires_in),
+            "last_token_refresh": now_datetime(),
+        },
+    )
+    frappe.clear_document_cache("Xero Settings", "Xero Settings")
+
+
 def _do_refresh(settings, log_xero_error, time):
     """Performs the actual token refresh request with bounded retries.
     Must be called while holding the refresh lock."""
@@ -443,15 +461,15 @@ def _do_refresh(settings, log_xero_error, time):
             token_data = response.json()
 
             new_access_token = token_data["access_token"]
-            settings.access_token = new_access_token
-            settings.refresh_token = token_data[
-                "refresh_token"
-            ]  # Xero rotates the refresh token on every use
-            settings.token_expiry = add_to_date(
-                now_datetime(), seconds=token_data["expires_in"]
+            # Xero rotates the refresh token on every use, so it must be stored whatever else is
+            # touching the settings. settings.save() raised TimestampMismatchError whenever another
+            # job had saved Xero Settings in the meantime, and the sweep that needed the token then
+            # aborted. Write the token fields directly instead of saving the whole document.
+            _store_tokens(
+                access_token=new_access_token,
+                refresh_token=token_data["refresh_token"],
+                expires_in=token_data["expires_in"],
             )
-            settings.last_token_refresh = now_datetime()
-            settings.save(ignore_permissions=True)
             # Xero rotates the refresh token on every use; if a later failure
             # in the surrounding job rolled this back, the stored (already
             # invalidated) token would permanently break the connection.

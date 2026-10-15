@@ -18,7 +18,10 @@
 
 				<div class="flex h-12 shrink-0 items-center gap-2 px-5">
 					<h3 class="text-lg font-medium text-ink-gray-9">{{ __("Items") }}</h3>
-					<span class="text-sm text-ink-gray-5">{{ (selectedRun.items || []).length }}</span>
+					<span class="text-sm text-ink-gray-5">
+						{{ selectedRun.item_total || (selectedRun.items || []).length }}
+						<template v-if="selectedRun.item_total > (selectedRun.items || []).length"> · {{ __("showing the first") }} {{ selectedRun.items.length }}</template>
+					</span>
 					<div class="ml-auto flex items-center gap-2">
 						<Button
 							v-if="runFailures(selectedRun).length"
@@ -38,7 +41,12 @@
 				</div>
 
 				<ScrollArea class="min-h-0 flex-1" viewport-class="pb-6 [&>div]:!block">
-					<div v-if="!visibleItems.length" class="px-5 py-10 text-center text-p-sm text-ink-gray-4">
+					<div v-if="selectedRun.detailState === 'loading'" class="px-5 py-10 text-center text-p-sm text-ink-gray-4">{{ __("Loading items…") }}</div>
+					<div v-else-if="selectedRun.detailState === 'error'" class="flex flex-col items-center gap-3 px-5 py-12 text-center text-p-sm text-ink-gray-5">
+						{{ __("Could not load this run's items.") }}
+						<Button variant="outline" :label="__('Retry')" @click="loadRunDetail" />
+					</div>
+					<div v-else-if="!visibleItems.length" class="px-5 py-10 text-center text-p-sm text-ink-gray-4">
 						{{ __("No items logged for this run.") }}
 					</div>
 					<List v-else :columns="['8rem', 'minmax(0,15rem)', 'minmax(0,1fr)', '5rem']" :row-height="44" class="list-row-px-5">
@@ -89,7 +97,11 @@
 					<template #tab-panel="{ tab }">
 						<!-- Needs attention -->
 						<ScrollArea v-if="tab.value === 'attention'" class="min-h-0 flex-1" viewport-class="pb-6 [&>div]:!block">
-							<div v-if="loading" class="px-5 py-10 text-center text-p-sm text-ink-gray-4">{{ __("Checking…") }}</div>
+							<div v-if="state.attention === 'loading'" class="px-5 py-10 text-center text-p-sm text-ink-gray-4">{{ __("Checking…") }}</div>
+							<div v-else-if="state.attention === 'error'" class="flex flex-col items-center gap-3 px-5 py-12 text-center text-p-sm text-ink-gray-5">
+								{{ __("Could not load what needs attention.") }}
+								<Button variant="outline" :label="__('Retry')" @click="load" />
+							</div>
 							<div v-else-if="!attention.length" class="flex flex-col items-center gap-2 px-5 py-16 text-center">
 								<span class="lucide-circle-check size-8 text-ink-green-6" aria-hidden="true" />
 								<div class="text-base font-medium text-ink-gray-9">
@@ -132,7 +144,11 @@
 								<Button class="ml-auto" variant="outline" iconRight="lucide-arrow-up-right" :label="__('All runs')" @click="openLogs()" />
 							</div>
 							<ScrollArea class="min-h-0 flex-1" viewport-class="pb-6 [&>div]:!block">
-								<div v-if="loading" class="px-5 py-10 text-center text-p-sm text-ink-gray-4">{{ __("Loading…") }}</div>
+								<div v-if="state.runs === 'loading'" class="px-5 py-10 text-center text-p-sm text-ink-gray-4">{{ __("Loading…") }}</div>
+								<div v-else-if="state.runs === 'error'" class="flex flex-col items-center gap-3 px-5 py-12 text-center text-p-sm text-ink-gray-5">
+									{{ __("Could not load sync activity.") }}
+									<Button variant="outline" :label="__('Retry')" @click="load" />
+								</div>
 								<div v-else-if="!runs.length" class="px-5 py-16 text-center text-p-sm text-ink-gray-4">
 									{{ __("No sync has run in the last seven days.") }}
 								</div>
@@ -255,7 +271,7 @@
 						class="flex h-[45px] w-full shrink-0 items-center gap-2 border-b border-outline-gray-1 px-5 text-left text-lg font-medium text-ink-gray-9"
 						@click="copyTenant"
 					>
-						<span class="truncate">{{ conn.tenant_id ? shortId(conn.tenant_id, 8) : __("No organisation") }}</span>
+						<span class="truncate">{{ conn.tenant_id ? shortId(conn.tenant_id, 8) : state.conn === "loading" ? "…" : __("No organisation") }}</span>
 						<span v-if="conn.tenant_id" class="lucide-copy size-3.5 shrink-0 text-ink-gray-4" aria-hidden="true" />
 					</button>
 				</Tooltip>
@@ -263,9 +279,9 @@
 				<div class="flex shrink-0 items-center gap-4 border-b border-outline-gray-1 p-5">
 					<Avatar size="3xl" shape="square" :label="tenantName || 'Xero'" image="/assets/xero/images/xero-logo.svg" />
 					<div class="flex min-w-0 flex-col gap-2.5">
-						<div class="truncate text-2xl font-medium text-ink-gray-9" :title="tenantName">{{ tenantName || __("Not connected") }}</div>
+						<div class="truncate text-2xl font-medium text-ink-gray-9" :title="tenantName">{{ state.conn === "loading" ? __("Xero") : tenantName || __("Not connected") }}</div>
 						<div class="flex items-center gap-1.5">
-							<Badge :theme="connected ? 'green' : 'red'" :label="connected ? __('Connected') : __('Not connected')" />
+							<Badge :theme="connBadge.theme" :label="connBadge.label" />
 							<Button :tooltip="__('Test connection')" icon="lucide-plug-zap" :loading="busy === 'test'" :disabled="!connected || !!busy" @click="testConnection" />
 							<Button :tooltip="__('Reconnect')" icon="lucide-refresh-cw" :loading="busy === 'reconnect'" :disabled="!!busy" @click="reconnect" />
 							<Button :tooltip="__('Xero Settings')" icon="lucide-settings" @click="openSettings" />
@@ -353,7 +369,7 @@
 // Xero Sync Dashboard: connection, entity health and recent runs, as a Frappe UI page mounted in the
 // Desk page `xero-sync-dashboard`. Desk draws the page head, so its title indicator, primary action
 // and Refresh button stand in for a toolbar of our own.
-import { ref, computed, onMounted, onBeforeUnmount, watch } from "vue";
+import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from "vue";
 import { Alert, Avatar, Badge, Button, ScrollArea, Tabs, Tooltip } from "frappe-ui";
 import { List, ListCell, ListGroup, ListHeader, ListHeaderCell, ListRow, ListRows } from "frappe-ui/list";
 import CollapsibleSection from "../components/CollapsibleSection.vue";
@@ -379,7 +395,10 @@ const red = "var(--red-500)";
 const amber = "var(--yellow-500)";
 const grey = "var(--gray-400)";
 
-const loading = ref(true);
+// Each read loads and fails on its own: a slow or failing one must never blank the others, and
+// above all must not be mistaken for "Xero is not connected".
+const state = reactive({ conn: "loading", overview: "loading", attention: "loading", runs: "loading" });
+const loading = computed(() => Object.values(state).includes("loading"));
 const busy = ref("");
 const conn = ref({});
 const entities = ref([]);
@@ -397,33 +416,58 @@ let timer = null;
 
 const call = (method, args) => frappe.xcall(API + method, args);
 
-async function load() {
-	loading.value = true;
-	// Three independent reads; a slow one must not hold up the rest, and any
-	// one of them failing must not blank the page.
-	const [overview, attn, attempts] = await Promise.all([
-		call("get_dashboard_overview").catch(() => ({})),
-		call("get_attention_items").catch(() => ({ items: [] })),
-		call("get_last_sync_attempts").catch(() => ({ sync_attempts: [] })),
-	]);
+let loadSeq = 0;
 
-	conn.value = overview.connection || {};
-	entities.value = overview.entity_status || [];
-	health.value = overview.health || {};
-	recentErrors.value = (overview.recent_errors && overview.recent_errors.errors) || [];
-	attention.value = attn.items || [];
-	runs.value = attempts.sync_attempts || [];
+function load() {
+	const seq = ++loadSeq;
+	const read = (key, method, apply) => {
+		// Keep showing what is already there during a refresh; only a first load shows a spinner.
+		if (state[key] !== "ok") state[key] = "loading";
+		return call(method)
+			.then((r) => {
+				if (seq !== loadSeq) return;
+				if (!r || r.error) throw new Error((r && r.error) || "empty reply");
+				apply(r);
+				state[key] = "ok";
+			})
+			.catch(() => {
+				if (seq === loadSeq) state[key] = "error";
+			});
+	};
 
-	// Keep the drill-in pinned to the same run across a refresh.
-	if (selectedRun.value) {
-		const key = runKey(selectedRun.value);
-		selectedRun.value = runs.value.find((r) => runKey(r) === key) || null;
-	}
-	loading.value = false;
-	if (!tabChosen) {
-		tabChosen = true;
-		activeTab.value = attention.value.length ? "attention" : "activity";
-	}
+	return Promise.all([
+		// Settings only, so the connection card is answered at once.
+		read("conn", "get_connection_status", (r) => (conn.value = r)),
+		read("overview", "get_dashboard_overview", (r) => {
+			entities.value = r.entity_status || [];
+			health.value = r.health || {};
+			recentErrors.value = (r.recent_errors && r.recent_errors.errors) || [];
+		}),
+		read("attention", "get_attention_items", (r) => (attention.value = r.items || [])),
+		read("runs", "get_last_sync_attempts", (r) => {
+			runs.value = r.sync_attempts || [];
+			// Keep the drill-in pinned to the same run across a refresh, with the detail already loaded.
+			const prev = selectedRun.value;
+			if (prev) {
+				const next = runs.value.find((x) => runKey(x) === runKey(prev));
+				selectedRun.value = next
+					? {
+							...next,
+							items: prev.items,
+							item_total: prev.item_total,
+							failure_summary: prev.failure_summary,
+							actionable_recommendations: prev.actionable_recommendations,
+							detailState: prev.detailState,
+						}
+					: null;
+			}
+		}),
+	]).then(() => {
+		if (!tabChosen && state.attention !== "loading") {
+			tabChosen = true;
+			activeTab.value = attention.value.length ? "attention" : "activity";
+		}
+	});
 }
 
 onMounted(() => {
@@ -441,6 +485,11 @@ const connected = computed(() => !!conn.value.connected);
 // The controller falls back to the literal string "Not Connected" for an
 // unauthorised site; rendering that as an organisation name put the same words
 // in the toolbar twice.
+const connBadge = computed(() => {
+	if (state.conn === "loading") return { theme: "gray", label: __("Checking…") };
+	if (state.conn === "error") return { theme: "amber", label: __("Unknown") };
+	return connected.value ? { theme: "green", label: __("Connected") } : { theme: "red", label: __("Not connected") };
+});
 const tenantName = computed(() => {
 	const name = conn.value.tenant_name;
 	return connected.value && name && name !== "Not Connected" ? name : "";
@@ -486,7 +535,8 @@ const coverage = computed(() => {
 const failing = computed(() => entities.value.filter((e) => e.errors > 0));
 
 const overallLabel = computed(() => {
-	if (loading.value && !entities.value.length) return __("Loading");
+	if (state.conn === "loading") return __("Loading");
+	if (state.conn === "error") return __("Unknown");
 	if (!connected.value) return __("Not connected");
 	if (attention.value.length) return __("Needs attention");
 	return __("Healthy");
@@ -504,6 +554,16 @@ const overallColour = computed(() => {
 
 // One banner, for the thing that stops everything else working.
 const banner = computed(() => {
+	if (state.conn === "loading") return null;
+	if (state.conn === "error") {
+		return {
+			tone: "warn",
+			title: __("Could not check the Xero connection"),
+			text: __("The server did not answer. That is not the same as being disconnected."),
+			label: __("Retry"),
+			act: load,
+		};
+	}
 	if (!connected.value) {
 		return {
 			tone: "bad",
@@ -611,7 +671,25 @@ function openLogDoc(name) {
 }
 function openRun(run) {
 	failuresOnly.value = false;
-	selectedRun.value = run;
+	selectedRun.value = { ...run, items: [], item_total: 0, failure_summary: [], actionable_recommendations: [], detailState: "loading" };
+	loadRunDetail();
+}
+// A run's items and advice are fetched when it is opened, not with the list.
+async function loadRunDetail() {
+	const open = selectedRun.value;
+	if (!open) return;
+	const key = runKey(open);
+	try {
+		const d = await call("get_run_detail", {
+			sync_batch_id: open.sync_batch_id || null,
+			sync_time: open.sync_time,
+			direction: open.sync_direction,
+		});
+		if (!selectedRun.value || runKey(selectedRun.value) !== key) return;
+		selectedRun.value = { ...selectedRun.value, ...d, detailState: d.error ? "error" : "ok" };
+	} catch (e) {
+		if (selectedRun.value && runKey(selectedRun.value) === key) selectedRun.value = { ...selectedRun.value, detailState: "error" };
+	}
 }
 function pickEntity(e) {
 	selectedEntity.value = selectedEntity.value === e.entity ? null : e.entity;
@@ -674,7 +752,10 @@ const retryLogs = (names) =>
 	guard("retry", async () => {
 		for (const name of names) await call("retry_failed_job", { log_name: name });
 		return { success: true };
-	}, () => frappe.show_alert({ message: `${names.length} ${__("queued for retry")}`, indicator: "blue" }));
+	}, () => {
+		frappe.show_alert({ message: `${names.length} ${__("queued for retry")}`, indicator: "blue" });
+		loadRunDetail();
+	});
 
 function runAction(action) {
 	if (!action) return;
@@ -777,11 +858,12 @@ function copyTenant() {
 function syncHead() {
 	const page = props.page;
 	if (!page) return;
-	const colour = !connected.value ? "red" : attention.value.length ? "orange" : "green";
-	page.set_indicator(overallLabel.value, loading.value && !entities.value.length ? "gray" : colour);
+	const colour =
+		state.conn !== "ok" ? "gray" : !connected.value ? "red" : attention.value.length ? "orange" : "green";
+	page.set_indicator(overallLabel.value, colour);
 	page.btn_primary?.prop("disabled", !connected.value || !!busy.value);
 }
-watch([connected, busy, loading, attention], syncHead);
+watch([connected, busy, loading, attention, () => state.conn], syncHead);
 
 onMounted(() => {
 	fit();

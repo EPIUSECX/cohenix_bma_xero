@@ -22,34 +22,50 @@ def _rq_jobs_queryable():
         return False
 
 
+# How far back an unresolved error still counts as outstanding on the dashboard.
+RECENT_ERROR_WINDOW_DAYS = 30
+
+
+def _connection_status():
+    """The connection card: who we are connected to, token expiry and the sync switches."""
+    settings = frappe.get_single("Xero Settings")
+    return {
+        "connected": bool(settings.access_token and settings.tenant_id),
+        "tenant_name": settings.tenant_name or "Not Connected",
+        "tenant_id": settings.tenant_id,
+        "last_sync": settings.last_sync_time,
+        "sync_enabled": settings.enable_xero_sync,
+        "sync_to_xero_enabled": settings.enable_sync_to_xero,
+        "sync_from_xero_enabled": settings.enable_sync_from_xero,
+        "token_expiry": settings.token_expiry,
+        "last_token_refresh": settings.last_token_refresh,
+        # Xero refresh tokens live 60 days from the last refresh and roll
+        # forward on every call, so this is the date the connection dies
+        # if nothing syncs in the meantime.
+        "refresh_token_expiry": (
+            add_days(get_datetime(settings.last_token_refresh), REFRESH_TOKEN_DAYS)
+            if settings.last_token_refresh
+            else None
+        ),
+        "auto_sync": settings.enable_auto_sync,
+        "sync_frequency": settings.sync_frequency,
+    }
+
+
+@frappe.whitelist()
+def get_connection_status():
+    """Settings only, no log queries: the dashboard shows it first and never waits on the rest."""
+    require_xero_manager()
+    return _connection_status()
+
+
 @frappe.whitelist()
 def get_dashboard_overview():
     """Get comprehensive dashboard overview with all key metrics"""
     require_xero_manager()
     try:
         # Get Xero connection status
-        settings = frappe.get_single("Xero Settings")
-        connection_status = {
-            "connected": bool(settings.access_token and settings.tenant_id),
-            "tenant_name": settings.tenant_name or "Not Connected",
-            "tenant_id": settings.tenant_id,
-            "last_sync": settings.last_sync_time,
-            "sync_enabled": settings.enable_xero_sync,
-            "sync_to_xero_enabled": settings.enable_sync_to_xero,
-            "sync_from_xero_enabled": settings.enable_sync_from_xero,
-            "token_expiry": settings.token_expiry,
-            "last_token_refresh": settings.last_token_refresh,
-            # Xero refresh tokens live 60 days from the last refresh and roll
-            # forward on every call, so this is the date the connection dies
-            # if nothing syncs in the meantime.
-            "refresh_token_expiry": (
-                add_days(get_datetime(settings.last_token_refresh), REFRESH_TOKEN_DAYS)
-                if settings.last_token_refresh
-                else None
-            ),
-            "auto_sync": settings.enable_auto_sync,
-            "sync_frequency": settings.sync_frequency,
-        }
+        connection_status = _connection_status()
         
         # Get sync statistics for last 24 hours
         yesterday = add_days(now_datetime(), -1)
@@ -314,15 +330,23 @@ def get_recent_errors(limit=10):
                    COALESCE(xero_entity_id, '') AS xero_entity_id,
                    COALESCE(direction, 'Unknown') AS direction
             FROM (
-                SELECT *,
+                SELECT l.*,
                        ROW_NUMBER() OVER (
-                           PARTITION BY erpnext_doc_type, erpnext_doc_name
-                           ORDER BY timestamp DESC, name DESC
+                           PARTITION BY l.erpnext_doc_type, l.erpnext_doc_name
+                           ORDER BY l.timestamp DESC, l.name DESC
                        ) AS rn
-                FROM `tabXero Log`
-                WHERE status IN ('Success', 'Error')
-                  AND erpnext_doc_type IS NOT NULL
-                  AND erpnext_doc_name IS NOT NULL AND erpnext_doc_name != 'Unknown'
+                FROM `tabXero Log` l
+                -- Only documents that have errored inside the window need their history ranked.
+                -- Ranking every row in the log made this scan the whole table on each page load.
+                JOIN (
+                    SELECT DISTINCT erpnext_doc_type AS t, erpnext_doc_name AS n
+                    FROM `tabXero Log`
+                    WHERE status = 'Error'
+                      AND timestamp >= %(window)s
+                      AND erpnext_doc_type IS NOT NULL
+                      AND erpnext_doc_name IS NOT NULL AND erpnext_doc_name != 'Unknown'
+                ) e ON e.t = l.erpnext_doc_type AND e.n = l.erpnext_doc_name
+                WHERE l.status IN ('Success', 'Error')
             ) latest
             WHERE rn = 1 AND status = 'Error'
         )
@@ -339,11 +363,11 @@ def get_recent_errors(limit=10):
             FROM `tabXero Log`
             WHERE status = 'Error'
               AND (erpnext_doc_type IS NULL OR erpnext_doc_name IS NULL OR erpnext_doc_name = 'Unknown')
-              AND timestamp >= %s
+              AND timestamp >= %(cutoff)s
         )
         ORDER BY timestamp DESC
-        LIMIT %s
-    """, (cutoff, limit), as_dict=True)
+        LIMIT %(limit)s
+    """, {"cutoff": cutoff, "limit": limit, "window": add_days(now_datetime(), -RECENT_ERROR_WINDOW_DAYS)}, as_dict=True)
     
     # Categorize errors and clean up data
     error_categories = {}
@@ -1472,13 +1496,19 @@ def get_recommendations(sync_time, direction):
 
 
 @frappe.whitelist()
-def get_last_sync_attempts():
+def get_last_sync_attempts(include_details=0):
     """Get detailed breakdown of last sync attempts with item-level status.
     
     Uses sync_batch_id to group logs from the same sync operation, preventing
     different sync operations (e.g. Contacts then Items) from merging together.
     Falls back to timestamp-based grouping for older logs without batch IDs.
+
+    The list carries only each run's counts. A run's items, failure summary and
+    recommendations come from get_run_detail when someone opens it: a sweep can
+    log thousands of rows, and fetching them for every run made the page wait on
+    data nobody had asked to see. Pass include_details=1 for the old shape.
     """
+    include_details = cint(include_details)
     require_xero_manager()
     try:
         # Get sync attempts from the last 7 days
@@ -1515,7 +1545,7 @@ def get_last_sync_attempts():
         
         for batch in batched_syncs:
             # Get all log entries for this batch
-            items = frappe.db.sql("""
+            items = [] if not include_details else frappe.db.sql("""
                 SELECT
                     name as log_name,
                     status,
@@ -1549,8 +1579,8 @@ def get_last_sync_attempts():
                 sync_label = info_log.replace("Manual sync started: ", "")
             
             # Get failure summary and recommendations using batch_id
-            failure_summary = get_failure_summary_by_batch(batch.sync_batch_id)
-            recommendations = get_recommendations_by_batch(batch.sync_batch_id)
+            failure_summary = get_failure_summary_by_batch(batch.sync_batch_id) if include_details else []
+            recommendations = get_recommendations_by_batch(batch.sync_batch_id) if include_details else []
             
             sync_attempts.append({
                 "sync_batch_id": batch.sync_batch_id,
@@ -1601,7 +1631,7 @@ def get_last_sync_attempts():
             """, (seven_days_ago, remaining_limit), as_dict=True)
             
             for batch in legacy_batches:
-                items = frappe.db.sql("""
+                items = [] if not include_details else frappe.db.sql("""
                     SELECT
                         name as log_name,
                         status,
@@ -1625,8 +1655,8 @@ def get_last_sync_attempts():
                 overall_status = _determine_overall_status(batch)
                 entities_list = batch.entities_synced.split(', ') if batch.entities_synced else []
                 
-                failure_summary = get_failure_summary(batch.sync_time, batch.direction)
-                recommendations = get_recommendations(batch.sync_time, batch.direction)
+                failure_summary = get_failure_summary(batch.sync_time, batch.direction) if include_details else []
+                recommendations = get_recommendations(batch.sync_time, batch.direction) if include_details else []
                 
                 sync_attempts.append({
                     "sync_batch_id": None,
@@ -1678,6 +1708,68 @@ def get_last_sync_attempts():
             "failed_attempts": 0,
             "in_progress_attempts": 0
         }
+
+
+@frappe.whitelist()
+def get_run_detail(sync_batch_id=None, sync_time=None, direction=None, limit=500):
+    """One run's items, failure summary and recommendations, loaded when it is opened.
+
+    A run is a sync_batch_id, or for older logs without one a minute plus a direction
+    (the same grouping get_last_sync_attempts uses). Items are capped at cputime         unlimited
+filesize        unlimited
+datasize        unlimited
+stacksize       7MB
+coredumpsize    0kB
+addressspace    unlimited
+memorylocked    unlimited
+maxproc         2666
+descriptors     1048576
+    with the true count returned, so a huge sweep cannot hang the page.
+    """
+    require_xero_manager()
+    limit = max(1, min(cint(limit) or 500, 2000))
+    cols = """name as log_name, status, message, erpnext_doc_type, erpnext_doc_name,
+                   xero_entity_id, timestamp, error_details, processing_time"""
+    try:
+        if sync_batch_id:
+            where = "sync_batch_id = %(batch)s"
+            args = {"batch": sync_batch_id}
+            failure_summary = get_failure_summary_by_batch(sync_batch_id)
+            recommendations = get_recommendations_by_batch(sync_batch_id)
+        else:
+            start = get_datetime(sync_time)
+            # A half-open range on the raw column, so the timestamp index can be used.
+            where = (
+                "timestamp >= %(start)s AND timestamp < %(end)s"
+                " AND COALESCE(direction, 'Unknown') = %(direction)s"
+                " AND (sync_batch_id IS NULL OR sync_batch_id = '')"
+            )
+            args = {"start": start, "end": add_to_date(start, minutes=1), "direction": direction or "Unknown"}
+            failure_summary = get_failure_summary(sync_time, direction)
+            recommendations = get_recommendations(sync_time, direction)
+
+        base = (
+            f" FROM `tabXero Log` WHERE {where}"
+            " AND erpnext_doc_type IS NOT NULL AND erpnext_doc_type != 'Unknown'"
+            " AND status IN ('Success', 'Error', 'Warning')"
+        )
+        total = frappe.db.sql("SELECT COUNT(*)" + base, args)[0][0]
+        # Failures first, so a capped list still shows what needs attention.
+        items = frappe.db.sql(
+            f"SELECT {cols}" + base
+            + " ORDER BY (status = 'Error') DESC, (status = 'Warning') DESC, timestamp ASC LIMIT %(limit)s",
+            {**args, "limit": limit},
+            as_dict=True,
+        )
+        return {
+            "items": items,
+            "item_total": total,
+            "failure_summary": failure_summary,
+            "actionable_recommendations": recommendations,
+        }
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "Xero Run Detail Error")
+        return {"items": [], "item_total": 0, "failure_summary": [], "actionable_recommendations": [], "error": True}
 
 
 def _determine_overall_status(batch):
@@ -2105,32 +2197,35 @@ def _outstanding_errors(cutoff):
         SELECT name, message, erpnext_doc_type, erpnext_doc_name,
                timestamp, direction, attempts
         FROM (
-            SELECT name,
-                   COALESCE(message, '') AS message,
-                   erpnext_doc_type,
-                   erpnext_doc_name,
-                   timestamp,
-                   COALESCE(direction, 'Unknown') AS direction,
-                   status,
+            SELECT l.name,
+                   COALESCE(l.message, '') AS message,
+                   l.erpnext_doc_type,
+                   l.erpnext_doc_name,
+                   l.timestamp,
+                   COALESCE(l.direction, 'Unknown') AS direction,
+                   l.status,
                    COUNT(*) OVER (
-                       PARTITION BY erpnext_doc_type, erpnext_doc_name
+                       PARTITION BY l.erpnext_doc_type, l.erpnext_doc_name
                    ) AS attempts,
                    ROW_NUMBER() OVER (
-                       PARTITION BY erpnext_doc_type, erpnext_doc_name
-                       ORDER BY timestamp DESC, name DESC
+                       PARTITION BY l.erpnext_doc_type, l.erpnext_doc_name
+                       ORDER BY l.timestamp DESC, l.name DESC
                    ) AS rn
-            FROM `tabXero Log`
-            WHERE timestamp >= %s
-              AND erpnext_doc_type IS NOT NULL
-              AND erpnext_doc_type != 'Unknown'
-              AND erpnext_doc_name IS NOT NULL
-              AND erpnext_doc_name != 'Unknown'
-              AND status IN ('Success', 'Error')
+            FROM `tabXero Log` l
+            JOIN (
+                SELECT DISTINCT erpnext_doc_type AS t, erpnext_doc_name AS n
+                FROM `tabXero Log`
+                WHERE status = 'Error' AND timestamp >= %s
+                  AND erpnext_doc_type IS NOT NULL AND erpnext_doc_type != 'Unknown'
+                  AND erpnext_doc_name IS NOT NULL AND erpnext_doc_name != 'Unknown'
+            ) e ON e.t = l.erpnext_doc_type AND e.n = l.erpnext_doc_name
+            WHERE l.timestamp >= %s
+              AND l.status IN ('Success', 'Error')
         ) ranked
         WHERE rn = 1 AND status = 'Error'
         ORDER BY timestamp DESC
         LIMIT %s
-    """, (cutoff, MAX_OUTSTANDING_SCANNED), as_dict=True)
+    """, (cutoff, cutoff, MAX_OUTSTANDING_SCANNED), as_dict=True)
 
 
 def _unmapped_account_codes(cutoff):

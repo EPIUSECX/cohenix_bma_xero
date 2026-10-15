@@ -928,6 +928,8 @@ def process_xero_credit_note(xero_cn_data, settings):
             "is_return": 1,  # Mark as return invoice
             "company": company,
             "posting_date": parse_xero_date(xero_cn_data.get("Date")),
+            # Keep Xero's date: without this ERPNext resets the posting date to the day of each save.
+            "set_posting_time": 1,
             "currency": cn_currency,
             "conversion_rate": cn_rate,
             "remarks": remarks,
