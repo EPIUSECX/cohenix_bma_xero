@@ -954,51 +954,71 @@ def sync_all_entities():
                 "error": "Xero sync is disabled in settings"
             }
         
-        # Check directional sync settings once to avoid redundant error messages
-        sync_to_xero_enabled = settings.enable_sync_to_xero
-        sync_from_xero_enabled = settings.enable_sync_from_xero
-        
-        # Show single notification if a direction is disabled
-        if not sync_to_xero_enabled:
-            frappe.msgprint(
-                _("Sync to Xero (ERPNext → Xero) is disabled. Only inbound syncs will be attempted."),
-                title=_("Sync Direction Disabled"),
-                indicator="orange"
-            )
-        
-        if not sync_from_xero_enabled:
-            frappe.msgprint(
-                _("Sync from Xero (Xero → ERPNext) is disabled. Only outbound syncs will be attempted."),
-                title=_("Sync Direction Disabled"),
-                indicator="orange"
-            )
-        
-        # All entities are ERPNext → Xero (outbound) syncs
-        entities = [
-            "Sales Invoice", "Purchase Invoice", "Payment Entry",
-            "Customer", "Supplier", "Item"
+        sync_to_xero_enabled = bool(settings.enable_sync_to_xero)
+        sync_from_xero_enabled = bool(settings.enable_sync_from_xero)
+
+        if not sync_to_xero_enabled and not sync_from_xero_enabled:
+            return {
+                "success": False,
+                "error": "Both sync directions are switched off in Xero Settings",
+            }
+
+        # Each entry is (entity to trigger, the setting that enables it). Inbound entities are
+        # listed in dependency order: accounts and contacts before the invoices that refer to
+        # them, payments last. Only the directions that are switched on are queued, so a site
+        # that syncs one way no longer fails on the other.
+        inbound = [
+            ("Xero Accounts", "sync_chart_of_accounts"),
+            ("Xero Contacts", "sync_contacts_from_xero"),
+            ("Xero Items", "sync_items_from_xero"),
+            ("Xero Invoices", ("sync_invoices_from_xero", "sync_bills_from_xero")),
+            ("Xero Credit Notes", "sync_credit_notes_from_xero"),
+            ("Xero Payments", "sync_payments_from_xero"),
         ]
-        
+        outbound = [
+            ("Customer", "sync_contacts_to_xero"),
+            ("Supplier", "sync_contacts_to_xero"),
+            ("Item", "sync_items_to_xero"),
+            ("Sales Invoice", "sync_invoices_to_xero"),
+            ("Purchase Invoice", "sync_bills_to_xero"),
+            ("Payment Entry", "sync_payments_to_xero"),
+        ]
+
+        def enabled(flag):
+            flags = flag if isinstance(flag, tuple) else (flag,)
+            return any(settings.get(f) for f in flags)
+
+        plan = []
+        if sync_from_xero_enabled:
+            plan += [e for e, flag in inbound if enabled(flag)]
+        if sync_to_xero_enabled:
+            plan += [e for e, flag in outbound if enabled(flag)]
+
         job_count = 0
         skipped_count = 0
-        
-        for entity in entities:
-            # Skip if sync to Xero is disabled (all these entities are outbound)
-            if not sync_to_xero_enabled:
-                skipped_count += 1
-                continue
-            
+        failed = []
+
+        for entity in plan:
             try:
                 result = trigger_manual_sync(entity)
-                if result.get('success'):
+                if result and result.get("success"):
                     job_count += 1
+                else:
+                    failed.append(entity)
             except Exception as e:
                 frappe.log_error(f"Failed to trigger sync for {entity}: {str(e)}")
+                failed.append(entity)
                 continue
-        
+
+        if not plan:
+            return {
+                "success": False,
+                "error": "No entity is switched on for the directions that are enabled",
+            }
+
         message = f"Queued {job_count} sync jobs"
-        if skipped_count > 0:
-            message += f" ({skipped_count} skipped due to disabled sync direction)"
+        if failed:
+            message += f" ({len(failed)} could not be queued: {', '.join(failed)})"
         
         return {
             "success": True,
