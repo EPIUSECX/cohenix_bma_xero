@@ -4,7 +4,7 @@
 import frappe
 from ..utils.transactions import commit_checkpoint, commit_error_state, commit_external_outcome
 from frappe import _
-from frappe.utils import flt, getdate
+from frappe.utils import cint, flt, getdate
 import hashlib
 import json
 import re
@@ -63,10 +63,19 @@ def maybe_submit_inbound(doc, settings, xero_entity_id, xero_entity_type, xero_s
             direction="Xero to ERPNext",
         )
         return False
+    # Staged roll-out: site_config xero_auto_submit_limit caps how many documents one run may post
+    # to the GL (unset or 0 means no cap). Posting thousands of historic invoices is not easily
+    # undone, so a first import can be released in checked batches; the rest stay Draft and are
+    # picked up on the next run.
+    limit = cint(frappe.conf.get("xero_auto_submit_limit") or 0)
+    posted = cint(frappe.flags.get("xero_auto_submitted") or 0)
+    if limit and posted >= limit:
+        return False
     try:
         # Don't bounce the document straight back out to Xero on submit hooks.
         doc.flags.ignore_xero_sync = True
         doc.submit()
+        frappe.flags.xero_auto_submitted = posted + 1
         frappe.db.set_value(
             doc.doctype, doc.name, "xero_sync_status", "Synced", update_modified=False
         )
@@ -1370,6 +1379,110 @@ def process_xero_invoice(xero_invoice_data, settings):
         cache.delete(lock_key)
 
 
+def _populate_inbound_lines(
+    doc, xero_invoice_data, settings, erpnext_doctype, xero_invoice_id, invoice_number
+):
+    """Fill an inbound invoice's lines and tax rows from Xero's payload.
+
+    Returns False when no line could be built (every account unmapped), so the caller skips
+    the document. Shared by the create path and by the repair of drafts imported before the
+    tax mapping worked, so both build exactly the same lines.
+    """
+    # Add line items. ERPNext rates are tax-exclusive, so Inclusive
+    # Xero documents must have the per-line tax netted out — otherwise
+    # the reconstructed taxes row double-counts it and the total
+    # reconciliation below refuses the document.
+    inclusive = xero_invoice_data.get("LineAmountTypes") == "Inclusive"
+    line_items = xero_invoice_data.get("LineItems", [])
+    for line in line_items:
+        # Get item code if available
+        item_code = get_or_create_item_from_xero_code(
+            line.get("ItemCode"), line.get("Description"), settings
+        )
+
+        # Get account mapping
+        account = get_erpnext_account_from_xero_code(
+            line.get("AccountCode"), settings, erpnext_doctype
+        )
+
+        if not account:
+            # Skip line if account not mapped
+            log_xero_error(
+                message=f"Skipping line item in invoice {invoice_number}: No account mapping for Xero AccountCode {line.get('AccountCode')}",
+                status="Warning",
+                xero_entity_id=xero_invoice_id,
+                xero_entity_type="Invoice",
+                erpnext_doc_type=erpnext_doctype,
+                direction="Xero to ERPNext",
+                category="Mapping Errors",
+            )
+            continue
+
+        # Build line item dict (rate always tax-exclusive)
+        net_rate = inbound_line_rate(line, inclusive)
+        item_dict = {
+            "description": line.get("Description", "Item from Xero"),
+            "qty": flt(line.get("Quantity", 1)),
+            "rate": net_rate,
+            "amount": flt(net_rate * flt(line.get("Quantity", 1))),
+        }
+
+        # Add item code if found. item_name is a 140-char field while
+        # Xero descriptions run to 4000 — truncate; the full text is
+        # kept in description.
+        if item_code:
+            item_dict["item_code"] = item_code
+            item_dict["item_name"] = (line.get("Description") or "")[:140] or None
+        else:
+            item_dict["item_name"] = (line.get("Description") or "Xero Item")[:140]
+            # C3: description-only lines (the normal shape of a
+            # hand-entered Xero invoice) have no Item to backfill the
+            # mandatory UOM from — without these two fields every such
+            # invoice failed with the bare MandatoryError "uom".
+            item_dict["uom"] = _default_uom()
+            item_dict["conversion_factor"] = 1
+
+        # Add account
+        if erpnext_doctype == "Sales Invoice":
+            item_dict["income_account"] = account
+        else:
+            item_dict["expense_account"] = account
+
+        # Add tax template if mapped
+        tax_template = get_erpnext_tax_from_xero_type(
+            line.get("TaxType"), settings
+        )
+        if tax_template:
+            item_dict["item_tax_template"] = tax_template
+
+        # Add discount if present
+        discount_rate = flt(line.get("DiscountRate", 0))
+        if discount_rate > 0:
+            item_dict["discount_percentage"] = discount_rate
+
+        doc.append("items", item_dict)
+
+    # Check if we have at least one line item
+    if not doc.items:
+        log_xero_error(
+            message=f"Skipping Xero invoice {invoice_number}: No valid line items (all skipped due to missing account mappings)",
+            status="Warning",
+            xero_entity_id=xero_invoice_id,
+            xero_entity_type="Invoice",
+            erpnext_doc_type=erpnext_doctype,
+            direction="Xero to ERPNext",
+            category="Mapping Errors",
+        )
+        return False
+
+    # 6b: reconstruct tax so the ERPNext total matches Xero. Imported
+    # invoices otherwise carry only net line amounts and omit VAT, which
+    # posts an under-taxed invoice to the GL. Safe no-op when no tax
+    # account can be resolved (6a then keeps the doc as a Draft).
+    apply_inbound_taxes(doc, xero_invoice_data, erpnext_doctype)
+    return True
+
+
 def _process_xero_invoice_locked(
     xero_invoice_data, settings, erpnext_doctype, xero_invoice_id, invoice_number
 ):
@@ -1544,6 +1657,16 @@ def _process_xero_invoice_locked(
                 )
                 return "skipped"
             doc.update(erpnext_data)
+            # A draft imported before tax mapping worked carries no tax rows, so its total is short
+            # by the VAT. Rebuild its lines from Xero (same code as a fresh import) instead of just
+            # refreshing the header, otherwise it can never reconcile and never post.
+            if flt(xero_invoice_data.get("TotalTax", 0)) > 0 and not doc.get("taxes"):
+                doc.set("items", [])
+                doc.set("taxes", [])
+                if not _populate_inbound_lines(
+                    doc, xero_invoice_data, settings, erpnext_doctype, xero_invoice_id, invoice_number
+                ):
+                    return "skipped"
             doc.save(ignore_permissions=True)
             log_message = f"Updated {erpnext_doctype} {erpnext_doc_name} from Xero Invoice {xero_invoice_id}"
         else:
@@ -1551,98 +1674,10 @@ def _process_xero_invoice_locked(
             doc = frappe.new_doc(erpnext_doctype)
             doc.update(erpnext_data)
 
-            # Add line items. ERPNext rates are tax-exclusive, so Inclusive
-            # Xero documents must have the per-line tax netted out — otherwise
-            # the reconstructed taxes row double-counts it and the total
-            # reconciliation below refuses the document.
-            inclusive = xero_invoice_data.get("LineAmountTypes") == "Inclusive"
-            line_items = xero_invoice_data.get("LineItems", [])
-            for line in line_items:
-                # Get item code if available
-                item_code = get_or_create_item_from_xero_code(
-                    line.get("ItemCode"), line.get("Description"), settings
-                )
-
-                # Get account mapping
-                account = get_erpnext_account_from_xero_code(
-                    line.get("AccountCode"), settings, erpnext_doctype
-                )
-
-                if not account:
-                    # Skip line if account not mapped
-                    log_xero_error(
-                        message=f"Skipping line item in invoice {invoice_number}: No account mapping for Xero AccountCode {line.get('AccountCode')}",
-                        status="Warning",
-                        xero_entity_id=xero_invoice_id,
-                        xero_entity_type="Invoice",
-                        erpnext_doc_type=erpnext_doctype,
-                        direction="Xero to ERPNext",
-                        category="Mapping Errors",
-                    )
-                    continue
-
-                # Build line item dict (rate always tax-exclusive)
-                net_rate = inbound_line_rate(line, inclusive)
-                item_dict = {
-                    "description": line.get("Description", "Item from Xero"),
-                    "qty": flt(line.get("Quantity", 1)),
-                    "rate": net_rate,
-                    "amount": flt(net_rate * flt(line.get("Quantity", 1))),
-                }
-
-                # Add item code if found. item_name is a 140-char field while
-                # Xero descriptions run to 4000 — truncate; the full text is
-                # kept in description.
-                if item_code:
-                    item_dict["item_code"] = item_code
-                    item_dict["item_name"] = (line.get("Description") or "")[:140] or None
-                else:
-                    item_dict["item_name"] = (line.get("Description") or "Xero Item")[:140]
-                    # C3: description-only lines (the normal shape of a
-                    # hand-entered Xero invoice) have no Item to backfill the
-                    # mandatory UOM from — without these two fields every such
-                    # invoice failed with the bare MandatoryError "uom".
-                    item_dict["uom"] = _default_uom()
-                    item_dict["conversion_factor"] = 1
-
-                # Add account
-                if erpnext_doctype == "Sales Invoice":
-                    item_dict["income_account"] = account
-                else:
-                    item_dict["expense_account"] = account
-
-                # Add tax template if mapped
-                tax_template = get_erpnext_tax_from_xero_type(
-                    line.get("TaxType"), settings
-                )
-                if tax_template:
-                    item_dict["item_tax_template"] = tax_template
-
-                # Add discount if present
-                discount_rate = flt(line.get("DiscountRate", 0))
-                if discount_rate > 0:
-                    item_dict["discount_percentage"] = discount_rate
-
-                doc.append("items", item_dict)
-
-            # Check if we have at least one line item
-            if not doc.items:
-                log_xero_error(
-                    message=f"Skipping Xero invoice {invoice_number}: No valid line items (all skipped due to missing account mappings)",
-                    status="Warning",
-                    xero_entity_id=xero_invoice_id,
-                    xero_entity_type="Invoice",
-                    erpnext_doc_type=erpnext_doctype,
-                    direction="Xero to ERPNext",
-                    category="Mapping Errors",
-                )
+            if not _populate_inbound_lines(
+                doc, xero_invoice_data, settings, erpnext_doctype, xero_invoice_id, invoice_number
+            ):
                 return "skipped"
-
-            # 6b: reconstruct tax so the ERPNext total matches Xero. Imported
-            # invoices otherwise carry only net line amounts and omit VAT, which
-            # posts an under-taxed invoice to the GL. Safe no-op when no tax
-            # account can be resolved (6a then keeps the doc as a Draft).
-            apply_inbound_taxes(doc, xero_invoice_data, erpnext_doctype)
 
             doc.insert(ignore_permissions=True)
             erpnext_doc_name = doc.name
