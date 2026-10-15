@@ -1059,6 +1059,14 @@ def process_xero_payment(xero_payment_data, settings):
             # Check if existing payment is submitted
             existing_doc = frappe.get_doc("Payment Entry", erpnext_doc_name)
             if existing_doc.docstatus == 1:
+                # An earlier attempt may have failed (for example before the fiscal year existed)
+                # and left the status on Error; the document is posted now, so say so.
+                if existing_doc.get("xero_sync_status") != "Synced":
+                    frappe.db.set_value(
+                        "Payment Entry", erpnext_doc_name, "xero_sync_status", "Synced",
+                        update_modified=False,
+                    )
+                    commit_checkpoint()
                 # Cannot modify submitted document - log and skip
                 log_xero_error(
                     message=f"Cannot update Payment Entry {erpnext_doc_name}: Document is already submitted. Skipping update.",
@@ -1093,6 +1101,9 @@ def process_xero_payment(xero_payment_data, settings):
             else:
                 log_message = f"Created Payment Entry {erpnext_doc_name} from Xero Payment {xero_payment_id} (Draft - please review and submit)"
 
+        frappe.db.set_value(
+            "Payment Entry", erpnext_doc_name, "xero_sync_status", "Synced", update_modified=False
+        )
         commit_checkpoint()
         log_xero_error(
             message=log_message,
