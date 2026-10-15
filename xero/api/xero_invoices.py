@@ -1128,15 +1128,17 @@ def get_erpnext_tax_from_xero_type(xero_tax_type, settings=None):
     if not settings:
         settings = get_xero_settings()
 
-    # Get existing mapping (ERPNext → Xero)
-    tax_map = settings.get_tax_map()
-
-    # Reverse lookup. Mapping keys may also be doc-level tax templates or tax
-    # accounts (outbound resolution); only a real Item Tax Template is valid on
-    # an ERPNext invoice line.
-    for erpnext_tax, xero_type in tax_map.items():
-        if xero_type == xero_tax_type and frappe.db.exists("Item Tax Template", erpnext_tax):
-            return erpnext_tax
+    # Read the mapping rows directly rather than through get_tax_map(): that is a template -> code
+    # dictionary, so a template mapped from two Xero codes (for example the standard-rate code and
+    # an older one) kept only the last and the other never resolved. Only a real Item Tax Template
+    # is valid on an ERPNext invoice line; a row may also name a doc-level template or tax account.
+    for row in settings.get("tax_mapping") or []:
+        if (
+            row.xero_tax_type_code == xero_tax_type
+            and row.erpnext_tax_template
+            and frappe.db.exists("Item Tax Template", row.erpnext_tax_template)
+        ):
+            return row.erpnext_tax_template
 
     # Not found - return None (will use no tax)
     return None
@@ -1480,7 +1482,37 @@ def _populate_inbound_lines(
     # posts an under-taxed invoice to the GL. Safe no-op when no tax
     # account can be resolved (6a then keeps the doc as a Draft).
     apply_inbound_taxes(doc, xero_invoice_data, erpnext_doctype)
+    # Xero charged tax but nothing above could turn it into a tax row: say which TaxType has no
+    # mapping, so the fix is one line in Xero Settings rather than a guess from the totals.
+    if flt(xero_invoice_data.get("TotalTax", 0)) > 0 and not doc.get("taxes"):
+        unmapped = sorted(
+            {ln.get("TaxType") or "(none)" for ln in line_items if flt(ln.get("TaxAmount", 0)) > 0}
+        )
+        _log_unmapped_tax_type(unmapped, xero_invoice_id, erpnext_doctype)
     return True
+
+
+def _log_unmapped_tax_type(tax_types, xero_invoice_id, erpnext_doctype):
+    """Warn once per run for each Xero TaxType that carried tax but has no ERPNext mapping."""
+    seen = frappe.flags.setdefault("xero_unmapped_tax_types", set())
+    for tax_type in tax_types:
+        if tax_type in seen:
+            continue
+        seen.add(tax_type)
+        log_xero_error(
+            message=(
+                f"Xero TaxType {tax_type} charged tax on {erpnext_doctype} (Xero invoice "
+                f"{xero_invoice_id}) but has no Tax Mapping row, so the document has no VAT and "
+                f"cannot reconcile. In Xero Settings, Tax Mapping, add Xero Tax Type Code "
+                f"{tax_type} against the ERPNext tax template."
+            ),
+            status="Warning",
+            xero_entity_id=xero_invoice_id,
+            xero_entity_type="Invoice",
+            erpnext_doc_type=erpnext_doctype,
+            direction="Xero to ERPNext",
+            category="Mapping Errors",
+        )
 
 
 def _process_xero_invoice_locked(
