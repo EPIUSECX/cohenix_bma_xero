@@ -209,18 +209,14 @@ def get_entity_sync_status():
     
     TRANSACTIONAL = {"Sales Invoice", "Purchase Invoice", "Payment Entry",
                     "Journal Entry", "Quotation", "Bank Transaction"}
-    MASTER_DISABLED = {"Item", "Account"}
 
     entity_status = []
     for entity in entities:
-        # Only count relevant documents:
-        #   transactional -> submitted (docstatus=1)
-        #   masters with disabled flag -> not disabled
-        #   other masters (Customer, Supplier) -> all records
-        if entity in TRANSACTIONAL:
-            total = frappe.db.count(entity, {"docstatus": 1})
-        elif entity in MASTER_DISABLED:
-            total = frappe.db.count(entity, {"disabled": 0})
+        # "In ERPNext" and "Linked to Xero" must count the same population, or the rate is
+        # meaningless (it once read 20,822 linked against 11 total, because drafts were left out
+        # of the total but not out of the linked count). Both exclude only cancelled documents.
+        if frappe.get_meta(entity).is_submittable:
+            total = frappe.db.count(entity, {"docstatus": ("!=", 2)})
         else:
             total = frappe.db.count(entity)
 
@@ -242,12 +238,18 @@ def get_entity_sync_status():
         synced = 0
         pending = 0
         errors = 0
+        posted = None  # only meaningful for documents that post to the ledger
+        drafts = None
         
         if xero_field:
             # Count synced documents -- exclude cancelled records
             synced = frappe.db.count(
                 entity, {xero_field: ("is", "set"), "docstatus": ("!=", 2)}
             )
+
+            if entity in TRANSACTIONAL:
+                posted = frappe.db.count(entity, {xero_field: ("is", "set"), "docstatus": 1})
+                drafts = frappe.db.count(entity, {xero_field: ("is", "set"), "docstatus": 0})
 
             # Count pending/error documents if sync status field exists
             sync_status_field = "xero_sync_status"
@@ -276,7 +278,9 @@ def get_entity_sync_status():
             "synced": synced,
             "pending": pending,
             "errors": errors,
-            "sync_rate": round((synced / total * 100) if total > 0 else 0, 1),
+            "posted": posted,
+            "drafts": drafts,
+            "sync_rate": round(min(synced / total * 100, 100) if total > 0 else 0, 1),
             "last_sync": last_sync[0][0] if last_sync and last_sync[0][0] else None
         })
 

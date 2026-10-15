@@ -184,24 +184,27 @@
 
 						<!-- Entities -->
 						<ScrollArea v-else-if="tab.value === 'entities'" class="min-h-0 flex-1" viewport-class="pb-6 [&>div]:!block">
-							<List :columns="['minmax(9rem,1fr)', '6rem', '6rem', '13rem', '7rem']" :row-height="44" class="list-row-px-5">
+							<List :columns="['minmax(9rem,1fr)', '7rem', '8rem', '17rem', '6rem']" :row-height="48" class="list-row-px-5">
 								<ListHeader>
 									<ListHeaderCell>{{ __("Entity") }}</ListHeaderCell>
-									<ListHeaderCell class="justify-end">{{ __("Synced") }}</ListHeaderCell>
-									<ListHeaderCell class="justify-end">{{ __("Total") }}</ListHeaderCell>
-									<ListHeaderCell>{{ __("Coverage") }}</ListHeaderCell>
+									<ListHeaderCell class="justify-end">{{ __("In ERPNext") }}</ListHeaderCell>
+									<ListHeaderCell class="justify-end">{{ __("Linked to Xero") }}</ListHeaderCell>
+									<ListHeaderCell>{{ __("Posted to ledger") }}</ListHeaderCell>
 									<ListHeaderCell class="justify-end">{{ __("Failing") }}</ListHeaderCell>
 								</ListHeader>
 								<ListGroup v-for="g in entityGroups" :key="g.label" :label="g.label">
 									<ListRows :items="g.items" row-key="entity" v-slot="{ item: e }">
 										<ListRow :value="e.entity" @click="pickEntity(e)">
 											<ListCell class="truncate text-ink-gray-9">{{ __(e.entity) }}</ListCell>
-											<ListCell class="justify-end tabular-nums text-ink-gray-7">{{ e.synced.toLocaleString() }}</ListCell>
 											<ListCell class="justify-end tabular-nums text-ink-gray-7">{{ e.total.toLocaleString() }}</ListCell>
-											<ListCell class="gap-2">
-												<Meter class="w-24" :value="e.sync_rate" :color="e.errors ? red : green" />
-												<span class="w-10 text-right text-sm tabular-nums text-ink-gray-6">{{ Math.round(e.sync_rate) }}%</span>
+											<ListCell class="justify-end tabular-nums text-ink-gray-7" :title="Math.round(e.sync_rate) + '% of the records in ERPNext carry a Xero ID'">{{ e.synced.toLocaleString() }}</ListCell>
+											<ListCell v-if="e.posted !== null && e.posted !== undefined" class="gap-3">
+												<Meter class="w-24 shrink-0" :value="e.synced ? (e.posted / e.synced) * 100 : 0" :color="e.drafts ? amber : green" />
+												<span class="truncate text-sm tabular-nums text-ink-gray-6">
+													{{ e.posted.toLocaleString() }} {{ __("posted") }}<template v-if="e.drafts"> · {{ e.drafts.toLocaleString() }} {{ __("draft") }}</template>
+												</span>
 											</ListCell>
+											<ListCell v-else class="text-ink-gray-4">—</ListCell>
 											<ListCell class="justify-end">
 												<Badge v-if="e.errors" theme="red" :label="String(e.errors)" />
 												<span v-else class="text-ink-gray-4">—</span>
@@ -339,11 +342,15 @@
 					<template v-if="coverage.total">
 						<div class="h-px border-t border-outline-gray-1" />
 						<CollapsibleSection :label="__('Coverage')">
-							<FieldRow :label="__('Xero IDs')">
+							<FieldRow :label="__('Linked to Xero')">
 								<div class="space-y-1.5">
 									<div class="tabular-nums">{{ coverage.synced.toLocaleString() }} <span class="text-ink-gray-5">/ {{ coverage.total.toLocaleString() }} · {{ coverage.pct }}%</span></div>
 									<Meter :value="coverage.pct" :color="failing.length ? amber : green" />
 								</div>
+							</FieldRow>
+							<FieldRow v-if="ledger.posted || ledger.drafts" :label="__('In the ledger')">
+								<span class="tabular-nums">{{ ledger.posted.toLocaleString() }} {{ __("posted") }}</span>
+								<span v-if="ledger.drafts" class="ml-1 text-sm text-ink-gray-5">· {{ ledger.drafts.toLocaleString() }} {{ __("draft") }}</span>
 							</FieldRow>
 							<FieldRow :label="__('Failing')">
 								<span v-if="!failing.length" class="text-ink-gray-5">{{ __("None") }}</span>
@@ -531,6 +538,12 @@ const coverage = computed(() => {
 	const synced = entities.value.reduce((n, e) => n + Math.min(e.synced || 0, e.total || 0), 0);
 	return { total, synced, pct: total ? Math.round((synced / total) * 100) : 0 };
 });
+
+// What has actually reached the ledger: documents linked to Xero that are posted versus still Draft.
+const ledger = computed(() => ({
+	posted: entities.value.reduce((n, e) => n + (e.posted || 0), 0),
+	drafts: entities.value.reduce((n, e) => n + (e.drafts || 0), 0),
+}));
 
 const failing = computed(() => entities.value.filter((e) => e.errors > 0));
 
