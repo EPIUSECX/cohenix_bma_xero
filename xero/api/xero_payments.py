@@ -667,7 +667,10 @@ descriptors     1048576
     for invoice_id, payment_ids in waiting.items():
         if retried >= limit:
             break
-        if all(frappe.db.exists("Payment Entry", {"xero_payment_id": pid}) for pid in payment_ids):
+        if all(
+            frappe.db.exists("Payment Entry", {"xero_payment_id": pid, "docstatus": ("!=", 2)})
+            for pid in payment_ids
+        ):
             continue  # everything for this invoice has landed
         ready = any(
             frappe.db.get_value(dt, {"xero_invoice_id": invoice_id}, "docstatus") == 1
@@ -745,8 +748,11 @@ def process_xero_payment(xero_payment_data, settings):
         return
 
     # --- Primary dedup: match by xero_payment_id ---
+    # Cancelled entries keep their Xero ID but are not the live payment, so they are ignored.
     erpnext_doc_name = frappe.db.get_value(
-        "Payment Entry", {"xero_payment_id": xero_payment_id}, "name"
+        "Payment Entry",
+        {"xero_payment_id": xero_payment_id, "docstatus": ("!=", 2)},
+        "name",
     )
 
     # Get invoice information
@@ -762,7 +768,7 @@ def process_xero_payment(xero_payment_data, settings):
         candidates = frappe.db.sql(
             """
             SELECT name FROM `tabPayment Entry`
-            WHERE xero_payment_data LIKE %(needle)s
+            WHERE xero_payment_data LIKE %(needle)s AND docstatus != 2
             LIMIT 1
             """,
             {"needle": f"%{xero_payment_id}%"},
@@ -812,7 +818,7 @@ def process_xero_payment(xero_payment_data, settings):
 
     # Try Sales Invoice first
     invoice_name = frappe.db.get_value(
-        "Sales Invoice", {"xero_invoice_id": xero_invoice_id}, "name"
+        "Sales Invoice", {"xero_invoice_id": xero_invoice_id, "docstatus": ("!=", 2)}, "name"
     )
     if invoice_name:
         invoice_doc = frappe.get_doc("Sales Invoice", invoice_name)
@@ -820,7 +826,7 @@ def process_xero_payment(xero_payment_data, settings):
     else:
         # Try Purchase Invoice
         invoice_name = frappe.db.get_value(
-            "Purchase Invoice", {"xero_invoice_id": xero_invoice_id}, "name"
+            "Purchase Invoice", {"xero_invoice_id": xero_invoice_id, "docstatus": ("!=", 2)}, "name"
         )
         if invoice_name:
             invoice_doc = frappe.get_doc("Purchase Invoice", invoice_name)

@@ -1519,8 +1519,12 @@ def _process_xero_invoice_locked(
     xero_invoice_data, settings, erpnext_doctype, xero_invoice_id, invoice_number
 ):
     """Create/update one inbound invoice. Caller holds the per-invoice mutex."""
+    # A cancelled document keeps its Xero ID and its ledger entries, but it is not the live
+    # document for that Xero invoice: matching it would make the sync skip the invoice for good.
     erpnext_doc_name = frappe.db.get_value(
-        erpnext_doctype, {"xero_invoice_id": xero_invoice_id}, "name"
+        erpnext_doctype,
+        {"xero_invoice_id": xero_invoice_id, "docstatus": ("!=", 2)},
+        "name",
     )
 
     # Get contact information

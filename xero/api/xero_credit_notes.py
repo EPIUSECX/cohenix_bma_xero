@@ -832,8 +832,9 @@ def process_xero_credit_note(xero_cn_data, settings):
     )
 
     # Check if credit note already exists
+    # Cancelled documents keep their Xero ID but are not the live credit note.
     erpnext_doc_name = frappe.db.get_value(
-        erpnext_doctype, {"xero_credit_note_id": xero_cn_id}, "name"
+        erpnext_doctype, {"xero_credit_note_id": xero_cn_id, "docstatus": ("!=", 2)}, "name"
     )
 
     # Get contact information
