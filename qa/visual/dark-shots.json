@@ -1,0 +1,21 @@
+{
+  "shots": [
+    "qa/visual/tax-mapping-1440x900-dark.png",
+    "qa/visual/tax-mapping-1280x800-dark.png",
+    "qa/visual/tax-mapping-390x844-dark.png"
+  ],
+  "viewports": [
+    {
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "width": 390,
+      "height": 844
+    }
+  ]
+}

@@ -12,6 +12,7 @@ from ..utils.xero_client import xero_request, get_xero_settings
 from ..utils.logging import log_xero_error
 from ..utils.retry_handler import retry_with_exponential_backoff
 from ..utils.sync_status import mark_sync_failure
+from ..utils.tax_mapping import TaxMappingTable, direction_of
 from .xero_line_builder import (
     apply_inbound_taxes,
     build_xero_lines,
@@ -901,15 +902,14 @@ def get_xero_account_code(erpnext_account, settings=None):
     return account_map.get(erpnext_account)
 
 
-def map_erpnext_tax_to_xero(erpnext_tax_template, settings=None):
+def map_erpnext_tax_to_xero(erpnext_tax_template, settings=None, direction=None):
     """Maps ERPNext tax templates to Xero TaxTypes using the mapping table."""
     if not erpnext_tax_template:
         return "NONE"  # Default if no tax template applied
 
     if not settings:
         settings = get_xero_settings()  # Fetch if not passed
-    tax_map = settings.get_tax_map()  # Use method on settings doc
-    xero_tax_code = tax_map.get(erpnext_tax_template)
+    xero_tax_code = settings.get_tax_map(direction).get(erpnext_tax_template)
 
     if not xero_tax_code:
         log_xero_error(
@@ -1117,10 +1117,11 @@ def get_erpnext_account_from_xero_code(
     return None
 
 
-def get_erpnext_tax_from_xero_type(xero_tax_type, settings=None):
+def get_erpnext_tax_from_xero_type(xero_tax_type, settings=None, direction=None):
     """
-    Reverse lookup: Xero TaxType → ERPNext Tax Template
-    Returns ERPNext tax template name or None if not found
+    Reverse lookup: Xero TaxType → ERPNext Item Tax Template, or None.
+
+    ``direction`` ("Sales" or "Purchases") skips rows mapped for the other side.
     """
     if not xero_tax_type or xero_tax_type == "NONE":
         return None
@@ -1128,17 +1129,14 @@ def get_erpnext_tax_from_xero_type(xero_tax_type, settings=None):
     if not settings:
         settings = get_xero_settings()
 
-    # Read the mapping rows directly rather than through get_tax_map(): that is a template -> code
-    # dictionary, so a template mapped from two Xero codes (for example the standard-rate code and
-    # an older one) kept only the last and the other never resolved. Only a real Item Tax Template
-    # is valid on an ERPNext invoice line; a row may also name a doc-level template or tax account.
-    for row in settings.get("tax_mapping") or []:
-        if (
-            row.xero_tax_type_code == xero_tax_type
-            and row.erpnext_tax_template
-            and frappe.db.exists("Item Tax Template", row.erpnext_tax_template)
-        ):
-            return row.erpnext_tax_template
+    # Several rows can carry one Xero code (for example the standard-rate code and an older
+    # one), so walk the rows instead of a template -> code dictionary. Only a real Item Tax
+    # Template is valid on an ERPNext invoice line; a row may also name a doc-level template
+    # or a tax account.
+    names = TaxMappingTable(settings.get("tax_mapping")).erpnext_names(xero_tax_type, direction)
+    for name in names:
+        if frappe.db.exists("Item Tax Template", name):
+            return name
 
     # Not found - return None (will use no tax)
     return None
@@ -1452,7 +1450,7 @@ def _populate_inbound_lines(
 
         # Add tax template if mapped
         tax_template = get_erpnext_tax_from_xero_type(
-            line.get("TaxType"), settings
+            line.get("TaxType"), settings, direction_of(erpnext_doctype)
         )
         if tax_template:
             item_dict["item_tax_template"] = tax_template

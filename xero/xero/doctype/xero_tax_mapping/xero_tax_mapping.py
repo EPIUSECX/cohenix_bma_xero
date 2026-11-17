@@ -13,11 +13,14 @@ class XeroTaxMapping(Document):
 	if TYPE_CHECKING:
 		from frappe.types import DF
 
-		erpnext_tax_template: DF.Link
+		applies_to: DF.Literal["Both", "Sales", "Purchases"]
+		erpnext_tax_template: DF.Data
 		parent: DF.Data
 		parentfield: DF.Data
 		parenttype: DF.Data
-		xero_tax_type_code: DF.Data
+		xero_tax_rate: DF.Float
+		xero_tax_type_code: DF.Data | None
+		xero_tax_type_name: DF.Data | None
 	# end: auto-generated types
 
 	pass

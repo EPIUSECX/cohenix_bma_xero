@@ -1,0 +1,108 @@
+{
+  "status": "pass",
+  "failureCount": 0,
+  "failures": [],
+  "visual": true,
+  "generatedAt": "2026-11-17T13:19:09.284Z",
+  "spec": "qa/visual/spec.json",
+  "viewports": [
+    {
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "width": 390,
+      "height": 844
+    }
+  ],
+  "pages": [
+    {
+      "name": "xero-settings",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "url": "http://xero.localhost:8000/desk/xero/xero-settings",
+      "rows": [
+        {
+          "name": "page head",
+          "selector": ".page-head",
+          "ok": true,
+          "deltas": []
+        },
+        {
+          "name": "tax mapping grid",
+          "selector": ".frappe-control[data-fieldname='tax_mapping'] .form-grid",
+          "ok": true,
+          "deltas": []
+        },
+        {
+          "name": "applies to column",
+          "selector": ".frappe-control[data-fieldname='tax_mapping'] .grid-heading-row [data-fieldname='applies_to']",
+          "ok": true,
+          "deltas": []
+        }
+      ]
+    },
+    {
+      "name": "xero-settings",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://xero.localhost:8000/desk/xero/xero-settings",
+      "rows": [
+        {
+          "name": "page head",
+          "selector": ".page-head",
+          "ok": true,
+          "deltas": []
+        },
+        {
+          "name": "tax mapping grid",
+          "selector": ".frappe-control[data-fieldname='tax_mapping'] .form-grid",
+          "ok": true,
+          "deltas": []
+        },
+        {
+          "name": "applies to column",
+          "selector": ".frappe-control[data-fieldname='tax_mapping'] .grid-heading-row [data-fieldname='applies_to']",
+          "ok": true,
+          "deltas": []
+        }
+      ]
+    },
+    {
+      "name": "xero-settings",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "url": "http://xero.localhost:8000/desk/xero/xero-settings",
+      "rows": [
+        {
+          "name": "page head",
+          "selector": ".page-head",
+          "ok": true,
+          "deltas": []
+        },
+        {
+          "name": "tax mapping grid",
+          "selector": ".frappe-control[data-fieldname='tax_mapping'] .form-grid",
+          "ok": true,
+          "deltas": []
+        },
+        {
+          "name": "applies to column",
+          "selector": ".frappe-control[data-fieldname='tax_mapping'] .grid-heading-row [data-fieldname='applies_to']",
+          "ok": true,
+          "deltas": []
+        }
+      ]
+    }
+  ]
+}

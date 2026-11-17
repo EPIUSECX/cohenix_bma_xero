@@ -10,6 +10,7 @@ from ..utils.xero_client import xero_request, get_xero_settings
 from ..utils.logging import log_xero_error
 from ..utils.retry_handler import retry_with_exponential_backoff
 from ..utils.sync_status import mark_sync_failure
+from ..utils.tax_mapping import direction_of
 from .xero_line_builder import build_xero_lines
 
 
@@ -1035,7 +1036,7 @@ def process_xero_credit_note(xero_cn_data, settings):
 
                 # Add tax template if mapped
                 tax_template = get_erpnext_tax_from_xero_type(
-                    line.get("TaxType"), settings
+                    line.get("TaxType"), settings, direction_of(erpnext_doctype)
                 )
                 if tax_template:
                     item_dict["item_tax_template"] = tax_template

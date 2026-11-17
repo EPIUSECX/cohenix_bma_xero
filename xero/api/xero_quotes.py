@@ -8,6 +8,7 @@ from ..utils.xero_client import xero_request, get_xero_settings
 from ..utils.logging import log_xero_error
 from ..utils.retry_handler import retry_with_exponential_backoff
 from ..utils.sync_status import mark_sync_failure
+from ..utils.tax_mapping import SALES
 from .xero_invoices import get_xero_account_code, map_erpnext_tax_to_xero
 
 # --- Quote Sync (ERPNext to Xero) ---
@@ -141,7 +142,9 @@ def sync_quotation_to_xero(doc_name, doc_type, **kwargs):
                 "UnitAmount": item.rate,
                 "LineAmount": item.amount,
                 # Map Tax Type using mapping in settings
-                "TaxType": map_erpnext_tax_to_xero(item.get("item_tax_template"), settings),
+                "TaxType": map_erpnext_tax_to_xero(
+                    item.get("item_tax_template"), settings, SALES
+                ),
             }
             # AccountCode is optional for Xero quotes
             if xero_account_code:
@@ -383,7 +386,7 @@ def process_xero_quote(xero_quote_data, settings):
                 "rate": inbound_line_rate(line_item, inclusive),
             }
             tax_template = get_erpnext_tax_from_xero_type(
-                line_item.get("TaxType"), settings
+                line_item.get("TaxType"), settings, SALES
             )
             if tax_template:
                 row["item_tax_template"] = tax_template

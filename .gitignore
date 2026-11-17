@@ -74,3 +74,6 @@ docs/marketplace/
 
 frontend/node_modules/
 xero/public/frontend/
+
+# Visual QA captures show site data; they stay local.
+qa/visual/*.png
