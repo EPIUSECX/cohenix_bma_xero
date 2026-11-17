@@ -22,9 +22,10 @@ from xero.api.xero_invoices import get_erpnext_tax_from_xero_type, map_erpnext_t
 from xero.api.xero_line_builder import build_xero_lines
 from xero.utils.exceptions import TaxRepresentationError
 from xero.utils.tax_mapping import BOTH, PURCHASES, SALES, TaxMappingTable, direction_of
+from xero.xero.doctype.xero_settings.xero_settings import XeroSettings
 
-STANDARD = "SA VAT 15% – Exclusive - BC"
-EXPORT = "SA VAT 0% – Export - BC"
+STANDARD = "SA VAT 15% - Exclusive - BC"
+EXPORT = "SA VAT 0% - Export - BC"
 VAT_ACCOUNT = "VAT - BC"
 INCOME_ACCOUNT = "Sales - BC"
 EXPENSE_ACCOUNT = "Cost of Goods Sold - BC"
@@ -46,11 +47,11 @@ def mapping_row(name, code, applies_to=None):
 
 
 class Settings(Row):
+    # The real lookup, so the tests cover Xero Settings and not a copy of it.
+    get_tax_map = XeroSettings.get_tax_map
+
     def get_account_map(self):
         return {INCOME_ACCOUNT: "200", EXPENSE_ACCOUNT: "310"}
-
-    def get_tax_map(self, direction=None):
-        return TaxMappingTable(self.tax_mapping).outbound(direction)
 
 
 def settings(*rows):
@@ -158,13 +159,19 @@ class TestLegacyLookups(unittest.TestCase):
 
     def test_inbound_lookup_reads_the_document_side(self):
         config = settings(
-            mapping_row("Item VAT Sales", "TAX001", SALES), mapping_row("Item VAT Purchases", "TAX001", PURCHASES)
+            mapping_row("Item VAT Sales", "TAX001", SALES),
+            mapping_row("Item VAT Purchases", "TAX001", PURCHASES),
         )
         with patch("xero.api.xero_invoices.frappe.db.exists", return_value=True, create=True):
             self.assertEqual(
                 get_erpnext_tax_from_xero_type("TAX001", config, PURCHASES), "Item VAT Purchases"
             )
             self.assertEqual(get_erpnext_tax_from_xero_type("TAX001", config, SALES), "Item VAT Sales")
+
+    def test_inbound_lookup_falls_back_to_a_both_row(self):
+        config = settings(mapping_row("Item VAT Sales", "TAX001", SALES), mapping_row("Item VAT", "TAX001"))
+        with patch("xero.api.xero_invoices.frappe.db.exists", return_value=True, create=True):
+            self.assertEqual(get_erpnext_tax_from_xero_type("TAX001", config, PURCHASES), "Item VAT")
 
 
 class TestStandardRatedLines(unittest.TestCase):
@@ -200,7 +207,9 @@ class TestZeroRatedLines(unittest.TestCase):
         self.assertEqual((built.target_total, built.total_tax), (100.0, 0.0))
 
     def test_zero_rated_document_without_mapping_is_sent_without_tax(self):
-        line = build_xero_lines(document(EXPORT, [tax_row(0, 0.0)]), "Sales Invoice", settings()).line_items[0]
+        line = build_xero_lines(document(EXPORT, [tax_row(0, 0.0)]), "Sales Invoice", settings()).line_items[
+            0
+        ]
         self.assertEqual(line["TaxType"], "NONE")
         self.assertNotIn("TaxAmount", line)
 
@@ -213,13 +222,17 @@ class TestZeroRatedLines(unittest.TestCase):
         config = settings(
             mapping_row(STANDARD, "OUTPUT3", SALES), mapping_row("Zero Rated Item", "ZERORATED", SALES)
         )
-        lines = build_xero_lines(self._mixed_document("Zero Rated Item", 0), "Sales Invoice", config).line_items
+        lines = build_xero_lines(
+            self._mixed_document("Zero Rated Item", 0), "Sales Invoice", config
+        ).line_items
         self.assertEqual((lines[0]["TaxType"], lines[0]["TaxAmount"]), ("OUTPUT3", 15.0))
         self.assertEqual((lines[1]["TaxType"], lines[1]["TaxAmount"]), ("ZERORATED", 0.0))
 
     def test_zero_rated_item_never_borrows_the_document_mapping(self):
         config = settings(mapping_row(STANDARD, "OUTPUT3", SALES))
-        lines = build_xero_lines(self._mixed_document("Zero Rated Item", 0), "Sales Invoice", config).line_items
+        lines = build_xero_lines(
+            self._mixed_document("Zero Rated Item", 0), "Sales Invoice", config
+        ).line_items
         self.assertEqual(lines[1]["TaxType"], "NONE")
         self.assertNotIn("TaxAmount", lines[1])
 
@@ -244,3 +257,101 @@ class TestZeroRatedLines(unittest.TestCase):
             Row(tax_row="tax-1", item_row="item-2", amount=0.0),
         ]
         return document(STANDARD, [tax_row(15, 15.0)], items, details)
+
+    def test_zero_rated_credit_note_keeps_its_mapped_type(self):
+        config = settings(mapping_row(EXPORT, "ZERORATEDOUTPUT", SALES))
+        doc = document(EXPORT, [tax_row(0, 0.0)], [item_row(amount=-100.0)])
+        line = build_xero_lines(doc, "Sales Invoice", config, absolute=True).line_items[0]
+        self.assertEqual(
+            (line["TaxType"], line["TaxAmount"], line["LineAmount"]), ("ZERORATEDOUTPUT", 0.0, 100.0)
+        )
+
+    def test_zero_rated_purchase_order_keeps_its_mapped_type(self):
+        config = settings(mapping_row(EXPORT, "ZERORATEDINPUT", PURCHASES))
+        built = build_xero_lines(
+            document(EXPORT, [tax_row(0, 0.0)]),
+            "Purchase Order",
+            config,
+            require_account=False,
+            include_rounding=False,
+        )
+        self.assertEqual(built.line_items[0]["TaxType"], "ZERORATEDINPUT")
+
+    def test_item_template_without_rates_follows_the_document(self):
+        config = settings(mapping_row(EXPORT, "ZERORATEDOUTPUT", SALES))
+        item = item_row(item_tax_template="Zero Rated Item", item_tax_rate="{}")
+        line = build_xero_lines(
+            document(EXPORT, [tax_row(0, 0.0)], [item]), "Sales Invoice", config
+        ).line_items[0]
+        self.assertEqual(line["TaxType"], "ZERORATEDOUTPUT")
+
+
+class TestZeroTaxLinesNeverBorrowARatedMapping(unittest.TestCase):
+    """A tax account carries several rates, so its mapping proves no rate."""
+
+    def setUp(self):
+        self.account_only = settings(mapping_row(VAT_ACCOUNT, "OUTPUT3"))
+
+    def test_account_mapping_is_not_used_on_a_zero_rated_sales_invoice(self):
+        doc = document(EXPORT, [tax_row(0, 0.0)])
+        line = build_xero_lines(doc, "Sales Invoice", self.account_only).line_items[0]
+        self.assertEqual(line["TaxType"], "NONE")
+        self.assertNotIn("TaxAmount", line)
+
+    def test_account_mapping_is_not_used_on_a_zero_rated_purchase_invoice(self):
+        doc = document(EXPORT, [tax_row(0, 0.0)])
+        line = build_xero_lines(doc, "Purchase Invoice", self.account_only).line_items[0]
+        self.assertEqual(line["TaxType"], "NONE")
+
+    def test_account_mapping_still_serves_a_taxed_line(self):
+        doc = document(STANDARD, [tax_row(15, 15.0)])
+        line = build_xero_lines(doc, "Sales Invoice", self.account_only).line_items[0]
+        self.assertEqual((line["TaxType"], line["TaxAmount"]), ("OUTPUT3", 15.0))
+
+    def test_untaxed_line_beside_an_item_rated_line_is_sent_without_tax(self):
+        """A 0% row taxes one line through its Item Tax Template; the other line has none."""
+        config = settings(mapping_row(STANDARD, "OUTPUT3", SALES))
+        items = [
+            item_row(
+                name="item-1",
+                item_tax_template="Item VAT 15%",
+                item_tax_rate=json.dumps({VAT_ACCOUNT: 15}),
+            ),
+            item_row(name="item-2"),
+        ]
+        details = [
+            Row(tax_row="tax-1", item_row="item-1", amount=15.0),
+            Row(tax_row="tax-1", item_row="item-2", amount=0.0),
+        ]
+        lines = build_xero_lines(
+            document(STANDARD, [tax_row(0, 15.0)], items, details), "Sales Invoice", config
+        ).line_items
+        self.assertEqual((lines[0]["TaxType"], lines[0]["TaxAmount"]), ("OUTPUT3", 15.0))
+        self.assertEqual(lines[1]["TaxType"], "NONE")
+
+    def test_item_template_for_another_account_is_not_zero_rated(self):
+        config = settings(
+            mapping_row(STANDARD, "OUTPUT3", SALES), mapping_row("Other Tax Item", "ZERORATED", SALES)
+        )
+        line = self._second_line(config, "Other Tax Item", {"Other - BC": 0})
+        self.assertEqual(line["TaxType"], "NONE")
+
+    def test_item_template_that_does_not_apply_is_not_zero_rated(self):
+        config = settings(
+            mapping_row(STANDARD, "OUTPUT3", SALES), mapping_row("Exempt Item", "EXEMPTOUTPUT", SALES)
+        )
+        line = self._second_line(config, "Exempt Item", {VAT_ACCOUNT: "N/A"})
+        self.assertEqual(line["TaxType"], "NONE")
+
+    def _second_line(self, config, item_tax_template, rates):
+        """The untaxed second line of a standard-rated document."""
+        items = [
+            item_row(name="item-1"),
+            item_row(name="item-2", item_tax_template=item_tax_template, item_tax_rate=json.dumps(rates)),
+        ]
+        details = [
+            Row(tax_row="tax-1", item_row="item-1", amount=15.0),
+            Row(tax_row="tax-1", item_row="item-2", amount=0.0),
+        ]
+        doc = document(STANDARD, [tax_row(15, 15.0)], items, details)
+        return build_xero_lines(doc, "Sales Invoice", config).line_items[1]

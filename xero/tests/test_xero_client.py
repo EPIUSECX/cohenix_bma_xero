@@ -188,6 +188,22 @@ class TestRefreshAccessToken(unittest.TestCase):
         settings.save.assert_not_called()
         post.assert_called_once()
 
+    def test_store_tokens_writes_the_pair_encrypted_and_masks_the_fields(self):
+        with patch("frappe.utils.password.set_encrypted_password") as encrypt, \
+             patch("xero.utils.xero_client.frappe.db.set_single_value", create=True) as set_value, \
+             patch("xero.utils.xero_client.frappe.clear_document_cache", create=True) as clear_cache:
+            xc._store_tokens(access_token="new-access", refresh_token="new-refresh", expires_in=1800)
+
+        encrypt.assert_any_call("Xero Settings", "Xero Settings", "new-access", "access_token")
+        encrypt.assert_any_call("Xero Settings", "Xero Settings", "new-refresh", "refresh_token")
+        written = [call.args[1:] for call in set_value.call_args_list]
+        # The plain tokens never reach tabSingles; the form shows a mask.
+        self.assertIn(("access_token", "*****"), written)
+        self.assertIn(("refresh_token", "*****"), written)
+        expiry = set_value.call_args_list[-1].args[1]["token_expiry"]
+        self.assertGreater(expiry, add_to_date(now_datetime(), seconds=1700))
+        clear_cache.assert_called_once_with("Xero Settings", "Xero Settings")
+
     @patch("xero.utils.transactions.frappe.db.commit", MagicMock())
     def test_invalid_refresh_token_invalidates_and_throws(self):
         settings = _fake_settings()

@@ -11,7 +11,8 @@ Tax representation (C1/C2/H1 rework):
   breakup table), so Xero's tax subsystem records exactly the ERPNext VAT.
 - A line without tax still carries its mapped ``TaxType`` (with a zero
   ``TaxAmount``) when ERPNext rates it at 0%, so a zero-rated supply reaches
-  the Xero tax return. A line that is simply untaxed is sent as NONE.
+  the Xero tax return. Only the mapping of a 0% Item Tax Template or of a
+  fully 0% document counts. Every other untaxed line is sent as NONE.
 - The tax mapping is read for the document's side (sales or purchases): the
   two sides can share a template name or a tax account in ERPNext but never a
   Xero tax type.
@@ -245,26 +246,49 @@ def _resolve_tax_type(item, doc, tax_map, folded_rows):
 def _resolve_zero_rated_tax_type(item, doc, tax_map, folded_rows):
     """Resolve the Xero TaxType for a line without tax, or None for "no tax".
 
-    Only a line ERPNext rates at 0% keeps a tax type. An untaxed line on a
-    taxed document must not borrow the document's mapping: Xero accepts a
-    standard-rate type with a zero amount and would report it as such.
+    Only a mapping that identifies a 0% rate counts: the line's Item Tax
+    Template, or the document's template when the whole document is rated at
+    0%. A tax account is shared across rates, so its mapping is never used.
+    Xero accepts a standard-rate type with a zero amount and would report the
+    line under that rate.
     """
-    if item.get("item_tax_template"):
-        if _item_rates_are_zero(item):
+    item_rates = _item_tax_rates(item, folded_rows)
+    if item_rates:
+        if _rates_are_zero(item_rates):
             return tax_map.get(item.item_tax_template)
         return None
-    if folded_rows and not any(flt(tax.get("rate")) for tax in folded_rows):
-        return _resolve_tax_type(item, doc, tax_map, folded_rows)
+    if _document_is_zero_rated(folded_rows):
+        return tax_map.get(doc.get("taxes_and_charges"))
     return None
 
 
-def _item_rates_are_zero(item):
-    """True when the line's Item Tax Template rates every tax account at 0%."""
+def _item_tax_rates(item, folded_rows):
+    """The rates the line's Item Tax Template sets on the document's tax accounts."""
+    if not item.get("item_tax_template"):
+        return {}
     try:
         rates = json.loads(item.get("item_tax_rate") or "{}")
     except ValueError:
+        return {}
+    tax_accounts = {tax.account_head for tax in folded_rows}
+    return {account: rate for account, rate in rates.items() if account in tax_accounts}
+
+
+def _rates_are_zero(rates):
+    # ERPNext stores "N/A" for a tax that does not apply to the item. That is
+    # not a 0% rate.
+    return all(isinstance(rate, (int, float)) and not rate for rate in rates.values())
+
+
+def _document_is_zero_rated(folded_rows):
+    """True when every tax row is 0% and no line carries tax.
+
+    A 0% row can still tax a line through an Item Tax Template, so the rates
+    of the rows alone do not prove it.
+    """
+    if not folded_rows or any(flt(tax.get("rate")) for tax in folded_rows):
         return False
-    return bool(rates) and not any(flt(rate) for rate in rates.values())
+    return abs(_folded_total(folded_rows)) < EPSILON
 
 
 def _missing_tax_type_message(doc, doc_type, item, folded_rows, direction):

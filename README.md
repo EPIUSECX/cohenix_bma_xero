@@ -134,10 +134,13 @@ Before enabling any invoice or payment sync, set up:
   - Set **Applies To** on each row: Sales, Purchases or Both. ERPNext gives a
     Sales and a Purchase Taxes and Charges Template the same name when their
     titles match, and one tax account can serve both sides. Xero needs one tax
-    type for sales and another for purchases. Add one row per side.
+    type for sales and another for purchases. Add one row per side in the
+    Tax Mapping table of Xero Settings. The mapping wizard writes Both rows only.
   - Map zero-rated templates too. A line rated at 0% is sent with its mapped
     tax type and a tax amount of 0, so it shows on the Xero tax return. A line
     without a mapping is sent as "no tax" (`NONE`).
+  - Map a zero-rated template by its own name. A mapping on a tax account
+    serves taxed lines only, because one account carries several rates.
 
 Sync operations require the **System Manager** or **Xero Integration Manager** role.
 
