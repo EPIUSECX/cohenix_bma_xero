@@ -9,6 +9,12 @@ Tax representation (C1/C2/H1 rework):
   line carries an explicit Xero ``TaxType`` plus a ``TaxAmount`` override equal
   to the tax ERPNext attributed to that line (from the ``item_wise_tax_details``
   breakup table), so Xero's tax subsystem records exactly the ERPNext VAT.
+- A line without tax still carries its mapped ``TaxType`` (with a zero
+  ``TaxAmount``) when ERPNext rates it at 0%, so a zero-rated supply reaches
+  the Xero tax return. A line that is simply untaxed is sent as NONE.
+- The tax mapping is read for the document's side (sales or purchases): the
+  two sides can share a template name or a tax account in ERPNext but never a
+  Xero tax type.
 - ``LineAmountTypes`` mirrors ERPNext's included_in_print_rate: Inclusive docs
   keep their gross line amounts (tax inside), Exclusive docs their net ones.
 - Flat "Actual" charge rows (e.g. freight) are genuine extra lines, sent with
@@ -23,6 +29,7 @@ TaxRepresentationError BEFORE anything is sent if they would not reconcile —
 a payload with wrong money in it must never reach Xero.
 """
 
+import json
 import re
 
 import frappe
@@ -30,6 +37,7 @@ from frappe.utils import cint, flt
 
 from ..utils.exceptions import TaxRepresentationError
 from ..utils.logging import log_xero_error
+from ..utils.tax_mapping import direction_of
 
 # Sub-cent tolerance used when deciding whether an amount is "zero".
 EPSILON = 0.005
@@ -72,7 +80,8 @@ def build_xero_lines(doc, doc_type, settings, absolute=False, require_account=Tr
     :raises TaxRepresentationError: when the payload could not reconcile.
     """
     account_map = settings.get_account_map()
-    tax_map = settings.get_tax_map()
+    direction = direction_of(doc_type)
+    tax_map = settings.get_tax_map(direction)
     account_field = "income_account" if doc_type == "Sales Invoice" else "expense_account"
 
     folded_rows, charge_rows = _split_tax_rows(doc)
@@ -106,11 +115,17 @@ def build_xero_lines(doc, doc_type, settings, absolute=False, require_account=Tr
         if abs(tax_amount) >= EPSILON:
             tax_type = _resolve_tax_type(item, doc, tax_map, folded_rows)
             if not tax_type:
-                raise TaxRepresentationError(_missing_tax_type_message(doc, doc_type, item, folded_rows))
+                raise TaxRepresentationError(
+                    _missing_tax_type_message(doc, doc_type, item, folded_rows, direction)
+                )
             line["TaxType"] = tax_type
             line["TaxAmount"] = abs(tax_amount) if absolute else tax_amount
         else:
-            line["TaxType"] = "NONE"
+            zero_rated_type = _resolve_zero_rated_tax_type(item, doc, tax_map, folded_rows)
+            line["TaxType"] = zero_rated_type or "NONE"
+            if zero_rated_type:
+                # Explicit zero: Xero must not work out its own tax from the rate.
+                line["TaxAmount"] = 0.0
 
         # Only reference a Xero item that actually exists there; an unknown
         # ItemCode would make Xero auto-create an item as a side effect.
@@ -227,7 +242,32 @@ def _resolve_tax_type(item, doc, tax_map, folded_rows):
     return None
 
 
-def _missing_tax_type_message(doc, doc_type, item, folded_rows):
+def _resolve_zero_rated_tax_type(item, doc, tax_map, folded_rows):
+    """Resolve the Xero TaxType for a line without tax, or None for "no tax".
+
+    Only a line ERPNext rates at 0% keeps a tax type. An untaxed line on a
+    taxed document must not borrow the document's mapping: Xero accepts a
+    standard-rate type with a zero amount and would report it as such.
+    """
+    if item.get("item_tax_template"):
+        if _item_rates_are_zero(item):
+            return tax_map.get(item.item_tax_template)
+        return None
+    if folded_rows and not any(flt(tax.get("rate")) for tax in folded_rows):
+        return _resolve_tax_type(item, doc, tax_map, folded_rows)
+    return None
+
+
+def _item_rates_are_zero(item):
+    """True when the line's Item Tax Template rates every tax account at 0%."""
+    try:
+        rates = json.loads(item.get("item_tax_rate") or "{}")
+    except ValueError:
+        return False
+    return bool(rates) and not any(flt(rate) for rate in rates.values())
+
+
+def _missing_tax_type_message(doc, doc_type, item, folded_rows, direction):
     candidates = []
     if item.get("item_tax_template"):
         candidates.append(f"Item Tax Template '{item.item_tax_template}'")
@@ -239,7 +279,8 @@ def _missing_tax_type_message(doc, doc_type, item, folded_rows):
     return (
         f"Missing Tax Mapping: cannot represent the tax on {doc_type} {doc.name} "
         f"(line: {item.item_code or item.item_name}) in Xero. Map {candidate_text} "
-        f"to a Xero Tax Type under Xero Settings → Mappings, then retry. "
+        f"to a Xero Tax Type under Xero Settings → Mappings, on a row that applies to "
+        f"{direction} or Both, then retry. "
         f"Nothing was sent to Xero."
     )
 

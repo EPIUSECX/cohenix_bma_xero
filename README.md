@@ -129,6 +129,15 @@ Before enabling any invoice or payment sync, set up:
   `bench --site your-site execute xero.api.xero_accounts.sync_accounts_from_xero`
 - **Tax mappings** (Xero Tax Mapping) — map ERPNext tax templates/accounts to
   Xero tax types. Unmapped taxes cause sync failures, visible in the Xero Log.
+  - Xero posts tax to its own tax account. The mapping selects the Xero tax
+    type of each line. It does not link an ERPNext tax account to a Xero account.
+  - Set **Applies To** on each row: Sales, Purchases or Both. ERPNext gives a
+    Sales and a Purchase Taxes and Charges Template the same name when their
+    titles match, and one tax account can serve both sides. Xero needs one tax
+    type for sales and another for purchases. Add one row per side.
+  - Map zero-rated templates too. A line rated at 0% is sent with its mapped
+    tax type and a tax amount of 0, so it shows on the Xero tax return. A line
+    without a mapping is sent as "no tax" (`NONE`).
 
 Sync operations require the **System Manager** or **Xero Integration Manager** role.
 

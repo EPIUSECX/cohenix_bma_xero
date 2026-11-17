@@ -6,6 +6,7 @@ from ..utils.transactions import commit_checkpoint, commit_error_state, commit_e
 from ..utils.xero_client import xero_request, get_xero_settings
 from ..utils.logging import log_xero_error
 from ..utils.sync_status import mark_sync_failure
+from ..utils.tax_mapping import PURCHASES
 from .xero_line_builder import build_xero_lines
 from frappe.utils import getdate
 
@@ -348,7 +349,9 @@ def process_xero_purchase_order(xero_order_data, settings):
                 "rate": inbound_line_rate(line, inclusive),
                 "schedule_date": po_schedule_date,
             }
-            tax_template = get_erpnext_tax_from_xero_type(line.get("TaxType"), settings)
+            tax_template = get_erpnext_tax_from_xero_type(
+                line.get("TaxType"), settings, PURCHASES
+            )
             if tax_template:
                 row["item_tax_template"] = tax_template
             doc.append("items", row)
