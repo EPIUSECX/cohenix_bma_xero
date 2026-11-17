@@ -3,7 +3,7 @@
 // The design skill's verify-ui.mjs captures the top of the form in light only. The grid
 // sits lower, in a collapsed section, so this companion opens the section and scrolls to it.
 //
-//   FRAPPE_USER=... FRAPPE_PASSWORD=... node qa/visual/grid-shots.mjs [skill node_modules dir]
+//   FRAPPE_USER=... FRAPPE_PASSWORD=... node qa/visual/grid-shots.mjs <node_modules dir with puppeteer-core>
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -15,8 +15,12 @@ const VIEWPORTS = [
 	{ width: 390, height: 844 },
 ];
 
-const nodeModules =
-	process.argv[2] || path.join(process.env.HOME, ".claude/skills/frappe-design-system/node_modules");
+// puppeteer-core ships with the design skill of the bench kit, not with this app.
+const nodeModules = process.argv[2] || process.env.DESIGN_SKILL_NODE_MODULES;
+if (!nodeModules) {
+	console.error("Pass the node_modules folder that holds puppeteer-core");
+	process.exit(2);
+}
 const require = createRequire(path.join(nodeModules, "x.js"));
 const puppeteer = require("puppeteer-core");
 
