@@ -1,0 +1,17 @@
+{
+  "sources": ["xero/xero/doctype/xero_tax_mapping"],
+  "shots": [
+    "qa/visual/xero-settings-1440x900.png",
+    "qa/visual/xero-settings-1280x800.png",
+    "qa/visual/xero-settings-390x844.png",
+    "qa/visual/tax-mapping-1440x900.png",
+    "qa/visual/tax-mapping-1280x800.png",
+    "qa/visual/tax-mapping-390x844.png",
+    "qa/visual/tax-mapping-1440x900-dark.png",
+    "qa/visual/tax-mapping-1280x800-dark.png",
+    "qa/visual/tax-mapping-390x844-dark.png"
+  ],
+  "report": "qa/visual/verify-report.json",
+  "themes": ["light", "dark"],
+  "dark_shots": "qa/visual/dark-shots.json"
+}

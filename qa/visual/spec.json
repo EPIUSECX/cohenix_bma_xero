@@ -1,0 +1,27 @@
+{
+  "base": "http://xero.localhost:8000",
+  "login": true,
+  "out": "qa/visual",
+  "pages": [
+    {
+      "name": "xero-settings",
+      "path": "/desk/xero-settings",
+      "checks": [
+        { "name": "page head", "selector": ".page-head", "expect": { "h": 49 }, "tol": 1 },
+        {
+          "name": "tax mapping grid",
+          "selector": ".frappe-control[data-fieldname='tax_mapping'] .form-grid",
+          "expect": {},
+          "tol": 1
+        },
+        {
+          "name": "applies to column",
+          "selector": ".frappe-control[data-fieldname='tax_mapping'] .grid-heading-row [data-fieldname='applies_to']",
+          "expect": {},
+          "tol": 1
+        }
+      ],
+      "wait": 2500
+    }
+  ]
+}
