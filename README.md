@@ -141,6 +141,8 @@ Before enabling any invoice or payment sync, set up:
     without a mapping is sent as "no tax" (`NONE`).
   - Map a zero-rated template by its own name. A mapping on a tax account
     serves taxed lines only, because one account carries several rates.
+  - A template whose tax rows are 0% must map to a zero-rated Xero tax type.
+    A row that records a Xero Tax Rate above 0 never serves a line without tax.
 
 Sync operations require the **System Manager** or **Xero Integration Manager** role.
 

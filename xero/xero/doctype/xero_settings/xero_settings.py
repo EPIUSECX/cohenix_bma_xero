@@ -157,14 +157,15 @@ class XeroSettings(Document):
                 mapping[row.erpnext_account] = row.xero_account_code
         return mapping
 
-    def get_tax_map(self, direction=None):
+    def get_tax_map(self, direction=None, zero_rated_only=False):
         """ERPNext tax name -> Xero tax type, for "Sales" or "Purchases".
 
         Without a direction every row counts, whatever side it applies to.
+        ``zero_rated_only`` leaves out the rows that record a Xero rate above 0%.
         """
         from xero.utils.tax_mapping import TaxMappingTable
 
-        return TaxMappingTable(self.tax_mapping).outbound(direction)
+        return TaxMappingTable(self.tax_mapping).outbound(direction, zero_rated_only)
 
     @frappe.whitelist()
     def check_xero_connection(self):

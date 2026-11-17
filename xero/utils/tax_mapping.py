@@ -9,6 +9,8 @@ a different tax type per side, so each mapping row says which side it applies
 to. A row without a side applies to both.
 """
 
+from frappe.utils import flt
+
 BOTH = "Both"
 SALES = "Sales"
 PURCHASES = "Purchases"
@@ -27,20 +29,26 @@ class TaxMappingTable:
     def __init__(self, rows):
         self.rows = [r for r in rows or [] if r.erpnext_tax_template and r.xero_tax_type_code]
 
-    def outbound(self, direction=None):
+    def outbound(self, direction=None, zero_rated_only=False):
         """ERPNext tax name -> Xero tax type.
 
         A row for the direction wins over a row for both sides. Without a
         direction every row counts and the last one wins, as before the
-        direction existed.
+        direction existed. ``zero_rated_only`` leaves out a name whose row
+        records a Xero rate above 0%.
         """
         if not direction:
-            return {r.erpnext_tax_template: r.xero_tax_type_code for r in self.rows}
-        mapping = {}
-        for side in (BOTH, direction):
-            for row in self._rows_for(side):
-                mapping[row.erpnext_tax_template] = row.xero_tax_type_code
-        return mapping
+            winners = {r.erpnext_tax_template: r for r in self.rows}
+        else:
+            winners = {}
+            for side in (BOTH, direction):
+                for row in self._rows_for(side):
+                    winners[row.erpnext_tax_template] = row
+        return {
+            name: row.xero_tax_type_code
+            for name, row in winners.items()
+            if not (zero_rated_only and flt(row.get("xero_tax_rate")))
+        }
 
     def erpnext_names(self, xero_tax_type, direction=None):
         """ERPNext tax names mapped to a Xero tax type, most specific first."""

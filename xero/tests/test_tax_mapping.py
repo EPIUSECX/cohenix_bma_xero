@@ -24,11 +24,11 @@ from xero.utils.exceptions import TaxRepresentationError
 from xero.utils.tax_mapping import BOTH, PURCHASES, SALES, TaxMappingTable, direction_of
 from xero.xero.doctype.xero_settings.xero_settings import XeroSettings
 
-STANDARD = "SA VAT 15% - Exclusive - BC"
-EXPORT = "SA VAT 0% - Export - BC"
-VAT_ACCOUNT = "VAT - BC"
-INCOME_ACCOUNT = "Sales - BC"
-EXPENSE_ACCOUNT = "Cost of Goods Sold - BC"
+STANDARD = "SA VAT 15% - Exclusive - TC"
+EXPORT = "SA VAT 0% - Export - TC"
+VAT_ACCOUNT = "VAT - TC"
+INCOME_ACCOUNT = "Sales - TC"
+EXPENSE_ACCOUNT = "Cost of Goods Sold - TC"
 
 
 class Row(SimpleNamespace):
@@ -42,8 +42,13 @@ class Row(SimpleNamespace):
         return None
 
 
-def mapping_row(name, code, applies_to=None):
-    return Row(erpnext_tax_template=name, xero_tax_type_code=code, applies_to=applies_to)
+def mapping_row(name, code, applies_to=None, xero_tax_rate=0):
+    return Row(
+        erpnext_tax_template=name,
+        xero_tax_type_code=code,
+        applies_to=applies_to,
+        xero_tax_rate=xero_tax_rate,
+    )
 
 
 class Settings(Row):
@@ -132,6 +137,15 @@ class TestTaxMappingTable(unittest.TestCase):
             [mapping_row(STANDARD, "OUTPUT3", SALES), mapping_row(EXPORT, "ZERORATEDOUTPUT")]
         )
         self.assertEqual(table.outbound(), {STANDARD: "OUTPUT3", EXPORT: "ZERORATEDOUTPUT"})
+
+    def test_zero_rated_only_leaves_out_rows_with_a_rate(self):
+        table = TaxMappingTable(
+            [
+                mapping_row(STANDARD, "OUTPUT3", SALES, xero_tax_rate=15),
+                mapping_row(EXPORT, "ZERORATEDOUTPUT"),
+            ]
+        )
+        self.assertEqual(table.outbound(SALES, zero_rated_only=True), {EXPORT: "ZERORATEDOUTPUT"})
 
     def test_incomplete_rows_are_ignored(self):
         table = TaxMappingTable([mapping_row(STANDARD, None), mapping_row(None, "OUTPUT3")])
@@ -333,7 +347,7 @@ class TestZeroTaxLinesNeverBorrowARatedMapping(unittest.TestCase):
         config = settings(
             mapping_row(STANDARD, "OUTPUT3", SALES), mapping_row("Other Tax Item", "ZERORATED", SALES)
         )
-        line = self._second_line(config, "Other Tax Item", {"Other - BC": 0})
+        line = self._second_line(config, "Other Tax Item", {"Other - TC": 0})
         self.assertEqual(line["TaxType"], "NONE")
 
     def test_item_template_that_does_not_apply_is_not_zero_rated(self):
@@ -342,6 +356,19 @@ class TestZeroTaxLinesNeverBorrowARatedMapping(unittest.TestCase):
         )
         line = self._second_line(config, "Exempt Item", {VAT_ACCOUNT: "N/A"})
         self.assertEqual(line["TaxType"], "NONE")
+
+    def test_template_mapped_to_a_rated_type_is_not_used_on_an_untaxed_document(self):
+        """0% rows whose real rates come from item templates; this document has none."""
+        config = settings(mapping_row(STANDARD, "OUTPUT3", SALES, xero_tax_rate=15))
+        line = build_xero_lines(document(STANDARD, [tax_row(0, 0.0)]), "Sales Invoice", config).line_items[0]
+        self.assertEqual(line["TaxType"], "NONE")
+
+    def test_rate_and_not_applicable_account_together_are_zero_rated(self):
+        config = settings(
+            mapping_row(STANDARD, "OUTPUT3", SALES), mapping_row("Zero Rated Item", "ZERORATED", SALES)
+        )
+        line = self._second_line(config, "Zero Rated Item", {VAT_ACCOUNT: 0, "Other - TC": "N/A"})
+        self.assertEqual((line["TaxType"], line["TaxAmount"]), ("ZERORATED", 0.0))
 
     def _second_line(self, config, item_tax_template, rates):
         """The untaxed second line of a standard-rated document."""

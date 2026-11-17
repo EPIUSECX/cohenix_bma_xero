@@ -83,6 +83,8 @@ def build_xero_lines(doc, doc_type, settings, absolute=False, require_account=Tr
     account_map = settings.get_account_map()
     direction = direction_of(doc_type)
     tax_map = settings.get_tax_map(direction)
+    # A row that records a Xero rate above 0% never serves a line without tax.
+    zero_rated_map = settings.get_tax_map(direction, zero_rated_only=True)
     account_field = "income_account" if doc_type == "Sales Invoice" else "expense_account"
 
     folded_rows, charge_rows = _split_tax_rows(doc)
@@ -122,7 +124,7 @@ def build_xero_lines(doc, doc_type, settings, absolute=False, require_account=Tr
             line["TaxType"] = tax_type
             line["TaxAmount"] = abs(tax_amount) if absolute else tax_amount
         else:
-            zero_rated_type = _resolve_zero_rated_tax_type(item, doc, tax_map, folded_rows)
+            zero_rated_type = _resolve_zero_rated_tax_type(item, doc, zero_rated_map, folded_rows)
             line["TaxType"] = zero_rated_type or "NONE"
             if zero_rated_type:
                 # Explicit zero: Xero must not work out its own tax from the rate.
@@ -271,13 +273,17 @@ def _item_tax_rates(item, folded_rows):
     except ValueError:
         return {}
     tax_accounts = {tax.account_head for tax in folded_rows}
-    return {account: rate for account, rate in rates.items() if account in tax_accounts}
+    # ERPNext stores "N/A" for a tax that does not apply to the item. That is
+    # not a rate, so it says nothing about the line.
+    return {
+        account: rate
+        for account, rate in rates.items()
+        if account in tax_accounts and isinstance(rate, (int, float))
+    }
 
 
 def _rates_are_zero(rates):
-    # ERPNext stores "N/A" for a tax that does not apply to the item. That is
-    # not a 0% rate.
-    return all(isinstance(rate, (int, float)) and not rate for rate in rates.values())
+    return not any(rates.values())
 
 
 def _document_is_zero_rated(folded_rows):

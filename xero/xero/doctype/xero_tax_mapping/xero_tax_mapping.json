@@ -52,7 +52,7 @@
    "fieldname": "xero_tax_rate",
    "fieldtype": "Float",
    "label": "Xero Tax Rate (%)",
-   "description": "The Xero tax rate percentage (informational).",
+   "description": "The Xero tax rate percentage. A row with a rate above 0 never serves a line without tax.",
    "in_list_view": 0,
    "precision": 2
   }
@@ -60,7 +60,7 @@
 "issingle": 0,
 "istable": 1,
 "links": [],
-"modified": "2026-11-17 19:00:00.000000",
+"modified": "2026-11-17 20:00:00.000000",
 "modified_by": "Administrator",
 "module": "Xero",
 "name": "Xero Tax Mapping",
